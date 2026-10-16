@@ -1,0 +1,13 @@
+<Window x:Class="Superb.Desktop.ReaderWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Superb · 阅读" Width="540" Height="620" MinWidth="360" MinHeight="240" MaxWidth="1800" MaxHeight="1600" ShowInTaskbar="False" ShowActivated="False" Topmost="True" WindowStyle="None" ResizeMode="CanResizeWithGrip">
+  <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="18">
+    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <DockPanel x:Name="DragHeader" MouseLeftButtonDown="DragHeader_MouseLeftButtonDown" Margin="0,0,0,12">
+        <Button DockPanel.Dock="Right" Content="收起" Padding="10,4" Click="Hide_Click" Focusable="False"/>
+        <TextBlock Text="S U P E R B  /  阅读" Foreground="{StaticResource Accent}" FontWeight="Bold" VerticalAlignment="Center"/>
+      </DockPanel>
+      <StackPanel Grid.Row="1"><TextBlock x:Name="ProtectionStatus" Text="保护未验证" FontSize="11" Foreground="{StaticResource Muted}"/><TextBlock x:Name="StateText" Text="等待输入" Margin="0,6,0,12"/></StackPanel>
+      <Grid Grid.Row="2"><FlowDocumentScrollViewer x:Name="Reader" IsSelectionEnabled="False" VerticalScrollBarVisibility="Auto" Focusable="False" IsToolBarVisible="False" Background="Transparent" Foreground="{StaticResource Ink}" ContextMenu="{x:Null}"/><ScrollViewer x:Name="PreviewScroll" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Focusable="False"><StackPanel><Image x:Name="PreviewImage" Stretch="Uniform" VerticalAlignment="Top"/><TextBlock x:Name="PreviewText" Margin="0,12,0,0"/></StackPanel></ScrollViewer></Grid>
+      <WrapPanel Grid.Row="3" Margin="0,14,0,0"><Button Content="发送" Click="Send_Click" Focusable="False"/><Button Content="复制完整回答" Click="Copy_Click" Focusable="False"/><Button Content="暂停" Click="Pause_Click" Focusable="False"/><Button Content="设置" Click="Settings_Click" Focusable="False"/></WrapPanel>
+    </Grid>
+  </Border>
+</Window>

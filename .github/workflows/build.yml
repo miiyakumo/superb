@@ -1,0 +1,23 @@
+name: Build and verify
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build Superb.slnx -c Release
+      - run: dotnet run --project tests/Superb.Tests -c Release --no-build
+      - run: dotnet run --project tests/Superb.WindowsTests -c Release --no-build
+      - run: dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: superb-windows-x64-development
+          path: artifacts/win-x64/

@@ -1,0 +1,70 @@
+<Window x:Class="Superb.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Superb · 控制中心" Width="1000" Height="820" MinWidth="820" MinHeight="650" WindowStartupLocation="CenterScreen">
+  <Grid Margin="28">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <DockPanel Margin="0,0,0,24">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Content="显示阅读面板" Click="ShowPanel_Click"/><Button Content="紧急暂停" Click="Pause_Click" Foreground="#F5C5AF"/></StackPanel>
+      <StackPanel><TextBlock Text="S U P E R B" FontSize="26" FontWeight="Bold" Foreground="{StaticResource Accent}"/><TextBlock Text="本地控制 · 显式外发" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
+    </DockPanel>
+    <Border Grid.Row="1" Background="{StaticResource Surface}" CornerRadius="8" Padding="18,14" Margin="0,0,0,20">
+      <StackPanel><TextBlock x:Name="ModeLabel" Text="已暂停 · 同步关闭" FontWeight="SemiBold"/><TextBlock x:Name="StatusLabel" Text="先添加后端，再显式恢复会话。" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
+    </Border>
+    <TabControl Grid.Row="2" Background="{StaticResource Base}" BorderThickness="0">
+      <TabItem Header="工作台"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+        <TextBlock Text="由你决定每一步" Style="{StaticResource Heading}"/>
+        <TextBlock Text="默认先采集到内存，再独立发送。正文和预览仅在受保护阅读面板中显示。" Style="{StaticResource Hint}"/>
+        <TextBlock Text="本次后端"/><ComboBox x:Name="BackendPicker" DisplayMemberPath="Name" SelectionChanged="BackendPicker_SelectionChanged"/>
+        <WrapPanel><Button Content="恢复会话" Style="{StaticResource Primary}" Click="Resume_Click"/><Button Content="读取剪贴板" Click="Clipboard_Click"/><Button Content="截取预设目标" Click="Capture_Click"/><Button Content="发送已准备输入" Click="Send_Click"/><Button Content="手动重试" Click="Retry_Click"/><Button Content="取消当前请求" Click="Cancel_Click"/></WrapPanel>
+        <Border Background="{StaticResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
+          <TextBlock Text="会话级剪贴板同步" FontSize="17" FontWeight="SemiBold"/>
+          <TextBlock Text="授权仅在本次运行有效，暂停、锁屏、配置变更或到期即撤销。自动采集最多每 2 秒一次；忙碌时保留最新变更。" Style="{StaticResource Hint}"/>
+          <WrapPanel><CheckBox x:Name="SyncText" Content="Unicode 文本" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="SyncImage" Content="静态位图"/></WrapPanel>
+          <CheckBox x:Name="SyncSend" Content="同时授权发送到当前选择的后端"/>
+          <TextBlock x:Name="SyncSummary" Text="当前无授权" Style="{StaticResource Hint}"/>
+          <WrapPanel><Button Content="开始限时同步" Click="StartSync_Click"/><Button Content="停止同步" Click="StopSync_Click"/></WrapPanel>
+        </StackPanel></Border>
+        <TextBlock Text="保护状态" FontSize="17" FontWeight="SemiBold"/>
+        <TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/>
+        <TextBlock Text="不会保存截图、正文或回答；无自动重试、后台遥测或崩溃上传。远端后端会接收已发送的内容。" Style="{StaticResource Hint}"/>
+      </StackPanel></ScrollViewer></TabItem>
+      <TabItem Header="模型后端"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+        <TextBlock Text="明确每一次发送的接收方" Style="{StaticResource Heading}"/>
+        <TextBlock Text="首版适配 Chat Completions 协议。端点填写完整请求地址；不自动补路径、切换供应商或跟随重定向。" Style="{StaticResource Hint}"/>
+        <TextBlock Text="编辑后端"/><ComboBox x:Name="EditBackendPicker" DisplayMemberPath="Name" SelectionChanged="EditBackendPicker_SelectionChanged"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="名称"/><TextBox x:Name="BackendName"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="模型 ID"/><TextBox x:Name="ModelName"/></StackPanel></Grid>
+        <TextBlock Text="完整端点 URL"/><TextBox x:Name="Endpoint"/>
+        <TextBlock Text="API 密钥（留空保留已有凭据）"/><PasswordBox x:Name="ApiKey"/>
+        <WrapPanel><CheckBox x:Name="Vision" Content="支持图像输入" Margin="0,6,24,10"/><CheckBox x:Name="Streaming" Content="流式输出" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="Loopback" Content="允许本机 IP 回环 HTTP"/></WrapPanel>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="超时（秒，1–600）"/><TextBox x:Name="TimeoutSeconds" Text="120"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="最大输入（MiB，1–16）"/><TextBox x:Name="InputLimit" Text="8"/></StackPanel></Grid>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="温度（0–2）"/><TextBox x:Name="Temperature" Text="0.2"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="最大生成 tokens"/><TextBox x:Name="MaxTokens" Text="4096"/></StackPanel><StackPanel Grid.Column="4"><TextBlock Text="最大响应字符"/><TextBox x:Name="MaxOutput" Text="200000"/></StackPanel></Grid>
+        <WrapPanel><Button Content="保存后端" Style="{StaticResource Primary}" Click="SaveBackend_Click"/><Button Content="新建后端" Click="NewBackend_Click"/><Button Content="删除后端与凭据" Click="DeleteBackend_Click"/></WrapPanel>
+        <TextBlock Text="凭据单独使用 DPAPI 加密保存，配置仅保留引用。同一用户权限下的恶意程序不在隔离承诺内。" Style="{StaticResource Hint}"/>
+      </StackPanel></ScrollViewer></TabItem>
+      <TabItem Header="采集与策略"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+        <TextBlock Text="固定范围，失败即停止" Style="{StaticResource Heading}"/>
+        <WrapPanel><Button Content="刷新可选窗口 / 显示器" Click="RefreshTargets_Click"/><Button Content="应用采集目标" Click="SaveTarget_Click"/></WrapPanel>
+        <ComboBox x:Name="TargetPicker"/>
+        <CheckBox x:Name="UseRegion" Content="使用所选显示器内的矩形区域（物理像素，相对显示器左上角）"/>
+        <TextBox x:Name="RegionBox" Text="0,0,800,600"/>
+        <TextBlock x:Name="TargetLabel" Text="未配置采集目标" Style="{StaticResource Hint}"/>
+        <TextBlock Text="预处理步骤（按数组顺序执行，坐标相对上一步图像）"/>
+        <TextBox x:Name="PipelineBox" AcceptsReturn="True" Height="180" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
+        <TextBlock Text="支持 NormalizeText、Template、Crop、Mask、Resize；Required=true 的失败会阻止发送。模板使用 {input}。配置会保存这些规则，请勿在模板中粘贴敏感正文。" Style="{StaticResource Hint}"/>
+        <TextBlock Text="固定路由（后端 ID；null 表示使用手动选择）"/><TextBox x:Name="RoutingBox" AcceptsReturn="True" Height="74" FontFamily="Consolas"/>
+        <TextBlock x:Name="BackendIds" Style="{StaticResource Hint}"/>
+        <Button Content="保存处理与路由策略" HorizontalAlignment="Left" Click="SavePipeline_Click"/>
+      </StackPanel></ScrollViewer></TabItem>
+      <TabItem Header="偏好与快捷键"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+        <TextBlock Text="保持可控，减少打扰" Style="{StaticResource Heading}"/>
+        <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
+        <CheckBox x:Name="Combine" Content="手动采集后立即处理并发送（仅快捷键及手动采集按钮）"/>
+        <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
+        <TextBlock Text="同步授权期限（分钟，1–60）"/><TextBox x:Name="SyncDuration" Text="10"/>
+        <TextBlock Text="阅读字号（11–36）"/><TextBox x:Name="PanelFont" Text="16"/>
+        <TextBlock Text="快捷键配置"/><TextBox x:Name="HotkeysBox" AcceptsReturn="True" Height="210" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
+        <TextBlock Text="capture / clipboard / toggle / copy / cancel / pause / send / pageDown / pageUp / settings / exit。冲突时会显示未注册的动作；控制中心始终可手动操作。" Style="{StaticResource Hint}"/>
+        <WrapPanel><Button Content="保存偏好" Style="{StaticResource Primary}" Click="SavePreferences_Click"/><Button Content="导出无凭据配置" Click="Export_Click"/></WrapPanel>
+      </StackPanel></ScrollViewer></TabItem>
+    </TabControl>
+    <DockPanel Grid.Row="3" Margin="0,18,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起控制中心" Click="HideControl_Click"/><Button Content="退出" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.1 · 待 Windows 验收的开发版本" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></DockPanel>
+  </Grid>
+</Window>

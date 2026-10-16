@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/Superb.Core/Superb.Core.csproj" />
+  <Project Path="src/Superb.Desktop/Superb.Desktop.csproj" />
+  <Project Path="tests/Superb.Tests/Superb.Tests.csproj" />
+  <Project Path="tests/Superb.WindowsTests/Superb.WindowsTests.csproj" />
+</Solution>
