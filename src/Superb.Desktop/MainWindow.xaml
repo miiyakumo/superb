@@ -3,24 +3,24 @@
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <DockPanel Margin="0,0,0,24">
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Content="显示阅读面板" Click="ShowPanel_Click"/><Button Content="紧急暂停" Click="Pause_Click" Foreground="#F5C5AF"/></StackPanel>
-      <StackPanel><TextBlock Text="S U P E R B" FontSize="26" FontWeight="Bold" Foreground="{StaticResource Accent}"/><TextBlock Text="本地控制 · 显式外发" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
+      <StackPanel><TextBlock Text="S U P E R B" FontSize="26" FontWeight="Bold" Foreground="{StaticResource Accent}"/><TextBlock Text="快捷提问 · 受控外发" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
     </DockPanel>
     <Border Grid.Row="1" Background="{StaticResource Surface}" CornerRadius="8" Padding="18,14" Margin="0,0,0,20">
-      <StackPanel><TextBlock x:Name="ModeLabel" Text="已暂停 · 同步关闭" FontWeight="SemiBold"/><TextBlock x:Name="StatusLabel" Text="先添加后端，再显式恢复会话。" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
+      <StackPanel><TextBlock x:Name="ModeLabel" Text="正在初始化" FontWeight="SemiBold"/><TextBlock x:Name="StatusLabel" Text="正在检查显示保护与系统会话。" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
     </Border>
     <TabControl Grid.Row="2" Background="{StaticResource Base}" BorderThickness="0">
       <TabItem Header="工作台"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
-        <TextBlock Text="由你决定每一步" Style="{StaticResource Heading}"/>
-        <TextBlock Text="默认先采集到内存，再独立发送。正文和预览仅在受保护阅读面板中显示。" Style="{StaticResource Hint}"/>
-        <TextBlock Text="本次后端"/><ComboBox x:Name="BackendPicker" DisplayMemberPath="Name" SelectionChanged="BackendPicker_SelectionChanged"/>
-        <WrapPanel><Button Content="恢复会话" Style="{StaticResource Primary}" Click="Resume_Click"/><Button Content="读取剪贴板" Click="Clipboard_Click"/><Button Content="截取预设目标" Click="Capture_Click"/><Button Content="发送已准备输入" Click="Send_Click"/><Button Content="手动重试" Click="Retry_Click"/><Button Content="取消当前请求" Click="Cancel_Click"/></WrapPanel>
+        <TextBlock Text="快速提问" Style="{StaticResource Heading}"/>
+        <TextBlock Text="“问剪贴板”和“问预设区域”会在本地处理与策略校验后直接发送；只有暂停、锁屏或保护异常后才需要恢复。" Style="{StaticResource Hint}"/>
+        <TextBlock Text="默认模型"/><ComboBox x:Name="BackendPicker" DisplayMemberPath="Name" SelectionChanged="BackendPicker_SelectionChanged"/>
+        <WrapPanel><Button Content="恢复" Style="{StaticResource Primary}" Click="Resume_Click"/><Button Content="问剪贴板" Click="Clipboard_Click"/><Button Content="问预设区域" Click="Capture_Click"/><Button Content="发送已准备" Click="Send_Click"/><Button Content="重新问" Click="Retry_Click"/><Button Content="取消当前请求" Click="Cancel_Click"/></WrapPanel>
         <Border Background="{StaticResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
-          <TextBlock Text="会话级剪贴板同步" FontSize="17" FontWeight="SemiBold"/>
-          <TextBlock Text="授权仅在本次运行有效，暂停、锁屏、配置变更或到期即撤销。自动采集最多每 2 秒一次；忙碌时保留最新变更。" Style="{StaticResource Hint}"/>
+          <TextBlock Text="Live Clipboard（可选）" FontSize="17" FontWeight="SemiBold"/>
+          <TextBlock Text="监听仅在本次运行有效。停止监听只阻止新的自动输入；已提交请求仍可单独取消，紧急暂停会立即遮蔽并停止本地输出。" Style="{StaticResource Hint}"/>
           <WrapPanel><CheckBox x:Name="SyncText" Content="Unicode 文本" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="SyncImage" Content="静态位图"/></WrapPanel>
-          <CheckBox x:Name="SyncSend" Content="同时授权发送到当前选择的后端"/>
+          <CheckBox x:Name="SyncSend" Content="变化后自动提问（关闭时只准备，等待手动发送）"/>
           <TextBlock x:Name="SyncSummary" Text="当前无授权" Style="{StaticResource Hint}"/>
-          <WrapPanel><Button Content="开始限时同步" Click="StartSync_Click"/><Button Content="停止同步" Click="StopSync_Click"/></WrapPanel>
+          <WrapPanel><Button Content="开始 Live Clipboard" Click="StartSync_Click"/><Button Content="停止 Live Clipboard" Click="StopSync_Click"/></WrapPanel>
         </StackPanel></Border>
         <TextBlock Text="保护状态" FontSize="17" FontWeight="SemiBold"/>
         <TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/>
@@ -56,7 +56,6 @@
       <TabItem Header="偏好与快捷键"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
         <TextBlock Text="保持可控，减少打扰" Style="{StaticResource Heading}"/>
         <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
-        <CheckBox x:Name="Combine" Content="手动采集后立即处理并发送（仅快捷键及手动采集按钮）"/>
         <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
         <TextBlock Text="同步授权期限（分钟，1–60）"/><TextBox x:Name="SyncDuration" Text="10"/>
         <TextBlock Text="阅读字号（11–36）"/><TextBox x:Name="PanelFont" Text="16"/>

@@ -29,7 +29,7 @@ public partial class MainWindow : Window
     private RequestUpdate? latestUpdate;
     private RequestUpdate? completed;
     private Task<Payload>? captureTask;
-    private long operation;
+    private long operation, syncGeneration;
     private bool preparing, exiting, loading, pausedForProtection, sessionLocked, configLoadFailed;
     private bool clipboardListenerReady, sessionListenerReady;
     private DateTimeOffset lastAutoCapture = DateTimeOffset.MinValue;
@@ -82,11 +82,22 @@ public partial class MainWindow : Window
         new WindowInteropHelper(reader).EnsureHandle();
         if (config.Panel.Visible && protectedOk) reader.Show();
         RegisterHotkeys();
-        ProtectionLabel.Text = protectedOk && reader.Check()
+        var readerOk = reader.Check();
+        ProtectionLabel.Text = protectedOk && readerOk
             ? "属性已设置 · 当前配置未实测；尚无对外声明兼容的采集链路。"
             : "未验证 / 不支持 · 敏感显示与发送已阻止。";
-        if (!protectedOk || !reader.Check()) ProtectionFailed();
-        if (!sessionListenerReady) Status("系统会话通知注册失败；会话不可恢复");
+        if (!protectedOk || !readerOk) ProtectionFailed();
+        else if (!sessionListenerReady) Status("系统会话通知注册失败；保持暂停");
+        else
+        {
+            pausedForProtection = false;
+            coordinator.SetMode(RunState.Ready);
+            UpdateMode();
+            if (!configLoadFailed)
+                Status(config.Backends.IsDefaultOrEmpty
+                    ? "已就绪；请先添加模型后端"
+                    : "已就绪 · Ctrl+Alt+1 问剪贴板，Ctrl+Alt+2 问预设区域");
+        }
         guardTimer.Start();
     }
     private nint WindowMessage(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
@@ -119,7 +130,7 @@ public partial class MainWindow : Window
         PipelineBox.Text = JsonSerializer.Serialize(config.Pipeline.Steps, Configuration.Json);
         RoutingBox.Text = JsonSerializer.Serialize(config.Routing, Configuration.Json);
         HotkeysBox.Text = JsonSerializer.Serialize(config.Hotkeys, Configuration.Json);
-        AutoCopy.IsChecked = config.AutoCopy; Combine.IsChecked = config.CombineCaptureAndSend;
+        AutoCopy.IsChecked = config.AutoCopy;
         ClearClipboard.IsChecked = config.ClearOwnedClipboardOnPause;
         SyncDuration.Text = config.SyncMinutes.ToString(); PanelFont.Text = config.Panel.FontSize.ToString();
         TargetLabel.Text = config.Capture?.Label ?? "未配置采集目标";
@@ -152,12 +163,15 @@ public partial class MainWindow : Window
     }
     private void StopSync()
     {
-        if (grant is not null)
-        {
-            // Revoke in-flight preparation and output, not just the next clipboard notification.
-            operation++; coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; reader.Clear();
-        }
-        grant = null; clipboardTimer.Stop(); syncFilter.Reset(); SyncSummary.Text = "当前无授权"; UpdateMode();
+        // Revoke the live input lease without conflating it with request cancellation.
+        // A preparation that has not reached transport observes syncGeneration and is dropped;
+        // a request already submitted remains a normal request and can be cancelled separately.
+        syncGeneration++;
+        grant = null;
+        clipboardTimer.Stop();
+        syncFilter.Reset();
+        SyncSummary.Text = "当前无授权";
+        UpdateMode();
     }
     private void UpdateMode() => ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }} · {(grant is null ? "同步关闭" : "同步已授权")}";
     public void EmergencyPause(string reason, RunState mode = RunState.Paused)
@@ -183,7 +197,9 @@ public partial class MainWindow : Window
     private async Task CaptureInput(bool screen, bool automatic = false)
     {
         if (!Ready() || preparing) return;
+        if (!automatic && !reader.IsVisible) reader.Show();
         var activeGrant = grant;
+        var activeSyncGeneration = syncGeneration;
         if (automatic && (activeGrant is null || activeGrant.ExpiresAt <= DateTimeOffset.UtcNow)) { StopSync(); return; }
         var version = ++operation;
         preparing = true;
@@ -216,6 +232,7 @@ public partial class MainWindow : Window
             var notices = new List<string>();
             var processed = await Task.Run(() => Preprocessor.Process(snapshot.Content, settings.Pipeline, new ImageProcessor(), notices.Add));
             if (version != operation || !Ready()) return;
+            if (automatic && (activeSyncGeneration != syncGeneration || grant is null)) return;
             var route = settings.Routing.Select(processed, settings.SelectedBackendId, settings.Backends);
             if (automatic && !activeGrant!.Allows(snapshot.Kind, route.Id, DateTimeOffset.UtcNow, false)) throw new SafeFailure("sync_route_not_authorized");
             // Do not retain the raw source once local transformations have completed.
@@ -225,7 +242,7 @@ public partial class MainWindow : Window
             reader.Preview(processed);
             StatusLabel.Text = $"已准备 · {route.Name} / {route.Model} · 等待发送" + (notices.Count > 0 ? $" · {notices.Count} 个可选步骤已按规则跳过" : "");
             if (automatic) lastAutoCapture = DateTimeOffset.UtcNow;
-            var send = automatic ? activeGrant!.AllowSend : settings.CombineCaptureAndSend;
+            var send = automatic ? activeGrant!.AllowSend : true;
             if (send) await SendPrepared(automatic, activeGrant);
         }
         catch (Exception ex) { if (version == operation) { prepared = null; Report(ex); } }
@@ -297,13 +314,12 @@ public partial class MainWindow : Window
     {
         try
         {
-            EmergencyPause("配置已变更；请手动恢复会话");
             if (configLoadFailed)
             {
                 File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"), false);
                 configLoadFailed = false;
             }
-            action(); config.Save(); Populate();
+            action(); config.Save(); Populate(); Status("配置已保存");
         }
         catch (Exception ex) { Report(ex); }
     }
@@ -316,7 +332,7 @@ public partial class MainWindow : Window
     {
         if (sessionLocked || !sessionListenerReady) { Status("系统会话尚未就绪"); return; }
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
-        pausedForProtection = false; coordinator.SetMode(RunState.Ready); StopSync(); UpdateMode(); Status("已恢复；自动同步保持关闭");
+        pausedForProtection = false; coordinator.SetMode(RunState.Ready); UpdateMode(); Status("已恢复");
     }
     private async void Clipboard_Click(object sender, RoutedEventArgs e) => await RunCommand("clipboard");
     private async void Capture_Click(object sender, RoutedEventArgs e) => await RunCommand("capture");
@@ -332,7 +348,7 @@ public partial class MainWindow : Window
         reader.Show(); Hide();
     }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    private void StopSync_Click(object sender, RoutedEventArgs e) => StopSync();
+    private void StopSync_Click(object sender, RoutedEventArgs e) { StopSync(); Status("Live Clipboard 已停止；当前请求与回答保留"); }
     private void StartSync_Click(object sender, RoutedEventArgs e)
     {
         if (!Ready()) return;
@@ -351,7 +367,10 @@ public partial class MainWindow : Window
     private void BackendPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!loading && BackendPicker.SelectedItem is Backend b && b.Id != config.SelectedBackendId)
+        {
+            StopSync(); // A live grant is bound to the backend selected when it was created.
             Mutate(() => config = config with { SelectedBackendId = b.Id });
+        }
     }
     private void EditBackendPicker_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (!loading) LoadBackendEditor(); }
     private void LoadBackendEditor()
@@ -367,8 +386,8 @@ public partial class MainWindow : Window
     private void NewBackend_Click(object sender, RoutedEventArgs e) { EditBackendPicker.SelectedItem = null; LoadBackendEditor(); }
     private void SaveBackend_Click(object sender, RoutedEventArgs e)
     {
-        // Capture password before Mutate clears controls as part of its pause operation.
         var secret = ApiKey.Password;
+        StopSync(); // Endpoint/model/credential changes cross the live grant trust boundary.
         var old = EditBackendPicker.SelectedItem as Backend;
         var name = BackendName.Text.Trim(); var model = ModelName.Text.Trim(); var endpoint = Endpoint.Text.Trim();
         var vision = Vision.IsChecked == true; var loopback = Loopback.IsChecked == true; var streaming = Streaming.IsChecked == true;
@@ -390,6 +409,7 @@ public partial class MainWindow : Window
     private void DeleteBackend_Click(object sender, RoutedEventArgs e)
     {
         if (EditBackendPicker.SelectedItem is not Backend b) return;
+        StopSync();
         Mutate(() =>
         {
             var remaining = config.Backends.Where(x => x.Id != b.Id).ToImmutableArray();
@@ -417,20 +437,24 @@ public partial class MainWindow : Window
         }
         config = config with { Capture = target };
     });
-    private void SavePipeline_Click(object sender, RoutedEventArgs e) => Mutate(() =>
+    private void SavePipeline_Click(object sender, RoutedEventArgs e)
+    {
+        StopSync(); // Routing changes require a new explicit live authorization.
+        Mutate(() =>
     {
         var steps = JsonSerializer.Deserialize<ImmutableArray<ProcessStep>>(PipelineBox.Text, Configuration.Json);
         var routing = JsonSerializer.Deserialize<Routing>(RoutingBox.Text, Configuration.Json) ?? throw new SafeFailure("routing_invalid");
         var candidate = config with { Pipeline = new(Guid.NewGuid().ToString("N"), steps), Routing = routing };
         candidate.Validate(); config = candidate;
-    });
+        });
+    }
     private void SavePreferences_Click(object sender, RoutedEventArgs e) => Mutate(() =>
     {
         var keys = JsonSerializer.Deserialize<ImmutableArray<Hotkey>>(HotkeysBox.Text, Configuration.Json);
         string[] required = ["capture", "clipboard", "toggle", "copy", "cancel", "pause", "settings", "exit"];
         if (keys.IsDefault || required.Any(action => !keys.Any(x => x.Action == action)) || keys.Select(x => x.Action).Distinct().Count() != keys.Length)
             throw new SafeFailure("hotkey_required_action_missing");
-        var candidate = config with { Hotkeys = keys, AutoCopy = AutoCopy.IsChecked == true, CombineCaptureAndSend = Combine.IsChecked == true,
+        var candidate = config with { Hotkeys = keys, AutoCopy = AutoCopy.IsChecked == true,
             ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true, SyncMinutes = int.Parse(SyncDuration.Text),
             Panel = reader.Layout() with { FontSize = double.Parse(PanelFont.Text) } };
         candidate.Validate(); config = candidate; reader.ApplyLayout(config.Panel); RegisterHotkeys();
