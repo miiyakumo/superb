@@ -1,4 +1,4 @@
-<Window x:Class="Superb.Desktop.ReaderWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Superb · 阅读" Width="540" Height="620" MinWidth="360" MinHeight="240" MaxWidth="1800" MaxHeight="1600" ShowInTaskbar="False" ShowActivated="False" Topmost="True" WindowStyle="None" ResizeMode="CanResizeWithGrip">
+<Window x:Class="Superb.Desktop.ReaderWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource {x:Type Window}}" Title="Superb · 阅读" Width="540" Height="620" MinWidth="360" MinHeight="240" MaxWidth="1800" MaxHeight="1600" ShowInTaskbar="False" ShowActivated="False" Topmost="True" WindowStyle="None" ResizeMode="CanResizeWithGrip">
   <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="18">
     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <DockPanel x:Name="DragHeader" MouseLeftButtonDown="DragHeader_MouseLeftButtonDown" Margin="0,0,0,12">

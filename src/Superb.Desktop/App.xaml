@@ -19,7 +19,17 @@
     <Style TargetType="PasswordBox"><Setter Property="Background" Value="#111A16"/><Setter Property="Foreground" Value="{StaticResource Ink}"/><Setter Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="Padding" Value="10,8"/><Setter Property="Margin" Value="0,4,0,12"/></Style>
     <Style TargetType="CheckBox"><Setter Property="Foreground" Value="{StaticResource Ink}"/><Setter Property="Margin" Value="0,6,0,10"/></Style>
     <Style TargetType="ComboBox"><Setter Property="Foreground" Value="#142019"/><Setter Property="MinHeight" Value="34"/><Setter Property="Margin" Value="0,4,0,12"/></Style>
-    <Style TargetType="TabItem"><Setter Property="Foreground" Value="#18251D"/><Setter Property="Padding" Value="20,10"/></Style>
+    <Style TargetType="Expander"><Setter Property="Foreground" Value="{StaticResource Ink}"/></Style>
+    <Style TargetType="TabItem">
+      <Setter Property="Foreground" Value="{StaticResource Muted}"/><Setter Property="Padding" Value="20,10"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TabItem">
+        <Border x:Name="TabBorder" Background="{StaticResource Surface}" CornerRadius="6,6,0,0" Padding="{TemplateBinding Padding}" Margin="0,0,4,0"><ContentPresenter ContentSource="Header" HorizontalAlignment="Center"/></Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{StaticResource Accent}"/><Setter TargetName="TabBorder" Property="BorderBrush" Value="{StaticResource Accent}"/><Setter TargetName="TabBorder" Property="BorderThickness" Value="0,0,0,2"/></Trigger>
+          <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource Ink}"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
     <Style x:Key="Hint" TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource Muted}"/><Setter Property="Margin" Value="0,4,0,14"/><Setter Property="FontSize" Value="12"/></Style>
     <Style x:Key="Heading" TargetType="TextBlock"><Setter Property="FontSize" Value="23"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,0,0,16"/></Style>
   </Application.Resources>

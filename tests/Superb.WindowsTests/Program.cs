@@ -121,6 +121,8 @@ internal static class Program
             Assert(tabs.Items.Count == 3);
             Assert(!((Expander)window.FindName("BackendSettings")).IsExpanded);
             Assert(!((Expander)window.FindName("CaptureSettings")).IsExpanded);
+            Assert(window.Background == app.Resources["Base"] && window.Foreground == app.Resources["Ink"]);
+            Assert(((Expander)window.FindName("BackendSettings")).Foreground == app.Resources["Ink"]);
             var root = (FrameworkElement)window.Content;
             // Render WPF content off-screen; this does not exercise a logged-in interactive desktop.
             window.Content = null;
@@ -132,12 +134,12 @@ internal static class Program
             for (var i = 0; i < tabs.Items.Count; i++)
             {
                 tabs.SelectedIndex = i;
-                surface.Measure(new Size(904, 708)); surface.Arrange(new Rect(0, 0, 904, 708)); surface.UpdateLayout();
-                Assert(surface.ActualWidth == 904 && surface.ActualHeight == 708 && root.ActualWidth > 0);
+                surface.Measure(new Size(904, 780)); surface.Arrange(new Rect(0, 0, 904, 780)); surface.UpdateLayout();
+                Assert(surface.ActualWidth == 904 && surface.ActualHeight == 780 && root.ActualWidth > 0);
                 if (renderIndex >= 0 && renderIndex + 1 < args.Length)
                 {
                     Directory.CreateDirectory(args[renderIndex + 1]);
-                    var bitmap = new RenderTargetBitmap(904, 708, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
+                    var bitmap = new RenderTargetBitmap(904, 780, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
                     var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                     using var file = File.Create(Path.Combine(args[renderIndex + 1], $"ui-{i}.png")); encoder.Save(file);
                 }
