@@ -15,7 +15,8 @@ public sealed class SyncFilter
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(Encoding.UTF8.GetBytes(snapshot.Content.Text ?? ""));
         hash.AppendData([0]);
-        if (snapshot.Content.HasImage) hash.AppendData(snapshot.Content.Png.AsSpan());
+        foreach (var image in snapshot.Content.Images)
+        { hash.AppendData(BitConverter.GetBytes(image.Png.Length)); hash.AppendData(image.Png.AsSpan()); }
         var digest = Convert.ToHexString(hash.GetHashAndReset());
         lastSequence = snapshot.ClipboardSequence;
         if (lastHash == digest) return false;

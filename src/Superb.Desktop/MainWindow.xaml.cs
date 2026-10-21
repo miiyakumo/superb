@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private readonly SyncFilter syncFilter = new();
     private readonly DispatcherTimer clipboardTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly DispatcherTimer guardTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly DispatcherTimer layoutSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private ClipboardService? clipboard;
     private HotkeyManager? hotkeys;
     private SyncGrant? grant;
@@ -35,22 +36,40 @@ public partial class MainWindow : Window
     private bool clipboardListenerReady, sessionListenerReady;
     private DateTimeOffset lastAutoCapture = DateTimeOffset.MinValue;
     private nint handle;
+    private readonly bool isolatedWorkspaceTest;
+    internal ReaderWindow WorkspaceWindow => reader;
+    internal Coordinator WorkspaceCoordinator => coordinator;
 
-    public MainWindow()
+    public MainWindow() : this(null, null) { }
+    // Isolated synthetic integration host: no user configuration, global hotkeys, clipboard reads or persistence.
+    internal MainWindow(Configuration? testConfiguration, IBackendClient? testBackend)
     {
+        isolatedWorkspaceTest = testConfiguration is not null && testBackend is not null;
+        if (testConfiguration is not null) config = testConfiguration;
         InitializeComponent();
         backend = new(credentials);
-        coordinator = new(backend);
+        coordinator = new(testBackend ?? backend);
         protection = new(this, false);
         coordinator.Updated += OnUpdate;
         reader.Command += action => _ = RunCommand(action);
+        reader.LayoutChanged += () =>
+        {
+            config = config with { Panel = reader.Layout() };
+            if (!isolatedWorkspaceTest && !configLoadFailed && !exiting) { layoutSaveTimer.Stop(); layoutSaveTimer.Start(); }
+        };
+        layoutSaveTimer.Tick += (_, _) =>
+        {
+            layoutSaveTimer.Stop();
+            try { config.Save(); } catch { Status("外观已调整，但设置保存失败；本次会话仍可使用"); }
+        };
+        reader.DraftChanged += () => { if (grant is not null) StopSync(); prepared = null; RefreshWorkspace(); };
         reader.ProtectionLost += () => ProtectionFailed();
         SourceInitialized += InitializePlatform;
         clipboardTimer.Tick += async (_, _) =>
         {
             clipboardTimer.Stop();
             if (grant is null || DateTimeOffset.UtcNow >= grant.ExpiresAt) { StopSync(); return; }
-            if (preparing || coordinator.State is RequestState.Connecting or RequestState.Waiting or RequestState.Streaming or RequestState.PolicyCheck ||
+            if (preparing || coordinator.State is RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming or RequestState.PolicyCheck ||
                 DateTimeOffset.UtcNow - lastAutoCapture < TimeSpan.FromSeconds(2)) { clipboardTimer.Start(); return; }
             await CaptureInput(false, true);
         };
@@ -64,19 +83,38 @@ public partial class MainWindow : Window
                 if (coordinator.IsCurrent(update.Attempt))
                 {
                     reader.Render(update.Text, StateLabel(update));
-                    AnswerText.Text = update.Text;
-                    AnswerPlaceholder.Visibility = update.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
                 }
             }
         };
         Closing += (_, _) => Shutdown();
         Populate();
     }
+    public new void Show()
+    {
+        new WindowInteropHelper(this).EnsureHandle();
+        // WPF may reset affinity while showing a normal window. Restore only at our owned
+        // visibility transitions; the periodic guard still treats external changes as failure.
+        if (!protection.RefreshDisplayAffinity()) ProtectionFailed();
+        base.Show();
+        if (!protection.RefreshDisplayAffinity()) ProtectionFailed();
+    }
+    public new void Hide()
+    {
+        base.Hide();
+        if (handle != 0 && !protection.RefreshDisplayAffinity()) ProtectionFailed();
+    }
     private void InitializePlatform(object? sender, EventArgs e)
     {
         handle = new WindowInteropHelper(this).Handle;
         var protectedOk = protection.Install();
         clipboard = new(handle);
+        if (isolatedWorkspaceTest)
+        {
+            reader.ApplyLayout(config.Panel);
+            new WindowInteropHelper(reader).EnsureHandle();
+            coordinator.SetMode(protectedOk && reader.Check() ? RunState.Ready : RunState.ProtectionUnavailable);
+            Populate(); UpdateMode(); return;
+        }
         hotkeys = new(handle);
         HwndSource.FromHwnd(handle)?.AddHook(WindowMessage);
         clipboardListenerReady = Native.AddClipboardFormatListener(handle);
@@ -88,7 +126,6 @@ public partial class MainWindow : Window
         reader.ApplyLayout(config.Panel);
         // Source initialization installs protection before any sensitive payload can be rendered.
         new WindowInteropHelper(reader).EnsureHandle();
-        if (config.Panel.Visible && protectedOk) reader.Show();
         RegisterHotkeys();
         var readerOk = reader.Check();
         ProtectionLabel.Text = protectedOk && readerOk
@@ -107,6 +144,8 @@ public partial class MainWindow : Window
                     : "已就绪 · 可使用场景入口或已启用的快捷键");
         }
         guardTimer.Start();
+        if (!config.Backends.IsDefaultOrEmpty && protectedOk && readerOk && sessionListenerReady)
+            Dispatcher.BeginInvoke(() => OpenWorkspace());
     }
     private nint WindowMessage(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
@@ -141,7 +180,10 @@ public partial class MainWindow : Window
         ExclusiveReaderKeys.IsChecked = config.ExclusiveHotkeysEnabled;
         AutoCopy.IsChecked = config.AutoCopy;
         ClearClipboard.IsChecked = config.ClearOwnedClipboardOnPause;
-        SyncDuration.Text = config.SyncMinutes.ToString(); PanelFont.Text = config.Panel.FontSize.ToString();
+        SyncDuration.Text = config.SyncMinutes.ToString();
+        DefaultConnection.Visibility = config.Backends.IsDefaultOrEmpty ? Visibility.Collapsed : Visibility.Visible;
+        QuickSetup.IsExpanded = config.Backends.IsDefaultOrEmpty;
+        BackendSettings.IsExpanded = !config.Backends.IsDefaultOrEmpty;
         TargetLabel.Text = config.Capture?.Label ?? "未配置采集目标";
         BackendIds.Text = string.Join("\n", config.Backends.Select(x => $"{x.Name} → {x.Id}"));
         var selected = BackendPicker.SelectedItem as Backend;
@@ -155,8 +197,9 @@ public partial class MainWindow : Window
         QuickStatus.Text = deepSeek is null ? "不需要填写接口地址或模型名称。" : $"已保存 {deepSeek.Name} / {deepSeek.Model}。可直接开始提问，或填入新密钥重新配置。";
         loading = false;
         LoadBackendEditor();
+        RefreshWorkspace();
     }
-    private void Status(string message) { StatusLabel.Text = message; reader.Status(message); SetError(null); }
+    private void Status(string message) { StatusLabel.Text = message; reader.Status(message); SetError(null); RefreshWorkspace(); }
     private void SetError(string? code)
     {
         ErrorCode.Text = code ?? "";
@@ -165,12 +208,13 @@ public partial class MainWindow : Window
     }
     private void ClearOutput()
     {
-        reader.Clear(); AnswerText.Clear(); AnswerPlaceholder.Visibility = Visibility.Visible;
+        reader.ClearAnswer();
     }
     private static string StateLabel(RequestUpdate update) => (update.State switch
     {
         RequestState.PolicyCheck => "正在校验外发策略", RequestState.Connecting => "连接中", RequestState.Waiting => "等待响应",
-        RequestState.Streaming => "生成中", RequestState.Completed => "已完成", RequestState.Cancelled => "已取消",
+        RequestState.Thinking => "模型正在思考 · 尚未返回回答，可停止",
+        RequestState.Streaming => "生成中", RequestState.Completed => "已完成", RequestState.Cancelled => "已停止 · 部分回答，未完成",
         RequestState.Failed => ConnectionDiagnostics.Explain(update.Code), _ => update.State.ToString()
     }) + (update.Attempt.Request.ProcessingNotices.IsDefaultOrEmpty ? "" : $" · 已按规则跳过 {update.Attempt.Request.ProcessingNotices.Length} 个可选步骤");
     private void OnUpdate(RequestUpdate update)
@@ -181,9 +225,14 @@ public partial class MainWindow : Window
         StatusLabel.Text = StateLabel(update);
         SetError(update.Code);
         latestUpdate = update;
+        if (update.State is RequestState.Connecting or RequestState.Thinking or RequestState.Streaming) reader.BeginAnswer();
+        RefreshWorkspace();
+        if (update.State is RequestState.Failed or RequestState.Cancelled or RequestState.Completed)
+        {
+            reader.Render(update.Text, StateLabel(update));
+            latestUpdate = null;
+        }
         if (update.State != RequestState.Completed) return;
-        AnswerText.Text = update.Text;
-        AnswerPlaceholder.Visibility = update.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         completed = update;
         if (!config.AutoCopy || !reader.Check()) return;
         try
@@ -209,12 +258,15 @@ public partial class MainWindow : Window
     {
         ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }}{(grant is null ? "" : " · 剪贴板同步中")}";
         ResumeButton.Visibility = coordinator.Mode == RunState.Ready ? Visibility.Collapsed : Visibility.Visible;
+        RefreshWorkspace();
     }
     public void EmergencyPause(string reason, RunState mode = RunState.Paused)
     {
+        captureSelectionCancellation?.Cancel();
         CancelProbe();
-        operation++; coordinator.SetMode(mode); prepared = null; completed = null; latestUpdate = null;
-        ClearOutput(); QuestionBox.Clear(); StopSync(); ApiKey.Clear(); QuickApiKey.Clear();
+        operation++; preparing = false; coordinator.SetMode(mode); prepared = null; completed = null; latestUpdate = null;
+        workspace.Clear(); reader.Clear(); ClearOutput(); StopSync(); ApiKey.Clear(); QuickApiKey.Clear();
+        if (reader.Check()) reader.SetMode(false);
         if (config.ClearOwnedClipboardOnPause) { try { clipboard?.ClearOwned(); } catch { /* Clear best effort only our own data. */ } }
         UpdateMode(); Status(reason);
     }
@@ -233,13 +285,12 @@ public partial class MainWindow : Window
     }
     private async Task CaptureInput(bool screen, bool automatic = false, ScenePreset? scene = null)
     {
-        if (!Ready() || preparing) return;
+        if (!Ready()) return;
+        if (Working) { if (!automatic) Status("正在处理；请先停止生成"); return; }
         if (!automatic && config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
         if (screen && config.Capture is null)
         {
-            MainTabs.SelectedItem = AdvancedTab; CaptureSettings.IsExpanded = true;
-            RefreshTargets_Click(this, new RoutedEventArgs());
-            Status("请选择截图范围，再点击“应用采集目标”"); return;
+            OpenCaptureSettings(); return;
         }
         if (!automatic && !IsVisible && !reader.IsVisible) reader.Show();
         var activeGrant = grant;
@@ -247,6 +298,7 @@ public partial class MainWindow : Window
         if (automatic && (activeGrant is null || activeGrant.ExpiresAt <= DateTimeOffset.UtcNow)) { StopSync(); return; }
         var version = ++operation;
         preparing = true;
+        RefreshWorkspace();
         try
         {
             var settings = config; // Freeze processing and routing before the asynchronous capture.
@@ -257,9 +309,9 @@ public partial class MainWindow : Window
                 var target = settings.Capture ?? throw new SafeFailure("capture_target_missing");
                 var sequence = clipboard!.Sequence;
                 Status("采集中");
-                captureTask = Task.Run(() => CaptureService.Capture(target));
-                snapshot = new(Guid.NewGuid(), InputKind.Screen, await captureTask.WaitAsync(TimeSpan.FromSeconds(5)), sequence, DateTimeOffset.UtcNow);
-                captureTask = null;
+                var worker = Task.Run(() => CaptureService.Capture(target)); captureTask = worker;
+                snapshot = new(Guid.NewGuid(), InputKind.Screen, await worker.WaitAsync(TimeSpan.FromSeconds(5)), sequence, DateTimeOffset.UtcNow);
+                if (ReferenceEquals(captureTask, worker)) captureTask = null;
             }
             else
             {
@@ -271,6 +323,9 @@ public partial class MainWindow : Window
                     !syncFilter.Accept(snapshot, own))) return;
             }
             if (version != operation || !Ready()) return;
+            reader.SetDraft("");
+            workspace.Set(snapshot, screen ? "预设截图范围" : "剪贴板");
+            reader.SetInputs(workspace.Items);
             coordinator.Invalidate(); completed = null; prepared = null; latestUpdate = null; ClearOutput();
             Status("本地处理中");
             PreparedRequest request;
@@ -290,7 +345,7 @@ public partial class MainWindow : Window
             if (automatic && !activeGrant!.Allows(snapshot.Kind, route.Id, DateTimeOffset.UtcNow, false)) throw new SafeFailure("sync_route_not_authorized");
             prepared = request;
             Policy.Check(prepared);
-            reader.Preview(processed);
+            reader.SetInputs(workspace.Items);
             StatusLabel.Text = $"已准备 · {route.Name} / {route.Model} · 等待发送" + (notices.Length > 0 ? $" · {notices.Length} 个可选步骤已按规则跳过" : "");
             if (automatic) lastAutoCapture = DateTimeOffset.UtcNow;
             var send = automatic ? activeGrant!.AllowSend : true;
@@ -299,7 +354,7 @@ public partial class MainWindow : Window
         catch (Exception ex) { if (version == operation) { prepared = null; Report(ex); } }
         finally
         {
-            preparing = false;
+            if (version == operation) { preparing = false; RefreshWorkspace(); }
             if (captureTask is { } outstanding)
             {
                 // PrintWindow cannot be forcibly cancelled. Keep at most one worker, then drop its result.
@@ -317,9 +372,11 @@ public partial class MainWindow : Window
         if (prepared is null) { Status("尚无已准备输入"); return; }
         var request = prepared;
         prepared = null; completed = null; latestUpdate = null; ClearOutput();
+        RefreshWorkspace();
         await coordinator.RunAsync(request, automatic, authorization);
+        RefreshWorkspace();
     }
-    private async Task RunCommand(string action)
+    internal async Task RunCommand(string action)
     {
         try
         {
@@ -328,15 +385,44 @@ public partial class MainWindow : Window
                 var scene = config.Scenes.FirstOrDefault(s => s.Action == action) ?? throw new SafeFailure("scene_missing");
                 await RunScene(scene); return;
             }
+            if (action.StartsWith("removeInput:", StringComparison.Ordinal) && Guid.TryParse(action[12..], out var itemId))
+            {
+                if (!Working) { workspace.Remove(itemId); prepared = null; reader.SetInputs(workspace.Items); Status("已从队列移除"); }
+                return;
+            }
             switch (action)
             {
-                case "ask": await AskQuestion(); break;
+                case "workspaceSend": await SendWorkspace(); break;
+                case "stageClipboard": await StageClipboard(); break;
+                case "stageCapture": await StageScreenshot(true); break;
+                case "captureScreen": await StageScreenshot(false); break;
+                case "deleteCapture":
+                    if (!Working && workspace.Items.LastOrDefault() is { } last) { workspace.Remove(last.Snapshot.Id); prepared = null; reader.SetInputs(workspace.Items); Status("已移除队列最后一项"); }
+                    break;
+                case "selectScene": SelectWorkspaceScene(reader.SelectedSceneId); break;
+                case "removeInput":
+                    if (!Working) { workspace.Clear(); prepared = null; reader.ClearInput(); Status("已移除输入"); RefreshWorkspace(); }
+                    break;
+                case "workspaceCopy": CopyWorkspaceAnswer(); break;
+                case "newTask": NewWorkspaceTask(); break;
+                case "interact":
+                    if (Ready()) { if (!reader.IsVisible) reader.Show(); reader.SetMode(!reader.Interactive); }
+                    break;
+                case "beginEdit":
+                    if (Ready()) reader.SetMode(true, focusDraft: false);
+                    break;
+                case "through":
+                    if (Ready() && hotkeys?.HasAction("interact") == true && CanHideControl()) reader.SetMode(false, true);
+                    else Status("穿透未开启：请先修复编辑、设置、暂停和退出快捷键");
+                    break;
+                case "ask": await SendWorkspace(); break;
                 case "resume": Resume_Click(this, new RoutedEventArgs()); break;
-                case "clipboard": await CaptureInput(false); break;
-                case "capture": await CaptureInput(true); break;
-                case "send": await SendPrepared(); break;
+                case "clipboard": await StageClipboard(); break;
+                case "capture": await StageScreenshot(true); break;
+                case "send": await SendWorkspace(); break;
+                case "retryDirect": await RetryDirectAnswer(); break;
                 case "retry":
-                    if (Ready() && coordinator.Current is { } prior && coordinator.State is RequestState.Failed or RequestState.Completed)
+                    if (Ready() && !Working && coordinator.Current is { } prior && coordinator.State is RequestState.Failed or RequestState.Completed or RequestState.Cancelled)
                     {
                         prepared = prior.Request;
                         await SendPrepared(); // Explicit retry; new attempt ID, frozen target and processed body.
@@ -357,7 +443,7 @@ public partial class MainWindow : Window
                     else Status("当前没有可复制的完整回答");
                     break;
                 case "cancel":
-                    operation++; coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; ClearOutput(); Status("已取消"); break;
+                    StopGeneration(); break;
                 case "pause": EmergencyPause("紧急暂停已生效"); break;
                 case "pageDown": reader.Page(true); break;
                 case "pageUp": reader.Page(false); break;
@@ -389,9 +475,11 @@ public partial class MainWindow : Window
     private void RegisterHotkeys()
     {
         var failed = hotkeys!.Register(config.AllHotkeys(), config.ExclusiveHotkeysEnabled);
+        if (reader.ClickThrough && !hotkeys.HasAction("interact")) reader.SetMode(false);
         HotkeyStatus.Text = failed.Count > 0 ? "未启用的动作：" + string.Join(", ", failed)
             : config.ExclusiveHotkeysEnabled ? "独占接管已开启；已启用的绑定注册成功" : "独占接管关闭；普通组合键可能产生网页按键事件";
         if (failed.Count > 0) Status("快捷键冲突或无效（动作）：" + string.Join(", ", failed));
+        RefreshWorkspace();
     }
     private void Resume_Click(object sender, RoutedEventArgs e)
     {
@@ -399,21 +487,20 @@ public partial class MainWindow : Window
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
         pausedForProtection = false; coordinator.SetMode(RunState.Ready); UpdateMode(); Status("已恢复");
     }
-    private void OpenConnection_Click(object sender, RoutedEventArgs e) => MainTabs.SelectedItem = ConnectionTab;
-    private void OpenWorkspace_Click(object sender, RoutedEventArgs e) => MainTabs.SelectedItem = WorkspaceTab;
-    private async void CopyAnswer_Click(object sender, RoutedEventArgs e) => await RunCommand("copy");
-    private async void Ask_Click(object sender, RoutedEventArgs e) => await AskQuestion();
     private async Task AskQuestion(ScenePreset? scene = null)
     {
-        if (!Ready() || preparing) return;
+        if (!Ready()) return;
+        if (Working) { Status("正在处理；请先停止生成"); return; }
         if (config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
-        if (string.IsNullOrWhiteSpace(QuestionBox.Text)) { Status("请先输入问题"); return; }
+        var draft = reader.Draft;
+        if (string.IsNullOrWhiteSpace(draft)) { Status("请先在浮窗输入问题"); return; }
         var version = ++operation;
         preparing = true;
         try
         {
             var settings = config;
-            var content = Payload.FromText(QuestionBox.Text);
+            workspace.Clear(); reader.ClearInput(); RefreshWorkspace();
+            var content = Payload.FromText(draft);
             var sequence = clipboard!.Sequence;
             if (content.Size > Policy.AbsoluteInputLimit) throw new SafeFailure("input_too_large");
             coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; ClearOutput();
@@ -435,7 +522,7 @@ public partial class MainWindow : Window
             await SendPrepared();
         }
         catch (Exception ex) { if (version == operation) { prepared = null; Report(ex); } }
-        finally { preparing = false; }
+        finally { if (version == operation) { preparing = false; RefreshWorkspace(); } }
     }
 
     private sealed class TemporaryCredential(string secret) : ICredentialStore, IDisposable
@@ -491,8 +578,7 @@ public partial class MainWindow : Window
             ModelName.Text = result.Backend.Model;
             QuickStatus.Text = $"连接成功 · 已选择 {result.Backend.Model}，可以开始提问。";
             Status("DeepSeek 已连接并保存");
-            MainTabs.SelectedItem = WorkspaceTab;
-            QuestionBox.Focus();
+            OpenWorkspace();
         }
         catch (Exception ex)
         {
@@ -508,13 +594,9 @@ public partial class MainWindow : Window
             if (probeCancellation is null) SetProbeBusy(false);
         }
     }
-    private async void Clipboard_Click(object sender, RoutedEventArgs e) => await RunCommand("clipboard");
-    private async void Capture_Click(object sender, RoutedEventArgs e) => await RunCommand("capture");
     private async void Send_Click(object sender, RoutedEventArgs e) => await RunCommand("send");
-    private async void Retry_Click(object sender, RoutedEventArgs e) => await RunCommand("retry");
-    private async void Cancel_Click(object sender, RoutedEventArgs e) => await RunCommand("cancel");
     private void Pause_Click(object sender, RoutedEventArgs e) => EmergencyPause("紧急暂停已生效");
-    private void ShowPanel_Click(object sender, RoutedEventArgs e) { reader.Show(); reader.Check(); }
+    private void ShowPanel_Click(object sender, RoutedEventArgs e) => OpenWorkspace();
     private bool CanHideControl() => hotkeys is not null && new[] { "settings", "pause", "exit" }.All(hotkeys.HasAction);
     private void HideControl_Click(object sender, RoutedEventArgs e)
     {
@@ -562,6 +644,7 @@ public partial class MainWindow : Window
         ProxyAddressBox.Text = b?.ProxyAddress ?? "";
         SendTemperature.IsChecked = b?.SendTemperature ?? true;
         UseCompletionTokens.IsChecked = b?.TokenLimitParameter == TokenLimitParameter.MaxCompletionTokens;
+        ThinkingModePicker.SelectedIndex = (int)(b?.ThinkingMode ?? ThinkingMode.Default);
         ConnectionStatus.Text = "尚未测试此后端";
     }
     private void NewBackend_Click(object sender, RoutedEventArgs e) { EditBackendPicker.SelectedItem = null; LoadBackendEditor(); }
@@ -578,13 +661,14 @@ public partial class MainWindow : Window
         var proxyAddress = ProxyAddressBox.Text.Trim();
         var sendTemperature = SendTemperature.IsChecked == true;
         var tokenParameter = UseCompletionTokens.IsChecked == true ? TokenLimitParameter.MaxCompletionTokens : TokenLimitParameter.MaxTokens;
+        var thinkingMode = (ThinkingMode)ThinkingModePicker.SelectedIndex;
         Mutate(() =>
         {
             var b = new Backend(old?.Id ?? Guid.NewGuid().ToString("N"), name, endpoint, model, old?.CredentialRef ?? "",
                 vision, loopback, streaming, int.Parse(timeout), checked(int.Parse(limit) * 1_048_576), int.Parse(outputLimit),
                 double.Parse(temperature, System.Globalization.CultureInfo.InvariantCulture), int.Parse(tokens),
                 ProxyMode: proxyMode, ProxyAddress: proxyMode == ProxyMode.Custom ? proxyAddress : "",
-                SendTemperature: sendTemperature, TokenLimitParameter: tokenParameter);
+                SendTemperature: sendTemperature, TokenLimitParameter: tokenParameter, ThinkingMode: thinkingMode);
             Policy.ValidateBackend(b);
             if (name.Length is < 1 or > 80) throw new SafeFailure("backend_name_invalid");
             if (secret.Length > 0) b = b with { CredentialRef = credentials.Save(secret) };
@@ -678,16 +762,21 @@ public partial class MainWindow : Window
         candidate.Validate(); config = candidate;
         });
     }
-    private void SavePreferences_Click(object sender, RoutedEventArgs e) => SaveScenarioSettings(() =>
+    // Each page saves only its own settings, never pending edits from another page.
+    internal Configuration BuildHotkeySettings()
     {
         var bindings = ((IEnumerable<HotkeyEditorRow>)HotkeyRows.ItemsSource).Select(r => r.Binding()).ToArray();
-        var candidate = config with { Hotkeys = bindings.Where(k => !k.Action.StartsWith("scene:")).ToImmutableArray(),
+        return config with { Hotkeys = bindings.Where(k => !k.Action.StartsWith("scene:")).ToImmutableArray(),
             Scenes = config.Scenes.Select(s => s with { Trigger = bindings.Single(k => k.Action == s.Action) }).ToImmutableArray(),
-            AutoCopy = AutoCopy.IsChecked == true, ExclusiveHotkeysEnabled = ExclusiveReaderKeys.IsChecked == true,
-            ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true, SyncMinutes = int.Parse(SyncDuration.Text),
-            Panel = reader.Layout() with { FontSize = double.Parse(PanelFont.Text) } };
-        return candidate;
-    }, applyPanel: true);
+            ExclusiveHotkeysEnabled = ExclusiveReaderKeys.IsChecked == true };
+    }
+    internal Configuration BuildClipboardPreferences() => config with
+    {
+        AutoCopy = AutoCopy.IsChecked == true, ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true,
+        SyncMinutes = int.Parse(SyncDuration.Text)
+    };
+    private void SaveHotkeys_Click(object sender, RoutedEventArgs e) => SaveScenarioSettings(BuildHotkeySettings);
+    private void SavePreferences_Click(object sender, RoutedEventArgs e) => SaveScenarioSettings(BuildClipboardPreferences);
     private void Export_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -703,7 +792,8 @@ public partial class MainWindow : Window
         if (exiting) return;
         exiting = true;
         var layout = reader.Layout();
-        EmergencyPause("已退出"); clipboardTimer.Stop(); guardTimer.Stop();
+        EmergencyPause("已退出"); clipboardTimer.Stop(); guardTimer.Stop(); layoutSaveTimer.Stop();
+        if (isolatedWorkspaceTest) { reader.Finish(); backend.Dispose(); return; }
         hotkeys?.Dispose();
         if (clipboardListenerReady) Native.RemoveClipboardFormatListener(handle);
         if (sessionListenerReady) Native.WTSUnRegisterSessionNotification(handle);

@@ -22,6 +22,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Contains("--focus-host")) return FocusHost.Run(args.Contains("--exclusive-reader"));
+        if (args.Contains("--capture-host")) return CaptureSelectionHost.Run();
+        if (args.Contains("--diagnose-public-algorithm")) return AlgorithmDiagnostic.Run(args);
         var tests = new List<(string, Action)>();
         ScenarioTests.Add(tests);
         tests.Add(("Exclusive reader keys own complete cycles without repeats or modifier replay", () =>
@@ -142,8 +144,11 @@ internal static class Program
             var app = new App(isolatedTestHost: true); app.InitializeComponent();
             var window = new MainWindow();
             var tabs = (TabControl)window.FindName("MainTabs");
-            Assert(tabs.Items.Count == 3);
-            Assert(((ItemsControl)window.FindName("SceneButtons")).Items.Count == 3);
+            Assert(tabs.Items.Count == 4);
+            Assert(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] { "模型", "场景", "快捷键", "更多" }));
+            Assert(window.FindName("QuestionBox") is null && window.FindName("AnswerText") is null);
+            Assert(((Expander)window.FindName("QuickSetup")).IsExpanded);
+            Assert(((ComboBox)window.FindName("ScenePicker")).Items.Count == 3);
             Assert(((ItemsControl)window.FindName("HotkeyRows")).Items.Count == HotkeyDefaults.All.Length + 3);
             Assert(!((Expander)window.FindName("BackendSettings")).IsExpanded);
             Assert(!((Expander)window.FindName("CaptureSettings")).IsExpanded);
@@ -157,18 +162,17 @@ internal static class Program
             System.Windows.Documents.TextElement.SetFontFamily(surface, window.FontFamily);
             System.Windows.Documents.TextElement.SetFontSize(surface, window.FontSize);
             var renderIndex = Array.IndexOf(args, "--render-dir");
-            for (var i = 0; i < tabs.Items.Count + 3; i++)
+            for (var i = 0; i < 9; i++)
             {
-                tabs.SelectedIndex = Math.Min(i, tabs.Items.Count - 1);
-                var sceneSection = (Expander)window.FindName("SceneSettings");
-                var keySection = (Expander)window.FindName("HotkeySettings");
-                sceneSection.IsExpanded = i == 3; keySection.IsExpanded = i >= 4;
-                if (i >= 3) (i == 3 ? sceneSection : keySection).BringIntoView();
-                surface.Measure(new Size(904, 780)); surface.Arrange(new Rect(0, 0, 904, 780)); surface.UpdateLayout();
-                if (i == 5)
+                tabs.SelectedIndex = i < 4 ? i : i == 4 ? 0 : i == 5 ? 3 : i - 6;
+                if (i == 4) { ((Expander)window.FindName("QuickSetup")).IsExpanded = false; ((Expander)window.FindName("BackendSettings")).IsExpanded = true; }
+                if (i == 5) ((Expander)window.FindName("CaptureSettings")).IsExpanded = true;
+                var size = i < 6 ? new Size(904, 780) : new Size(784, 640);
+                surface.Measure(size); surface.Arrange(new Rect(new Point(), size)); surface.UpdateLayout();
+                if (i == 2)
                 {
                     var rows = (ItemsControl)window.FindName("HotkeyRows");
-                    var scroll = (ScrollViewer)((TabItem)tabs.Items[2]).Content;
+                    var scroll = (ScrollViewer)window.FindName("HotkeyScroll");
                     scroll.ScrollToVerticalOffset(rows.TransformToAncestor((Visual)scroll.Content).Transform(new Point()).Y);
                     surface.UpdateLayout();
                     var row = ((IEnumerable<HotkeyEditorRow>)rows.ItemsSource).First();
@@ -179,26 +183,35 @@ internal static class Program
                     mode.SelectedValue = HotkeyMode.Combination; surface.UpdateLayout();
                     Assert(row.Mode == HotkeyMode.Combination && row.Gesture == row.Default.Gesture);
                 }
-                Assert(surface.ActualWidth == 904 && surface.ActualHeight == 780 && root.ActualWidth > 0);
+                Assert(surface.ActualWidth == size.Width && surface.ActualHeight == size.Height && root.ActualWidth > 0);
+                if (i >= 6)
+                {
+                    var save = (Button)window.FindName(new[] { "SaveModelButton", "SaveSceneButton", "SaveHotkeysButton" }[i - 6]);
+                    var point = save.TransformToAncestor(surface).Transform(new Point());
+                    // Detached rendering has no visible HWND; verify arranged controls within the viewport.
+                    Assert(save.Visibility == Visibility.Visible && save.ActualHeight > 0 && point.Y >= 0 && point.Y + save.ActualHeight <= size.Height);
+                }
                 if (renderIndex >= 0 && renderIndex + 1 < args.Length)
                 {
                     Directory.CreateDirectory(args[renderIndex + 1]);
-                    var bitmap = new RenderTargetBitmap(904, 780, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
+                    var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
                     var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                     using var file = File.Create(Path.Combine(args[renderIndex + 1], $"ui-{i}.png")); encoder.Save(file);
                 }
             }
-            var question = (TextBox)window.FindName("QuestionBox");
-            var answer = (TextBox)window.FindName("AnswerText");
-            Assert(!question.IsUndoEnabled && !answer.IsUndoEnabled);
+            var reader = window.WorkspaceWindow;
+            var question = (TextBox)reader.FindName("DraftText");
+            var answer = (AnswerView)reader.FindName("Answer");
+            Assert(!question.IsUndoEnabled);
             var key = (PasswordBox)window.FindName("QuickApiKey");
             var advancedKey = (PasswordBox)window.FindName("ApiKey");
-            question.Text = "synthetic question"; answer.Text = "synthetic answer";
+            question.Text = "synthetic question"; answer.Render("synthetic answer");
             key.Password = "synthetic-key"; advancedKey.Password = "synthetic-key";
             window.EmergencyPause("synthetic pause");
             Assert(question.Text == "" && answer.Text == "" && key.Password == "" && advancedKey.Password == "");
             Assert(((Button)window.FindName("ResumeButton")).Visibility == Visibility.Visible);
         }));
+        WorkspaceTests.Add(tests, args);
         if (args.Contains("--interactive")) tests.Add(("Protection attributes and no-activate styles on an interactive desktop", () =>
         {
             var window = new Window { ShowActivated = false, ShowInTaskbar = false, Topmost = true, Width = 200, Height = 120 };

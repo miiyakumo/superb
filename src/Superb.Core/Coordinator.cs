@@ -16,6 +16,7 @@ public sealed class Coordinator(IBackendClient client)
     public RunState Mode { get; private set; } = RunState.Paused;
     public Attempt? Current { get; private set; }
     public RequestState State { get; private set; } = RequestState.Idle;
+    public RequestUpdate? Latest { get; private set; }
     public event Action<RequestUpdate>? Updated;
     public bool IsCurrent(Attempt attempt) => Current?.Id == attempt.Id && attempt.Generation == generation && Mode == RunState.Ready;
 
@@ -30,7 +31,20 @@ public sealed class Coordinator(IBackendClient client)
         currentCancellation?.Cancel();
         currentCancellation = null;
         Current = null;
+        Latest = null;
         State = RequestState.Cancelled;
+    }
+    // Keep a frozen, explicitly incomplete answer while invalidating every queued transport event.
+    public void Stop()
+    {
+        if (Current is null || State is RequestState.Completed or RequestState.Failed or RequestState.Cancelled) return;
+        var prior = Latest;
+        var attempt = Current;
+        Invalidate();
+        Current = attempt with { Generation = generation };
+        State = RequestState.Cancelled;
+        Latest = new(Current, State, prior?.Text ?? "");
+        Updated?.Invoke(Latest);
     }
     public async Task RunAsync(PreparedRequest request, bool automatic = false, SyncGrant? grant = null)
     {
@@ -47,7 +61,8 @@ public sealed class Coordinator(IBackendClient client)
         {
             if (!IsCurrent(attempt)) return;
             State = state;
-            Updated?.Invoke(new(attempt, state, output.ToString(), code));
+            Latest = new(attempt, state, output.ToString(), code);
+            Updated?.Invoke(Latest);
         }
         try
         {
@@ -61,6 +76,7 @@ public sealed class Coordinator(IBackendClient client)
                 if (!IsCurrent(attempt)) return;
                 cts.Token.ThrowIfCancellationRequested();
                 if (item.Waiting) Emit(RequestState.Waiting);
+                if (item.Thinking && output.Length == 0 && State != RequestState.Thinking) Emit(RequestState.Thinking);
                 if (item.Delta is { } delta)
                 {
                     if ((long)output.Length + delta.Length > request.Backend.MaxOutputChars) throw new SafeFailure("output_too_large");
@@ -72,6 +88,7 @@ public sealed class Coordinator(IBackendClient client)
             if (!IsCurrent(attempt)) return;
             cts.Token.ThrowIfCancellationRequested();
             if (!complete) throw new SafeFailure("stream_incomplete");
+            if (string.IsNullOrWhiteSpace(output.ToString())) throw new SafeFailure("response_empty");
             Emit(RequestState.Completed);
         }
         catch (OperationCanceledException) { Emit(RequestState.Failed, "request_timed_out"); }

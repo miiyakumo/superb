@@ -12,6 +12,14 @@ internal sealed class ImageProcessor : IImageProcessor
     public Payload Apply(Payload input, ProcessStep step)
     {
         if (!input.HasImage) throw new SafeFailure("image_required_for_step");
+        if (!input.AdditionalImages.IsDefaultOrEmpty)
+        {
+            // Apply every crop/mask/resize to every image, atomically. A required failure on any
+            // image blocks the batch; originals are never appended alongside processed images.
+            var images = input.Images.Select(i => Apply(new Payload(null, i.Png, i.Width, i.Height), step)).ToArray();
+            return images[0] with { Text = input.Text,
+                AdditionalImages = images.Skip(1).Select(i => new PayloadImage(i.Png, i.Width, i.Height)).ToImmutableArray() };
+        }
         BitmapSource bitmap = Decode(input.Png);
         if (step.Kind == StepKind.Resize)
         {

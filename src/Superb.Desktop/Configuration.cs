@@ -7,7 +7,7 @@ using Superb.Desktop.Platform;
 
 namespace Superb.Desktop;
 
-internal sealed record PanelLayout(double Left = 80, double Top = 80, double Width = 540, double Height = 620, double FontSize = 16, bool Visible = false);
+internal sealed record PanelLayout(double Left = 80, double Top = 80, double Width = 600, double Height = 740, double FontSize = 18, bool Visible = false, double BackgroundOpacity = 1);
 internal sealed record Configuration
 {
     public int SchemaVersion { get; init; } = 2;
@@ -53,9 +53,16 @@ internal sealed record Configuration
             }
         }).ToImmutableArray();
         else foreach (var key in keys) if (key.Enabled) { var gesture = HotkeyDefaults.Parse(key); used.Add((gesture.Key, gesture.Modifiers)); }
+        // Existing scene keys reserve their gestures before new actions are introduced.
+        var scenes = legacy ? Scenes.Select(s => s with { Trigger = Reserve(s.Trigger) }).ToImmutableArray() : Scenes;
+        if (!legacy) foreach (var scene in scenes)
+            if (scene.Trigger.Enabled) { var gesture = HotkeyDefaults.Parse(scene.Trigger); used.Add((gesture.Key, gesture.Modifiers)); }
         foreach (var key in HotkeyDefaults.All)
             if (!keys.Any(k => k.Action == key.Action)) keys = keys.Add(Reserve(key));
-        var scenes = legacy ? Scenes.Select(s => s with { Trigger = Reserve(s.Trigger) }).ToImmutableArray() : Scenes;
+        // Upgrade only the untouched stock prompt; retain user prompts, routes and generation limits.
+        if (scenes.Any(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt))
+            scenes = scenes.Select(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt
+                ? scene with { SystemPrompt = SceneDefaults.AlgorithmPrompt } : scene).ToImmutableArray();
         return this with { SchemaVersion = 2, Hotkeys = keys, Scenes = scenes, ExclusiveHotkeysEnabled = ExclusiveHotkeysEnabled || ExclusiveReaderKeys, ExclusiveReaderKeys = false };
     }
     public static JsonSerializerOptions Json { get; } = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
@@ -85,7 +92,8 @@ internal sealed record Configuration
                 string.IsNullOrWhiteSpace(scene.Name) || scene.Name.Length > 80 || scene.SystemPrompt is null || scene.SystemPrompt.Length > 16000 ||
                 scene.UserTemplate is null || scene.UserTemplate.Length > 16000 || !scene.UserTemplate.Contains("{input}", StringComparison.Ordinal) ||
                 !Enum.IsDefined(scene.Input) || scene.Trigger is null || scene.Trigger.Action != scene.Action || scene.Model is null || scene.Model.Length > 256 ||
-                (scene.Temperature is { } temp && (!double.IsFinite(temp) || temp is < 0 or > 2)) || (scene.MaxTokens is { } tokens && tokens is < 1 or > 32768))
+                (scene.Temperature is { } temp && (!double.IsFinite(temp) || temp is < 0 or > 2)) ||
+                (scene.MaxTokens is { } tokens && tokens is < 1 or > Policy.MaximumDeepSeekOutputTokens))
                 throw new SafeFailure("scene_invalid");
             if (scene.BackendId is not null && !Backends.Any(b => b.Id == scene.BackendId)) throw new SafeFailure("scene_backend_missing");
         }
@@ -94,7 +102,8 @@ internal sealed record Configuration
         foreach (var id in new[] { SelectedBackendId, Routing.TextBackendId, Routing.ImageBackendId }.Where(x => !string.IsNullOrEmpty(x)))
             if (!Backends.Any(x => x.Id == id)) throw new SafeFailure("route_backend_missing");
         if (!double.IsFinite(Panel.Left) || !double.IsFinite(Panel.Top) || !double.IsFinite(Panel.Width) || !double.IsFinite(Panel.Height) ||
-            Panel.Width is < 360 or > 1800 || Panel.Height is < 240 or > 1600 || Panel.FontSize is < 11 or > 36 || !double.IsFinite(Panel.FontSize))
+            Panel.Width is < 360 or > 1800 || Panel.Height is < 240 or > 1600 || Panel.FontSize is < 11 or > 36 || !double.IsFinite(Panel.FontSize) ||
+            !double.IsFinite(Panel.BackgroundOpacity) || Panel.BackgroundOpacity is < 0.25 or > 1)
             throw new SafeFailure("panel_layout_invalid");
     }
     public void Save()

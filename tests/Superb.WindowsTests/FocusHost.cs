@@ -72,6 +72,7 @@ internal static class FocusHost
                 case "pageUp": reader.Page(false); break;
                 case "pause": reader.Clear(); break;
                 case "settings": control.Show(); control.Activate(); break;
+                case "interact": reader.SetMode(!reader.Interactive); break;
                 // The remaining registrations are observable without production side effects.
             }
         }
@@ -94,13 +95,14 @@ internal static class FocusHost
         object State()
         {
             reader.UpdateLayout();
-            var view = (FlowDocumentScrollViewer)reader.FindName("Reader");
+            var view = ((AnswerView)reader.FindName("Answer")).Reader;
             var scroll = Find<ScrollViewer>(view);
             var affinityReadable = Native.GetWindowDisplayAffinity(hwnd, out var affinity);
             var compositionResult = Native.DwmIsCompositionEnabled(out var compositionEnabled);
             return new
             {
                 hwnd = hwnd.ToInt64(), foreground = GetForegroundWindow().ToInt64(), visible = reader.IsVisible,
+                interactiveMode = reader.Interactive, clickThrough = reader.ClickThrough, draft = reader.Draft,
                 controlVisible = control.IsVisible, exclusiveReaderKeys, conflictReserved,
                 sceneRequests = endpoint.Requests.ToArray(), sceneCompletions, sceneErrors, endpointError = endpoint.Error,
                 bindings = configuration.AllHotkeys().ToArray(), sceneDefinitions = configuration.Scenes,
@@ -111,6 +113,7 @@ internal static class FocusHost
                 registrationErrors = hotkeys.RegistrationErrors, lastWorkerStopped = hotkeys.LastWorkerStopped,
                 scrollOffset = scroll?.VerticalOffset ?? 0, scrollableHeight = scroll?.ScrollableHeight ?? 0,
                 points = new { body = Point(view), hide = Point(Find<Button>(reader, b => Equals(b.Content, "收起"))),
+                    edit = Point(Find<Button>(reader, b => Equals(b.Content, "编辑") || Equals(b.Content, "完成编辑"))),
                     settings = Point(Find<Button>(reader, b => Equals(b.Content, "设置"))), pause = Point(Find<Button>(reader, b => Equals(b.Content, "暂停"))) },
                 os = Environment.OSVersion.VersionString, sessionId = System.Diagnostics.Process.GetCurrentProcess().SessionId,
                 interactive = Environment.UserInteractive, screen = new { width = area.Width, height = area.Height }
@@ -138,6 +141,9 @@ internal static class FocusHost
                                 case "render": reader.Render(text, "Synthetic focus test"); break;
                                 case "pageDown": reader.Page(true); break;
                                 case "pageUp": reader.Page(false); break;
+                                case "edit": reader.SetMode(true); break;
+                                case "read": reader.SetMode(false); break;
+                                case "through": reader.SetMode(false, true); break;
                                 case "control": Action("settings"); break;
                                 case "closeControl": control.Hide(); break;
                                 case "exclusiveOn":

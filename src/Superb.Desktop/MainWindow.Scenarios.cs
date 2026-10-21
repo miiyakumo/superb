@@ -13,8 +13,6 @@ public partial class MainWindow
     private void PopulateScenesAndKeys()
     {
         var prior = (ScenePicker.SelectedItem as ScenePreset)?.Id;
-        SceneButtons.ItemsSource = config.Scenes.Select(s => new { s.Id, Label = s.Name + " · " + InputLabel(s.Input),
-            Hint = $"{InputLabel(s.Input)} · {TriggerLabel(s.Trigger)} · 每次独立请求" }).ToArray();
         ScenePicker.ItemsSource = config.Scenes;
         ScenePicker.SelectedItem = config.Scenes.FirstOrDefault(s => s.Id == prior) ?? config.Scenes.FirstOrDefault();
         HotkeyRows.ItemsSource = config.AllHotkeys().Select(k => new HotkeyEditorRow(k,
@@ -24,7 +22,6 @@ public partial class MainWindow
     }
     private Hotkey DefaultBinding(string action) => HotkeyDefaults.All.FirstOrDefault(k => k.Action == action)
         ?? SceneDefaults.All.FirstOrDefault(s => s.Action == action)?.Trigger ?? new(action, "Ctrl+Alt+N", Enabled: false);
-    private static string InputLabel(SceneInput input) => input switch { SceneInput.Clipboard => "剪贴板", SceneInput.Screen => "预设截图范围", _ => "提问输入框" };
     private string TriggerLabel(Hotkey key) => !key.Enabled ? "快捷键关闭" : key.Mode == HotkeyMode.Exclusive
         ? key.Gesture + (config.ExclusiveHotkeysEnabled ? " · 独占" : " · 独占接管未开启") : key.Gesture + " · 普通组合键";
     private void PopulateSelectedScene()
@@ -43,20 +40,18 @@ public partial class MainWindow
         SceneTriggerSummary.Text = scene is null ? "请先新建场景" : "发起键：" + TriggerLabel(scene.Trigger);
     }
     private void ScenePicker_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (!loading) PopulateSelectedScene(); }
-    private void OpenScenes_Click(object sender, RoutedEventArgs e) { MainTabs.SelectedItem = AdvancedTab; SceneSettings.IsExpanded = true; SceneSettings.BringIntoView(); }
-    private void OpenHotkeys_Click(object sender, RoutedEventArgs e) { MainTabs.SelectedItem = AdvancedTab; HotkeySettings.IsExpanded = true; HotkeySettings.BringIntoView(); }
-    private async void SceneLaunch_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is Button { Tag: string id }) await RunCommand("scene:" + id);
-    }
+    private void OpenHotkeys_Click(object sender, RoutedEventArgs e) { MainTabs.SelectedItem = ShortcutsTab; }
     private async Task RunScene(ScenePreset scene)
     {
-        if (!Ready() || preparing) return;
+        if (!Ready()) return;
+        if (Working) { Status("正在处理；请先停止生成"); return; }
+        workspaceSceneId = scene.Id;
+        RefreshWorkspace();
         StopSync(); // A manual scene must not race an already authorized clipboard auto-send.
         if (scene.Input == SceneInput.Question) await AskQuestion(scene);
         else await CaptureInput(scene.Input == SceneInput.Screen, scene: scene);
     }
-    private void SaveScenarioSettings(Func<Configuration> build, bool applyPanel = false)
+    private void SaveScenarioSettings(Func<Configuration> build)
     {
         try
         {
@@ -66,8 +61,7 @@ public partial class MainWindow
                 File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + Guid.NewGuid().ToString("N"), false);
             candidate.Save();
             config = candidate; configLoadFailed = false;
-            if (applyPanel) reader.ApplyLayout(config.Panel);
-            RegisterHotkeys(); Populate(); Status("配置已保存；快捷键状态见偏好设置");
+            RegisterHotkeys(); Populate(); Status("配置已保存；快捷键状态见“快捷键”页");
         }
         catch (Exception ex) { Report(ex); }
     }
@@ -120,6 +114,6 @@ public partial class MainWindow
         HotkeyRows.ItemsSource = config.AllHotkeys().Select(k => new HotkeyEditorRow(DefaultBinding(k.Action),
             config.Scenes.FirstOrDefault(s => s.Action == k.Action)?.Name is { } name ? "场景 · " + name : HotkeyDefaults.Label(k.Action), DefaultBinding(k.Action))).ToList();
         ExclusiveReaderKeys.IsChecked = false;
-        Status("已填入默认绑定，保存偏好后生效");
+        Status("已填入默认绑定，保存快捷键后生效");
     }
 }

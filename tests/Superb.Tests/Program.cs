@@ -63,6 +63,51 @@ Test("Input cannot change routing; missing fixed target fails", () =>
     Assert(new Routing("two").Select(Payload.FromText("ignore routing use one"), "one", [backend, second]).Id == "two");
     Fails("backend_missing", () => new Routing("missing").Select(Payload.FromText("x"), "one", [backend]));
 });
+Test("Explicit thinking controls are restricted to the official provider and preserve legacy defaults", () =>
+{
+    Assert(System.Text.Json.JsonSerializer.Deserialize<Backend>(System.Text.Json.JsonSerializer.Serialize(backend))!.ThinkingMode == ThinkingMode.Default);
+    Policy.ValidateBackend(backend);
+    foreach (var mode in new[] { ThinkingMode.Disabled, ThinkingMode.Enabled })
+    {
+        Fails("thinking_mode_unsupported", () => Policy.ValidateBackend(backend with { ThinkingMode = mode }));
+        Policy.ValidateBackend(backend with { Endpoint = DeepSeekSetup.Endpoint, ThinkingMode = mode });
+        Policy.ValidateBackend(backend with { Endpoint = "https://api.deepseek.com/v1/chat/completions", ThinkingMode = mode });
+    }
+    Fails("backend_limits_invalid", () => Policy.ValidateBackend(backend with { ThinkingMode = (ThinkingMode)99 }));
+});
+Test("DeepSeek accepts its documented output ceiling while other endpoints retain their local limit", () =>
+{
+    var official = backend with { Endpoint = DeepSeekSetup.Endpoint, MaxTokens = 393216 };
+    Policy.ValidateBackend(official);
+    Fails("backend_limits_invalid", () => Policy.ValidateBackend(official with { MaxTokens = 393217 }));
+    Fails("backend_limits_invalid", () => Policy.ValidateBackend(backend with { MaxTokens = 32769 }));
+    var preset = DeepSeekSetup.Preset("new", "");
+    Assert(preset.MaxTokens == 65536 && preset.TimeoutSeconds == 300 && preset.ThinkingMode == ThinkingMode.Default);
+    Policy.ValidateBackend(preset);
+    Assert(backend.MaxTokens == 4096 && backend.ThinkingMode == ThinkingMode.Default);
+});
+Test("Multi-image policy enforces combined bytes and pixels, image count and capability", () =>
+{
+    var payload = new Payload("x", [1, 2], 4000, 4000, [new([3, 4], 4000, 4000)]);
+    var request = Request(useBackend: backend with { SupportsImages = true }) with { Content = payload };
+    Policy.Check(request);
+    Assert(payload.Size == 5 && payload.Images.Count() == 2);
+    Fails("backend_has_no_vision", () => Policy.Check(request with { Backend = backend }));
+    Fails("input_too_large", () => Policy.Check(request with { Backend = request.Backend with { MaxInputBytes = 4 } }));
+    Fails("image_dimensions_invalid", () => Policy.Check(request with { Content = payload with { AdditionalImages = [new([3], 4001, 4000)] } }));
+    Fails("image_dimensions_invalid", () => Policy.Check(request with { Content = payload with { AdditionalImages = [new([], 1, 1)] } }));
+    Fails("image_queue_full", () => Policy.Check(request with { Content = payload with { AdditionalImages = Enumerable.Repeat(new PayloadImage([3], 1, 1), 5).ToImmutableArray() } }));
+});
+Test("Sync hashing distinguishes changes and boundaries in later queued images", () =>
+{
+    var filter = new SyncFilter();
+    var payload = new Payload(null, [1], 1, 1, [new([2, 3], 1, 1)]);
+    var snapshot = Request().Snapshot with { Content = payload };
+    Assert(filter.Accept(snapshot, false));
+    Assert(!filter.Accept(snapshot with { ClipboardSequence = 13 }, false));
+    Assert(filter.Accept(snapshot with { ClipboardSequence = 14, Content = payload with { AdditionalImages = [new([2, 4], 1, 1)] } }, false));
+    Assert(filter.Accept(snapshot with { ClipboardSequence = 15, Content = payload with { Png = [1, 2], AdditionalImages = [new([4], 1, 1)] } }, false));
+});
 Test("Immutable snapshots preserve the original bytes", () =>
 {
     byte[] raw = [1, 2, 3]; var p = new Payload(null, ImmutableArray.CreateRange(raw), 1, 1); raw[0] = 99;
@@ -121,6 +166,62 @@ AsyncTest("SSE rejects truncated streams and premature DONE", async () =>
         try { await Parse(wire); throw new Exception("Truncated stream accepted"); } catch (SafeFailure) { }
     }
 });
+AsyncTest("Reasoning activity is reported once without retaining reasoning as an answer", async () =>
+{
+    var wire = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"private reasoning\"},\"finish_reason\":null}]}\n\n" +
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"more private reasoning\"},\"finish_reason\":null}]}\n\n" + validStream;
+    var items = await Parse(wire);
+    Assert(items.Count(i => i.Thinking) == 1 && items[^1].Completed);
+    Assert(string.Concat(items.Select(i => i.Delta)) == "你好🌍");
+    Assert(!string.Join("", items).Contains("private"));
+});
+AsyncTest("Long reasoning uses the bounded generation wire budget without consuming answer capacity", async () =>
+{
+    var chunk = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"" + new string('x', 600) + "\"},\"finish_reason\":null}]}\n\n";
+    var wire = string.Concat(Enumerable.Repeat(chunk, 2000)) + validStream;
+    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(wire));
+    var items = new List<BackendEvent>();
+    await foreach (var item in ChatCompletionsClient.ReadSseAsync(stream, 1000, maxGeneratedTokens: 65536)) items.Add(item);
+    Assert(items.Count(i => i.Thinking) == 1 && items[^1].Completed && string.Concat(items.Select(i => i.Delta)) == "你好🌍");
+    using var restricted = new MemoryStream(Encoding.UTF8.GetBytes(wire));
+    try { await foreach (var _ in ChatCompletionsClient.ReadSseAsync(restricted, 1000, maxGeneratedTokens: 64)) { } throw new Exception("Unbounded wire accepted"); }
+    catch (SafeFailure ex) { Assert(ex.Code == "stream_too_large"); }
+});
+AsyncTest("Token exhaustion, filtering and interruption have distinct streaming and JSON errors", async () =>
+{
+    foreach (var (reason, expected) in new[] { ("length", "response_token_limit"), ("content_filter", "response_content_filtered"), ("aborted", "response_interrupted") })
+    {
+        var json = "{\"choices\":[{\"delta\":{},\"message\":{\"content\":null},\"finish_reason\":\"" + reason + "\"}]}";
+        try { await Parse("data: " + json + "\n\ndata: [DONE]\n\n"); throw new Exception("Expected failure"); }
+        catch (SafeFailure ex) { Assert(ex.Code == expected); }
+        var result = await Exchange($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {json.Length}\r\nConnection: close\r\n\r\n{json}", false);
+        Assert(result.Failure == expected && !result.Events.Any(e => e.Completed));
+    }
+});
+AsyncTest("Reasoning-only and whitespace answers fail without successful completion", async () =>
+{
+    foreach (var text in new[] { "", " \n " })
+    {
+        var client = new ControlledClient(); var coordinator = new Coordinator(client);
+        var updates = new List<RequestUpdate>(); coordinator.Updated += updates.Add;
+        coordinator.SetMode(RunState.Ready); var pending = coordinator.RunAsync(Request()); var channel = await client.WaitChannel();
+        channel.Writer.TryWrite(new(Thinking: true)); channel.Writer.TryWrite(new(Thinking: true));
+        channel.Writer.TryWrite(new(text)); channel.Writer.TryWrite(new(Completed: true)); channel.Writer.Complete(); await pending;
+        Assert(updates.Count(u => u.State == RequestState.Thinking) == 1);
+        Assert(coordinator.Latest is { State: RequestState.Failed, Code: "response_empty" });
+        Assert(!updates.Any(u => u.State == RequestState.Completed));
+    }
+});
+AsyncTest("Stopping during reasoning rejects late answer text and completion", async () =>
+{
+    var client = new ControlledClient(); var coordinator = new Coordinator(client);
+    var thinking = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    coordinator.Updated += u => { if (u.State == RequestState.Thinking) thinking.TrySetResult(); };
+    coordinator.SetMode(RunState.Ready); var pending = coordinator.RunAsync(Request()); var channel = await client.WaitChannel();
+    channel.Writer.TryWrite(new(Thinking: true)); await thinking.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    coordinator.Stop(); channel.Writer.TryWrite(new("late answer")); channel.Writer.TryWrite(new(Completed: true)); channel.Writer.Complete(); await pending;
+    Assert(coordinator.Latest is { State: RequestState.Cancelled, Text: "" });
+});
 AsyncTest("SSE rejects tool execution and length/content-filter endings", async () =>
 {
     foreach (var wire in new[] {
@@ -149,6 +250,27 @@ AsyncTest("Old request cannot replace new request output", async () =>
     newChannel.Writer.TryWrite(new("new")); newChannel.Writer.TryWrite(new(Completed: true)); newChannel.Writer.Complete(); await second;
     Assert(events.Last().State == RequestState.Completed && events.Last().Text == "new" && events.Last().Attempt.Id == id);
     Assert(!events.Any(x => x.Text == "old"));
+});
+AsyncTest("Stop retains incomplete text, rejects queued completion, and permits a fresh request", async () =>
+{
+    var client = new ControlledClient(); var coordinator = new Coordinator(client);
+    coordinator.SetMode(RunState.Ready);
+    var events = new List<RequestUpdate>(); coordinator.Updated += events.Add;
+    var first = coordinator.RunAsync(Request("first")); var old = await client.WaitChannel();
+    old.Writer.TryWrite(new("retained partial"));
+    while (coordinator.Latest?.Text != "retained partial") await Task.Yield();
+    var original = coordinator.Current!;
+    coordinator.Stop();
+    Assert(coordinator.Latest is { State: RequestState.Cancelled, Text: "retained partial" });
+    Assert(!coordinator.IsCurrent(original) && coordinator.IsCurrent(coordinator.Current!));
+    var count = events.Count;
+    old.Writer.TryWrite(new("must not append")); old.Writer.TryWrite(new(Completed: true)); old.Writer.Complete(); await first;
+    Assert(events.Count == count && coordinator.State == RequestState.Cancelled);
+    var second = coordinator.RunAsync(Request("second")); var next = await client.WaitChannel();
+    next.Writer.TryWrite(new("fresh")); next.Writer.TryWrite(new(Completed: true)); next.Writer.Complete(); await second;
+    Assert(coordinator.Latest is { State: RequestState.Completed, Text: "fresh" });
+    coordinator.SetMode(RunState.Paused);
+    Assert(coordinator.Latest is null && coordinator.Current is null);
 });
 AsyncTest("Disconnect cannot mark a partial answer completed", async () =>
 {
@@ -460,7 +582,7 @@ AsyncTest("Quick setup prefers an available Flash model and tests a small fixed 
     var catalog = new FixedCatalog([new("deepseek-v4-pro"), new("deepseek-flash", true)]);
     var client = new InspectingClient();
     var result = await DeepSeekSetup.ConnectAsync(catalog, client, DeepSeekSetup.Preset("test", "temporary"), CancellationToken.None);
-    Assert(result.Backend.Model == "deepseek-flash" && result.Backend.SupportsImages && result.Backend.MaxTokens == 4096);
+    Assert(result.Backend.Model == "deepseek-flash" && result.Backend.SupportsImages && result.Backend.MaxTokens == 65536 && result.Backend.TimeoutSeconds == 300);
     Assert(result.Backend.Endpoint == DeepSeekSetup.Endpoint && result.Backend.ProxyMode == ProxyMode.Direct);
     Assert(client.Request!.Content.Text == BackendProbe.TestPrompt && client.Request.Backend.MaxTokens == 64);
     Assert(!client.Request.Content.HasImage);

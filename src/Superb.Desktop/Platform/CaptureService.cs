@@ -16,14 +16,7 @@ internal static class CaptureService
 {
     public static List<CaptureTarget> Enumerate()
     {
-        var targets = new List<CaptureTarget>();
-        Native.EnumDisplayMonitors(0, 0, (nint monitor, nint dc, ref Native.Rect r, nint data) =>
-        {
-            var info = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>(), Device = "" };
-            if (Native.GetMonitorInfo(monitor, ref info))
-                targets.Add(new(CaptureKind.Monitor, $"显示器 {info.Device} · {r.Width} × {r.Height}", ToRect(r), info.Device));
-            return true;
-        }, 0);
+        var targets = Monitors();
         Native.EnumWindows((hwnd, _) =>
         {
             Native.GetWindowThreadProcessId(hwnd, out var pid);
@@ -39,6 +32,30 @@ internal static class CaptureService
             return true;
         }, 0);
         return targets;
+    }
+    internal static List<CaptureTarget> Monitors()
+    {
+        var targets = new List<CaptureTarget>();
+        Native.EnumDisplayMonitors(0, 0, (nint monitor, nint dc, ref Native.Rect r, nint data) =>
+        {
+            var info = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>(), Device = "" };
+            if (Native.GetMonitorInfo(monitor, ref info))
+                targets.Add(new(CaptureKind.Monitor, $"显示器 {info.Device} · {r.Width} × {r.Height}", ToRect(r), info.Device));
+            return true;
+        }, 0);
+        return targets;
+    }
+    internal static CaptureTarget MonitorAt(Native.Point point, IEnumerable<CaptureTarget> monitors) => monitors.FirstOrDefault(m =>
+        point.X >= m.Bounds.X && point.Y >= m.Bounds.Y && point.X < (long)m.Bounds.X + m.Bounds.Width && point.Y < (long)m.Bounds.Y + m.Bounds.Height)
+        ?? throw new SafeFailure("capture_monitor_lost");
+    internal static CaptureTarget FromCorners(Native.Point first, Native.Point second, IEnumerable<CaptureTarget> monitors)
+    {
+        var display = MonitorAt(first, monitors);
+        if (MonitorAt(second, monitors).Device != display.Device) throw new SafeFailure("capture_cross_monitor");
+        var rect = new PixelRect(Math.Min(first.X, second.X), Math.Min(first.Y, second.Y), Math.Abs(first.X - second.X), Math.Abs(first.Y - second.Y));
+        if (rect.Width < 5 || rect.Height < 5) throw new SafeFailure("capture_region_too_small");
+        ImageProcessor.ValidateSize(rect.Width, rect.Height);
+        return display with { Kind = CaptureKind.Region, Bounds = rect, MonitorBounds = display.Bounds, Label = $"两点截图 · {rect.Width} × {rect.Height}" };
     }
     public static Payload Capture(CaptureTarget target)
     {
@@ -111,7 +128,7 @@ internal static class CaptureService
             if (ToRect(rect) != target.Bounds) throw new SafeFailure("capture_geometry_changed");
             return target.Bounds;
         }
-        var monitor = Enumerate().FirstOrDefault(x => x.Kind == CaptureKind.Monitor && x.Device == target.Device)
+        var monitor = Monitors().FirstOrDefault(x => x.Device == target.Device)
             ?? throw new SafeFailure("capture_monitor_lost");
         var b = target.Bounds;
         var m = monitor.Bounds;

@@ -48,6 +48,20 @@ internal static class ScenarioTests
             var restored = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(config, Configuration.Json), Configuration.Json)!.Migrate();
             restored.Validate(); Check(restored.Scenes[0] == config.Scenes[0] && restored.Hotkeys.SequenceEqual(config.Hotkeys));
         }));
+        tests.Add(("Only the stock algorithm prompt is upgraded; custom instructions and generation settings survive", () =>
+        {
+            var scene = SceneDefaults.All[1] with { SystemPrompt = SceneDefaults.LegacyAlgorithmPrompt, Model = "custom-model", MaxTokens = 1234,
+                Trigger = new("scene:algorithm", "Ctrl+Alt+Z") };
+            var config = new Configuration { Scenes = [scene] };
+            var migrated = config.Migrate();
+            Check(migrated.Scenes.Single() == scene with { SystemPrompt = SceneDefaults.AlgorithmPrompt });
+            Check(migrated.Migrate() == migrated);
+            var custom = scene with { SystemPrompt = "User supplied algorithm instructions" };
+            Check((config with { Scenes = [custom] }).Migrate().Scenes.Single() == custom);
+            var backend = new Backend("ds", "Synthetic", DeepSeekSetup.Endpoint, "deepseek-flash", "", ThinkingMode: ThinkingMode.Disabled);
+            var saved = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(new Configuration { Backends = [backend], SelectedBackendId = backend.Id }, Configuration.Json), Configuration.Json)!;
+            Check(saved.Backends.Single().ThinkingMode == ThinkingMode.Disabled);
+        }));
         tests.Add(("Duplicate keys across scenes and actions and reserved keys are rejected", () =>
         {
             var config = new Configuration();

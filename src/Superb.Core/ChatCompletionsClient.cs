@@ -38,7 +38,8 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
         {
             var parts = new List<object>();
             if (!string.IsNullOrEmpty(request.Content.Text)) parts.Add(new { type = "text", text = request.Content.Text });
-            parts.Add(new { type = "image_url", image_url = new { url = "data:image/png;base64," + Convert.ToBase64String(request.Content.Png.AsSpan()) } });
+            foreach (var image in request.Content.Images)
+                parts.Add(new { type = "image_url", image_url = new { url = "data:image/png;base64," + Convert.ToBase64String(image.Png.AsSpan()) } });
             content = parts;
         }
         var messages = new List<object>();
@@ -52,6 +53,8 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
             [backend.TokenLimitParameter == TokenLimitParameter.MaxCompletionTokens ? "max_completion_tokens" : "max_tokens"] = backend.MaxTokens
         };
         if (backend.SendTemperature) body["temperature"] = backend.Temperature;
+        if (backend.ThinkingMode != ThinkingMode.Default)
+            body["thinking"] = new { type = backend.ThinkingMode == ThinkingMode.Disabled ? "disabled" : "enabled" };
         message.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if ((int)response.StatusCode is >= 300 and < 400) throw new SafeFailure("redirect_blocked");
@@ -63,7 +66,7 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
             var mediaType = response.Content.Headers.ContentType?.MediaType;
             if (mediaType is "application/json" or "text/html" || mediaType?.EndsWith("+json", StringComparison.OrdinalIgnoreCase) == true)
                 throw new SafeFailure("stream_response_expected");
-            await foreach (var item in ReadSseAsync(stream, backend.MaxOutputChars, cancellationToken)) yield return item;
+            await foreach (var item in ReadSseAsync(stream, backend.MaxOutputChars, cancellationToken, backend.MaxTokens)) yield return item;
         }
         else
         {
@@ -114,19 +117,23 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
     }
 
     public static async IAsyncEnumerable<BackendEvent> ReadSseAsync(Stream stream, int maxOutputChars,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default, int maxGeneratedTokens = 0)
     {
         using var reader = new StreamReader(stream, new UTF8Encoding(false, true), false, 4096, leaveOpen: true);
         var line = new StringBuilder();
         var data = new StringBuilder();
         var chars = new char[2048];
         var total = 0L;
+        // Reasoning is discarded, but its streamed envelopes still consume wire bytes.
+        // Bound that overhead by the explicit generation budget rather than the answer-only cap.
+        var maximumWireBytes = Math.Max(maxOutputChars * 32L + 1_048_576, maxGeneratedTokens * 512L + 1_048_576);
         var finished = false;
+        var thinkingAnnounced = false;
         int count;
         while ((count = await reader.ReadAsync(chars.AsMemory(), cancellationToken)) != 0)
         {
             total += count;
-            if (total > maxOutputChars * 32L + 1_048_576) throw new SafeFailure("stream_too_large");
+            if (total > maximumWireBytes) throw new SafeFailure("stream_too_large");
             for (var i = 0; i < count; i++)
             {
                 var c = chars[i];
@@ -162,6 +169,13 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
                     var choice = choices[0];
                     var delta = choice.GetProperty("delta");
                     RejectToolCalls(delta);
+                    // Report activity without retaining or displaying private reasoning text.
+                    if (!thinkingAnnounced && delta.TryGetProperty("reasoning_content", out var reasoning) &&
+                        reasoning.ValueKind == JsonValueKind.String && reasoning.ValueEquals("") == false)
+                    {
+                        thinkingAnnounced = true;
+                        yield return new(Thinking: true);
+                    }
                     if (delta.TryGetProperty("content", out var token) && token.ValueKind == JsonValueKind.String)
                         yield return new(Delta: token.GetString());
                     if (choice.TryGetProperty("finish_reason", out var reason) && reason.ValueKind != JsonValueKind.Null)
@@ -176,8 +190,15 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
     }
     private static void CheckFinish(JsonElement choice)
     {
-        if (!choice.TryGetProperty("finish_reason", out var reason) || reason.GetString() != "stop")
-            throw new SafeFailure("response_not_complete");
+        var reason = choice.TryGetProperty("finish_reason", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        if (reason == "stop") return;
+        throw new SafeFailure(reason switch
+        {
+            "length" => "response_token_limit",
+            "content_filter" => "response_content_filtered",
+            "insufficient_system_resource" or "aborted" => "response_interrupted",
+            _ => "response_not_complete"
+        });
     }
     private static void RejectToolCalls(JsonElement content)
     {
