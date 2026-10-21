@@ -157,14 +157,28 @@ internal static class Program
             System.Windows.Documents.TextElement.SetFontFamily(surface, window.FontFamily);
             System.Windows.Documents.TextElement.SetFontSize(surface, window.FontSize);
             var renderIndex = Array.IndexOf(args, "--render-dir");
-            for (var i = 0; i < tabs.Items.Count + 2; i++)
+            for (var i = 0; i < tabs.Items.Count + 3; i++)
             {
                 tabs.SelectedIndex = Math.Min(i, tabs.Items.Count - 1);
                 var sceneSection = (Expander)window.FindName("SceneSettings");
                 var keySection = (Expander)window.FindName("HotkeySettings");
-                sceneSection.IsExpanded = i == 3; keySection.IsExpanded = i == 4;
+                sceneSection.IsExpanded = i == 3; keySection.IsExpanded = i >= 4;
                 if (i >= 3) (i == 3 ? sceneSection : keySection).BringIntoView();
                 surface.Measure(new Size(904, 780)); surface.Arrange(new Rect(0, 0, 904, 780)); surface.UpdateLayout();
+                if (i == 5)
+                {
+                    var rows = (ItemsControl)window.FindName("HotkeyRows");
+                    var scroll = (ScrollViewer)((TabItem)tabs.Items[2]).Content;
+                    scroll.ScrollToVerticalOffset(rows.TransformToAncestor((Visual)scroll.Content).Transform(new Point()).Y);
+                    surface.UpdateLayout();
+                    var row = ((IEnumerable<HotkeyEditorRow>)rows.ItemsSource).First();
+                    var presenter = (ContentPresenter)rows.ItemContainerGenerator.ContainerFromIndex(0);
+                    var editor = FindControl<TextBox>(presenter)!; var mode = FindControl<ComboBox>(presenter)!;
+                    row.Mode = HotkeyMode.Exclusive; row.Gesture = "F2"; surface.UpdateLayout();
+                    Assert(editor.Text == "F2" && Equals(mode.SelectedValue, HotkeyMode.Exclusive));
+                    mode.SelectedValue = HotkeyMode.Combination; surface.UpdateLayout();
+                    Assert(row.Mode == HotkeyMode.Combination && row.Gesture == row.Default.Gesture);
+                }
                 Assert(surface.ActualWidth == 904 && surface.ActualHeight == 780 && root.ActualWidth > 0);
                 if (renderIndex >= 0 && renderIndex + 1 < args.Length)
                 {
@@ -215,6 +229,13 @@ internal static class Program
         }
         Console.WriteLine($"{tests.Count - failures}/{tests.Count} passed; capture-chain verification requires manual evidence.");
         return failures == 0 ? 0 : 1;
+    }
+    private static T? FindControl<T>(DependencyObject root) where T : DependencyObject
+    {
+        if (root is T match) return match;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            if (FindControl<T>(VisualTreeHelper.GetChild(root, i)) is { } found) return found;
+        return null;
     }
     private static async Task TestSavedBackend(CredentialStore store, string reference)
     {

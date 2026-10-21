@@ -47,6 +47,7 @@ public static class ConnectionDiagnostics
         "model_list_empty" => "此账户没有可用模型；请检查模型权限。",
         "model_list_invalid" => "模型列表格式不正确；请在高级连接设置中手动配置。",
         "probe_empty_response" => "连接成功但未收到文本；请在高级连接设置中检查模型与生成参数。",
+        "config_too_large" => "配置文件超过 1 MiB，请缩短提示词、模板或减少场景后再保存。",
         "scene_invalid" => "场景配置无效；检查名称、模板中的 {input}、温度和 token 上限。",
         "scene_backend_missing" => "场景指定的后端不存在，请重新选择并保存。",
         "scene_missing" => "场景已不存在，请重新选择。",

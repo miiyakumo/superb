@@ -31,12 +31,32 @@ internal sealed record Configuration
     {
         if (SchemaVersion is not (1 or 2)) throw new SafeFailure("config_invalid");
         if (Hotkeys.IsDefault || Scenes.IsDefault) throw new SafeFailure("config_invalid");
+        var legacy = SchemaVersion == 1;
         var keys = Hotkeys;
+        var used = new HashSet<(System.Windows.Input.Key, System.Windows.Input.ModifierKeys)>();
+        Hotkey Reserve(Hotkey key)
+        {
+            var gesture = HotkeyDefaults.Parse(key);
+            return key.Enabled && !used.Add((gesture.Key, gesture.Modifiers)) ? key with { Enabled = false } : key;
+        }
         if (ExclusiveReaderKeys)
             keys = keys.Select(k => k.Action is "toggle" or "pageDown" or "pageUp" ? k with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(k.Action) } : k).ToImmutableArray();
+        if (legacy) keys = keys.Select(key =>
+        {
+            try { return Reserve(key); }
+            catch (SafeFailure)
+            {
+                // Retain a syntactically valid old binding for correction, but do not newly take it over.
+                var gesture = HotkeyDefaults.Parse(key with { Enabled = false });
+                var disabled = key with { Enabled = false, Mode = gesture.Modifiers == System.Windows.Input.ModifierKeys.None ? HotkeyMode.Exclusive : key.Mode };
+                return disabled;
+            }
+        }).ToImmutableArray();
+        else foreach (var key in keys) if (key.Enabled) { var gesture = HotkeyDefaults.Parse(key); used.Add((gesture.Key, gesture.Modifiers)); }
         foreach (var key in HotkeyDefaults.All)
-            if (!keys.Any(k => k.Action == key.Action)) keys = keys.Add(key);
-        return this with { SchemaVersion = 2, Hotkeys = keys, ExclusiveHotkeysEnabled = ExclusiveHotkeysEnabled || ExclusiveReaderKeys, ExclusiveReaderKeys = false };
+            if (!keys.Any(k => k.Action == key.Action)) keys = keys.Add(Reserve(key));
+        var scenes = legacy ? Scenes.Select(s => s with { Trigger = Reserve(s.Trigger) }).ToImmutableArray() : Scenes;
+        return this with { SchemaVersion = 2, Hotkeys = keys, Scenes = scenes, ExclusiveHotkeysEnabled = ExclusiveHotkeysEnabled || ExclusiveReaderKeys, ExclusiveReaderKeys = false };
     }
     public static JsonSerializerOptions Json { get; } = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
     public static string FilePath { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Superb", "settings.json");
@@ -80,9 +100,11 @@ internal sealed record Configuration
     public void Save()
     {
         Validate();
+        var json = JsonSerializer.Serialize(this, Json);
+        if (System.Text.Encoding.UTF8.GetByteCount(json) > 1_048_576) throw new SafeFailure("config_too_large");
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
         var temp = FilePath + ".new";
-        File.WriteAllText(temp, JsonSerializer.Serialize(this, Json));
+        File.WriteAllText(temp, json);
         File.Move(temp, FilePath, true);
     }
 }

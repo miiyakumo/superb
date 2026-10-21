@@ -104,7 +104,7 @@ public partial class MainWindow : Window
             if (!configLoadFailed)
                 Status(config.Backends.IsDefaultOrEmpty
                     ? "填入 DeepSeek 密钥，即可开始提问"
-                    : "已就绪 · Ctrl+Alt+1 问剪贴板，Ctrl+Alt+2 问预设区域");
+                    : "已就绪 · 可使用场景入口或已启用的快捷键");
         }
         guardTimer.Start();
     }
@@ -678,7 +678,7 @@ public partial class MainWindow : Window
         candidate.Validate(); config = candidate;
         });
     }
-    private void SavePreferences_Click(object sender, RoutedEventArgs e) => Mutate(() =>
+    private void SavePreferences_Click(object sender, RoutedEventArgs e) => SaveScenarioSettings(() =>
     {
         var bindings = ((IEnumerable<HotkeyEditorRow>)HotkeyRows.ItemsSource).Select(r => r.Binding()).ToArray();
         var candidate = config with { Hotkeys = bindings.Where(k => !k.Action.StartsWith("scene:")).ToImmutableArray(),
@@ -686,8 +686,8 @@ public partial class MainWindow : Window
             AutoCopy = AutoCopy.IsChecked == true, ExclusiveHotkeysEnabled = ExclusiveReaderKeys.IsChecked == true,
             ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true, SyncMinutes = int.Parse(SyncDuration.Text),
             Panel = reader.Layout() with { FontSize = double.Parse(PanelFont.Text) } };
-        candidate.Validate(); config = candidate; reader.ApplyLayout(config.Panel); RegisterHotkeys();
-    });
+        return candidate;
+    }, applyPanel: true);
     private void Export_Click(object sender, RoutedEventArgs e)
     {
         try

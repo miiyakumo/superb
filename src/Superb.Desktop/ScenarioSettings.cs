@@ -46,12 +46,14 @@ internal static class HotkeyDefaults
     };
     public static KeyGesture Parse(Hotkey binding)
     {
-        if (!Enum.IsDefined(binding.Mode) || string.IsNullOrWhiteSpace(binding.Action) || binding.Gesture.Length > 80)
+        if (!Enum.IsDefined(binding.Mode) || string.IsNullOrWhiteSpace(binding.Action) || string.IsNullOrWhiteSpace(binding.Gesture) || binding.Gesture.Length > 80)
             throw new SafeFailure("hotkey_invalid");
         KeyGesture gesture;
         try { gesture = (KeyGesture)new KeyGestureConverter().ConvertFromInvariantString(binding.Gesture)!; }
         catch { throw new SafeFailure("hotkey_invalid"); }
-        if (gesture is null || gesture.Key == Key.F12 || gesture.Modifiers.HasFlag(ModifierKeys.Windows)) throw new SafeFailure("hotkey_reserved");
+        if (gesture is null) throw new SafeFailure("hotkey_invalid");
+        if (!binding.Enabled) return gesture;
+        if (gesture.Key == Key.F12 || gesture.Modifiers.HasFlag(ModifierKeys.Windows)) throw new SafeFailure("hotkey_reserved");
         if (binding.Mode == HotkeyMode.Exclusive)
         {
             if (gesture.Modifiers != ModifierKeys.None || !(gesture.Key is >= Key.F1 and <= Key.F11 or >= Key.F13 and <= Key.F24))

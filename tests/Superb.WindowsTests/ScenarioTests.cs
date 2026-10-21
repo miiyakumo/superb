@@ -28,6 +28,17 @@ internal static class ScenarioTests
             Check(migrated.Hotkeys.Count(k => k.Action == "ask") == 1 && migrated.Scenes.Length == 3);
             Check(migrated.Migrate() == migrated);
         }));
+        tests.Add(("Migration retains old bindings when new default actions or scenes would collide", () =>
+        {
+            var old = new Configuration { SchemaVersion = 1, Hotkeys = HotkeyDefaults.All.Where(k => k.Action is not ("ask" or "retry" or "resume"))
+                .Select(k => k.Action == "copy" ? k with { Gesture = "Ctrl+Alt+C" } : k.Action == "send" ? k with { Gesture = "Ctrl+Alt+Enter" } : k).ToImmutableArray() };
+            var next = old.Migrate(); next.Validate();
+            Check(next.Hotkeys.Single(k => k.Action == "copy").Enabled && !next.Scenes.Single(s => s.Id == "coding").Trigger.Enabled);
+            Check(next.Hotkeys.Single(k => k.Action == "send").Enabled && !next.Hotkeys.Single(k => k.Action == "ask").Enabled);
+            var oldSingle = old with { Hotkeys = old.Hotkeys.Select(k => k.Action == "copy" ? k with { Gesture = "F9" } : k).ToImmutableArray() };
+            var migratedSingle = oldSingle.Migrate(); migratedSingle.Validate();
+            Check(migratedSingle.Hotkeys.Single(k => k.Action == "copy") is { Enabled: false, Mode: HotkeyMode.Exclusive, Gesture: "F9" });
+        }));
         tests.Add(("Custom exclusive keys and disabled scene bindings round-trip without changing prompts", () =>
         {
             var config = new Configuration { ExclusiveHotkeysEnabled = true };

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Superb.Core;
@@ -55,36 +56,53 @@ public partial class MainWindow
         if (scene.Input == SceneInput.Question) await AskQuestion(scene);
         else await CaptureInput(scene.Input == SceneInput.Screen, scene: scene);
     }
+    private void SaveScenarioSettings(Func<Configuration> build, bool applyPanel = false)
+    {
+        try
+        {
+            CancelProbe();
+            var candidate = build(); candidate.Validate();
+            if (configLoadFailed && File.Exists(Configuration.FilePath))
+                File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + Guid.NewGuid().ToString("N"), false);
+            candidate.Save();
+            config = candidate; configLoadFailed = false;
+            if (applyPanel) reader.ApplyLayout(config.Panel);
+            RegisterHotkeys(); Populate(); Status("配置已保存；快捷键状态见偏好设置");
+        }
+        catch (Exception ex) { Report(ex); }
+    }
+    private static double ParseSceneTemperature(string value) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : throw new SafeFailure("scene_invalid");
+    private static int ParseSceneTokens(string value) => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : throw new SafeFailure("scene_invalid");
     private void SaveScene_Click(object sender, RoutedEventArgs e)
     {
         if (ScenePicker.SelectedItem is not ScenePreset scene) return;
-        Mutate(() =>
+        SaveScenarioSettings(() =>
         {
             var updated = scene with { Name = SceneName.Text.Trim(), Input = (SceneInput)SceneInputPicker.SelectedIndex,
                 SystemPrompt = SceneSystemPrompt.Text, UserTemplate = SceneUserTemplate.Text,
                 BackendId = SceneBackendPicker.SelectedValue is string id && id.Length > 0 ? id : null,
-                Model = SceneModel.Text.Trim(), Temperature = string.IsNullOrWhiteSpace(SceneTemperature.Text) ? null : double.Parse(SceneTemperature.Text, CultureInfo.InvariantCulture),
-                MaxTokens = string.IsNullOrWhiteSpace(SceneTokens.Text) ? null : int.Parse(SceneTokens.Text, CultureInfo.InvariantCulture) };
+                Model = SceneModel.Text.Trim(), Temperature = string.IsNullOrWhiteSpace(SceneTemperature.Text) ? null : ParseSceneTemperature(SceneTemperature.Text),
+                MaxTokens = string.IsNullOrWhiteSpace(SceneTokens.Text) ? null : ParseSceneTokens(SceneTokens.Text) };
             var candidate = config with { Scenes = config.Scenes.Replace(scene, updated) };
-            candidate.Validate(); config = candidate;
+            return candidate;
         });
     }
     private void NewScene_Click(object sender, RoutedEventArgs e)
     {
         var scene = SceneDefaults.Custom();
-        Mutate(() => { var candidate = config with { Scenes = config.Scenes.Add(scene) }; candidate.Validate(); config = candidate; RegisterHotkeys(); });
+        SaveScenarioSettings(() => config with { Scenes = config.Scenes.Add(scene) });
         ScenePicker.SelectedItem = config.Scenes.FirstOrDefault(s => s.Id == scene.Id);
     }
-    private void RestoreMissingScenes_Click(object sender, RoutedEventArgs e) => Mutate(() =>
+    private void RestoreMissingScenes_Click(object sender, RoutedEventArgs e) => SaveScenarioSettings(() =>
     {
         var missing = SceneDefaults.All.Where(p => !config.Scenes.Any(s => s.Id == p.Id));
         var candidate = config with { Scenes = config.Scenes.AddRange(missing) };
-        candidate.Validate(); config = candidate; RegisterHotkeys();
+        return candidate;
     });
     private void DeleteScene_Click(object sender, RoutedEventArgs e)
     {
         if (ScenePicker.SelectedItem is not ScenePreset scene) return;
-        Mutate(() => { config = config with { Scenes = config.Scenes.Remove(scene) }; RegisterHotkeys(); });
+        SaveScenarioSettings(() => config with { Scenes = config.Scenes.Remove(scene) });
     }
     private void RestoreScene_Click(object sender, RoutedEventArgs e)
     {
