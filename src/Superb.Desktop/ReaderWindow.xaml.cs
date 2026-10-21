@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using Superb.Core;
 using Superb.Desktop.Platform;
@@ -36,6 +37,19 @@ public partial class ReaderWindow : Window
         ProtectionStatus.Text = "未验证 / 不支持 · 敏感显示已关闭";
         ProtectionLost?.Invoke();
         return false;
+    }
+    public new void Show()
+    {
+        new WindowInteropHelper(this).EnsureHandle();
+        if (!protection.RefreshDisplayAffinity()) { Clear(); ProtectionLost?.Invoke(); return; }
+        base.Show();
+        Check();
+    }
+    public new void Hide()
+    {
+        base.Hide();
+        if (protection.Handle != 0 && !protection.RefreshDisplayAffinity())
+        { Clear(); ProtectionLost?.Invoke(); }
     }
     public void Clear()
     {

@@ -18,9 +18,12 @@ internal sealed class Protection(Window window, bool noActivate)
         var enabled = 1;
         Native.DwmSetWindowAttribute(Handle, 11, ref enabled, sizeof(int)); // DISALLOW_PEEK
         Native.DwmSetWindowAttribute(Handle, 12, ref enabled, sizeof(int)); // EXCLUDED_FROM_PEEK
-        return OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000) &&
-               Native.SetWindowDisplayAffinity(Handle, 0x11) && Check();
+        return RefreshDisplayAffinity();
     }
+    // Explicit window visibility transitions can reset display affinity on Windows.
+    // Only restore it at those owned transitions; ordinary Check remains fail-closed.
+    public bool RefreshDisplayAffinity() => Handle != 0 && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000) &&
+        Native.SetWindowDisplayAffinity(Handle, 0x11) && Check();
     public bool Check() => Handle != 0 && Native.IsWindow(Handle) &&
         (!noActivate || (Native.GetWindowLongPtr(Handle, -20).ToInt64() & 0x08000080L) == 0x08000080L) &&
         Native.DwmIsCompositionEnabled(out var enabled) == 0 && enabled &&
