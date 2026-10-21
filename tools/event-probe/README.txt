@@ -31,7 +31,8 @@ Superb 本地网页事件测试台
   测试宿主使用真实 ReaderWindow、Protection、HotkeyManager，所有正文均为合成测试行。
   它不加载用户配置，不调用模型，不读写剪贴板，不保存密钥。
   “设置”按钮打开普通 WPF 对照窗口；它验证阅读窗口的点击/命令链，而不是完整 MainWindow 的初始化。
-  Windows 输入经 SendInput 注入；浏览器 isTrusted=true 仍不能说明真人硬件输入。
+  Playwright 默认强制页面处于焦点/可见状态。脚本通过 CDP 关闭该默认模拟，并以失焦/隐藏正对照确认恢复原生行为。
+  Windows 输入经 SendInput（扫描码模式）注入；浏览器 isTrusted=true 仍不能说明真人硬件输入。
   页面、鼠标、快捷键均保持正常系统行为，没有注入网页防检测脚本或安装输入钩子。
   必须确认前台 HWND、页面焦点/可见性、显示保护和热键注册，才能开始采样。
   动作证据：可见状态、鼠标计数、实际滚动偏移、快捷键命令记录。
@@ -53,3 +54,7 @@ Superb 本地网页事件测试台
   https://developer.mozilla.org/en-US/docs/Web/API/Element/keydown_event
   https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput
   https://playwright.dev/python/docs/browsers
+
+自动化默认值依据：
+  https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/crPage.ts
+  https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setFocusEmulationEnabled
