@@ -15,9 +15,9 @@ class StaticHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args): pass
 
 class Fixture:
-    def __init__(self):
+    def __init__(self, exclusive=False):
         dll = ROOT / 'tests/Superb.WindowsTests/bin/Release/net10.0-windows/Superb.WindowsTests.dll'
-        self.process = subprocess.Popen(['dotnet', str(dll), '--focus-host'], stdin=subprocess.PIPE,
+        self.process = subprocess.Popen(['dotnet', str(dll), '--focus-host']+(['--exclusive-reader'] if exclusive else []), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         self.lines = queue.Queue(); self.seq = 0; self.history = []
         def read():
@@ -156,13 +156,26 @@ SCENARIOS = [
  ('hotkey_up','Ctrl+Alt+9 向上翻页'), ('click_hide','点击浮窗收起按钮'),
  ('click_settings','点击浮窗设置按钮（激活对照窗口）')]
 
-def native_trials(page, context, fixture, native, repeats, results):
+EXCLUSIVE_SCENARIOS = [
+ ('ordinary_chord','Ctrl+A 普通组合透传'), ('modified_function','Shift+F8 透传'),
+ ('repeat_toggle','长按 F6 只显示/收起一次'), ('repeat_down','长按 F7 只翻页一次'),
+ ('modified_release','Shift+F8 按住后先释放 Shift，再重复 F8'),
+ ('owned_release','F8 按住后按 Shift，再释放 F8'),
+ ('disabled_function','关闭独占后 F8 恢复透传'), ('reenabled_function','重新开启后 F8 恢复独占')]
+
+def native_trials(page, context, fixture, native, repeats, results, exclusive=False):
     hwnd=native.browser_handle()
-    for scenario,label in SCENARIOS:
+    scenarios=list(SCENARIOS)+(EXCLUSIVE_SCENARIOS if exclusive else [])
+    if exclusive:
+        labels={'hotkey_show':'F6 显示浮窗','hotkey_hide':'F6 收起浮窗','hotkey_down':'F7 向下翻页','hotkey_up':'F8 向上翻页'}
+        scenarios=[(s,labels.get(s,label)) for s,label in scenarios]
+    for scenario,label in scenarios:
         for repeat in range(1,repeats+1):
+            if scenario in ('disabled_function','reenabled_function'):
+                fixture.command('exclusiveOff' if scenario=='disabled_function' else 'exclusiveOn')
             fixture.command('closeControl'); fixture.command('show'); fixture.command('render')
             if scenario in ('idle','plain_key','activate_control','tab_control','show','hotkey_show'): fixture.command('hide')
-            if scenario == 'hotkey_up': fixture.command('pageDown')
+            if scenario in ('hotkey_up','owned_release','reenabled_function'): fixture.command('pageDown')
             page.bring_to_front(); native.focus_browser(hwnd); page.locator('#pad').click(); page.wait_for_timeout(350)
             initial=page.evaluate("({hasFocus:document.hasFocus(),visibility:document.visibilityState})")
             before=fixture.command('state'); sent=native.sent
@@ -179,16 +192,31 @@ def native_trials(page, context, fixture, native, repeats, results):
             elif scenario=='click_body': native.click(before['points']['body'])
             elif scenario=='wheel': native.wheel(before['points']['body'])
             elif scenario=='page_method': fixture.command('pageDown')
-            elif scenario in ('hotkey_show','hotkey_hide'): native.chord(0x11,0x12,0x33)
-            elif scenario=='hotkey_down': native.chord(0x11,0x12,0x38)
-            elif scenario=='hotkey_up': native.chord(0x11,0x12,0x39)
+            elif scenario in ('hotkey_show','hotkey_hide'): native.chord(*((0x75,) if exclusive else (0x11,0x12,0x33)))
+            elif scenario=='hotkey_down': native.chord(*((0x76,) if exclusive else (0x11,0x12,0x38)))
+            elif scenario=='hotkey_up': native.chord(*((0x77,) if exclusive else (0x11,0x12,0x39)))
             elif scenario=='click_hide': native.click(before['points']['hide'])
             elif scenario=='click_settings': native.click(before['points']['settings'])
+            elif scenario=='ordinary_chord': native.chord(0x11,0x41)
+            elif scenario=='modified_function': native.chord(0x10,0x77)
+            elif scenario in ('repeat_toggle','repeat_down'):
+                key=0x75 if scenario=='repeat_toggle' else 0x76
+                try:
+                    for _ in range(3): native.key(key)
+                finally: native.key(key,True)
+            elif scenario=='modified_release':
+                native.key(0x10); native.key(0x77); native.key(0x10,True); native.key(0x77); native.key(0x77,True)
+            elif scenario=='owned_release':
+                native.key(0x77); native.key(0x10); native.key(0x77,True); native.key(0x10,True)
+            elif scenario in ('disabled_function','reenabled_function'): native.chord(0x77)
             page.wait_for_timeout(650)
             after=fixture.command('state')
             run=page.evaluate('eventProbe.stop()')['trials'][-1]
             if extra: extra.close()
             new_actions=after['actions'][len(before['actions']):]
+            key_events=[e for e in run['events'] if e['type'] in ('keydown','keyup')]
+            counts=run['counts']
+            def key_pair(code): return all(any(e['code']==code and e['type']==kind for e in key_events) for kind in ('keydown','keyup'))
             confirmed = {
                 'idle': True,
                 'plain_key': any(e['code']=='KeyA' and e['type']=='keydown' and e['isTrusted'] for e in run['events']),
@@ -203,10 +231,22 @@ def native_trials(page, context, fixture, native, repeats, results):
                 'hotkey_down':'pageDown' in new_actions and after['scrollOffset']>before['scrollOffset'],
                 'hotkey_up':'pageUp' in new_actions and after['scrollOffset']<before['scrollOffset'],
                 'click_hide':'toggle' in new_actions and not after['visible'],
-                'click_settings':'settings' in new_actions and after['controlVisible']
+                'click_settings':'settings' in new_actions and after['controlVisible'],
+                'ordinary_chord':not new_actions and key_pair('ControlLeft') and key_pair('KeyA'),
+                'modified_function':not new_actions and key_pair('ShiftLeft') and key_pair('F8'),
+                'repeat_toggle':new_actions==['toggle'] and not after['visible'],
+                'repeat_down':new_actions==['pageDown'] and after['scrollOffset']>before['scrollOffset'],
+                'modified_release':not new_actions and key_pair('F8') and key_pair('ShiftLeft'),
+                'owned_release':new_actions==['pageUp'] and after['scrollOffset']<before['scrollOffset'] and key_pair('ShiftLeft') and not any(e['code']=='F8' for e in key_events),
+                'disabled_function':not new_actions and key_pair('F8') and not after['exclusiveReaderKeys'],
+                'reenabled_function':new_actions==['pageUp'] and after['scrollOffset']<before['scrollOffset'] and after['exclusiveReaderKeys']
             }[scenario]
+            event_expectation=None
+            if exclusive and scenario in ('hotkey_show','hotkey_hide','hotkey_down','hotkey_up','repeat_toggle','repeat_down','reenabled_function'):
+                event_expectation=not key_events and counts['windowBlur']==0 and counts['hidden']==0 and run['dropped']==0
+                confirmed=confirmed and event_expectation
             result={'scenario':scenario,'label':label,'repeat':repeat,'actionConfirmed':confirmed,
-                'nativeInputEvents':native.sent-sent,'before':before,'after':after,'trial':run}
+                'nativeInputEvents':native.sent-sent,'before':before,'after':after,'trial':run,'exclusiveExpectationMet':event_expectation}
             results.append(result)
             print(json.dumps({'scenario':scenario,'repeat':repeat,'confirmed':confirmed,'counts':run['counts']},ensure_ascii=False),flush=True)
             if scenario in ('plain_key','activate_control','tab_control') and not confirmed:
@@ -221,11 +261,11 @@ def write_report(data, output):
         rows.append('<tr>'+''.join(f'<td>{html.escape(str(x))}</td>' for x in [item['label'],item['repeat'],item['actionConfirmed'],c['windowBlur'],c['hidden'],f"{c['keydown']}/{c['keyup']}",', '.join(codes) or '—',item['after']['foreground']==item['before']['foreground']])+'</tr>')
     details=html.escape(json.dumps(data,ensure_ascii=False,indent=2))
     text=f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Superb 浮窗事件实测报告</title><style>body{{font:15px/1.7 system-ui;max-width:1200px;margin:40px auto;padding:20px;color:#17251e}}h1{{font-size:30px}}table{{border-collapse:collapse;font-size:13px;width:100%}}td,th{{border:1px solid #ccd6cf;padding:9px;text-align:left}}th{{background:#eaf2ec}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}.note{{background:#eef5ef;padding:18px;border-left:4px solid #477f58}}</style>
-<h1>Superb 浮窗事件实测报告</h1><p>生成时间：{html.escape(data['time'])} · 浏览器：{html.escape(data['browser'])} · 版本：{html.escape(data.get('browserVersion','unknown'))}</p>
+<h1>Superb 浮窗事件实测报告</h1><p>生成时间：{html.escape(data['time'])} · 浏览器：{html.escape(data['browser'])} · 版本：{html.escape(data.get('browserVersion','unknown'))} · 快捷键模式：{html.escape(data.get('readerKeys','legacy'))}</p>
 <div class="note"><b>执行状态：{html.escape(data['status'])}</b><p>{html.escape(data.get('error',''))}</p><p>执行环境：{html.escape(data['platform'])}。本报告使用真实生产 ReaderWindow、Protection、HotkeyManager 的隔离测试宿主。鼠标和快捷键由 Windows SendInput 合成，非真人硬件输入；不加载用户配置、不调用模型。</p><p>“设置”按钮打开的是普通 WPF 对照窗口；未验证完整 Superb 主程序、用户本机、第三方网站、浏览器扩展或系统监控。窗口显示、滚轮和快捷键须同时有原生动作证据，否则不能用零事件宣称无影响。</p></div>
 <h2>观察矩阵</h2><p>window.blur 与页面内部 focusout 分开。每轮采样前确认浏览器 HWND 处于前台、document.hasFocus() 为真且页面可见。isTrusted 不代表真人输入。最后一列只比较前后台 HWND，瞬时失焦由事件列记录。</p>
 <table><tr><th>场景</th><th>轮次</th><th>动作确认</th><th>窗口失焦</th><th>隐藏</th><th>按下/松开</th><th>网页收到的 code</th><th>前台 HWND 保持</th></tr>{''.join(rows)}</table>
-<h2>适用边界</h2><p>结果只说明这一环境下本地页面观察到什么。未观察到事件不等于不可检测；网页以外的观察机制不在本实验内。未屏蔽任何事件或覆盖页面焦点/可见性 API；使用独立临时浏览器配置和 connect_over_cdp(no_defaults=True)，从启动时就不启用焦点模拟，并以正对照验证原生焦点/可见性行为。原始记录与报告一并保存。</p><details><summary>环境、前台窗口、动作计数、滚动偏移及事件明细</summary><pre>{details}</pre></details></html>'''
+<h2>适用边界</h2><p>结果只说明这一环境下本地页面观察到什么。未观察到事件不等于不可检测；网页以外的观察机制不在本实验内。测试页不屏蔽事件、不覆盖焦点/可见性 API；独占模式由 Superb 在系统输入层消费 F6/F7/F8 的完整按键周期。使用独立临时浏览器配置和 connect_over_cdp(no_defaults=True)，从启动时就不启用焦点模拟，并以正对照验证原生焦点/可见性行为。原始记录与报告一并保存。</p><details><summary>环境、前台窗口、动作计数、滚动偏移及事件明细</summary><pre>{details}</pre></details></html>'''
     output.mkdir(parents=True,exist_ok=True)
     (output/'results.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'report.html').write_text(text,encoding='utf-8')
@@ -234,10 +274,11 @@ def write_report(data, output):
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument('--browser',default='msedge',choices=['msedge','chrome','chromium'])
     parser.add_argument('--page-only',action='store_true'); parser.add_argument('--repeats',type=int,default=3)
+    parser.add_argument('--reader-keys',choices=['legacy','exclusive'],default='legacy')
     parser.add_argument('--output',type=Path,default=ROOT/'artifacts/event-probe'); args=parser.parse_args()
     if not 1<=args.repeats<=10: parser.error('repeats must be 1..10')
     data={'time':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'platform':platform.platform(),
-          'browser':args.browser,'mode':'recorder-only' if args.page_only else 'headed-native','status':'BLOCKED','trials':[]}
+          'browser':args.browser,'mode':'recorder-only' if args.page_only else 'headed-native','readerKeys':args.reader_keys,'status':'BLOCKED','trials':[]}
     data['commit']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(StaticHandler,directory=str(HERE)))
     threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -262,8 +303,15 @@ def main():
             data['recorderChecks']=page_checks(page)
             if not args.page_only:
                 if sys.platform!='win32': raise RuntimeError('Native WPF trials require Windows')
-                fixture=Fixture(); data['fixture']=fixture.ready
-                native_trials(page,context,fixture,NativeInput(),args.repeats,data['trials'])
+                exclusive=args.reader_keys=='exclusive'
+                fixture=Fixture(exclusive); data['fixture']=fixture.ready
+                if exclusive:
+                    conflict=fixture.command('conflictOn')
+                    restored=fixture.command('conflictOff')
+                    data['conflictCheck']={'conflict':conflict,'restored':restored}
+                    if conflict['registrationFailures']!=['toggle'] or restored['registrationFailures']:
+                        raise RuntimeError('Exclusive key conflict reporting or release failed')
+                native_trials(page,context,fixture,NativeInput(),args.repeats,data['trials'],exclusive)
                 if not all(x['actionConfirmed'] for x in data['trials']): raise RuntimeError('One or more native actions were not confirmed; inspect per-trial evidence')
             if errors: raise RuntimeError('Recorder JavaScript errors')
             data['status']='RECORDER_ONLY_PASS' if args.page_only else 'MEASURED'

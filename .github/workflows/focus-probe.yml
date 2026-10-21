@@ -8,6 +8,9 @@ on:
       - 'src/Superb.Desktop/ReaderWindow.xaml*'
       - 'src/Superb.Desktop/Platform/Protection.cs'
       - 'src/Superb.Desktop/Platform/HotkeyManager.cs'
+      - 'src/Superb.Desktop/Platform/ExclusiveReaderHotkeys.cs'
+      - 'src/Superb.Desktop/Platform/Native.cs'
+      - 'src/Superb.Desktop/Configuration.cs'
       - '.github/workflows/focus-probe.yml'
 permissions:
   contents: read
@@ -19,6 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         browser: [msedge, chrome]
+        keys: [legacy, exclusive]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -30,9 +34,9 @@ jobs:
       - run: dotnet build Superb.slnx -c Release
       - run: python -m pip install playwright==1.64.0
       - name: Measure headed browser with native Windows input
-        run: python tools/event-probe/run_probe.py --browser ${{ matrix.browser }} --repeats 3 --output artifacts/event-probe/${{ matrix.browser }}
+        run: python tools/event-probe/run_probe.py --browser ${{ matrix.browser }} --reader-keys ${{ matrix.keys }} --repeats 3 --output artifacts/event-probe/${{ matrix.browser }}-${{ matrix.keys }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: event-probe-${{ matrix.browser }}
-          path: artifacts/event-probe/${{ matrix.browser }}/
+          name: event-probe-${{ matrix.browser }}-${{ matrix.keys }}
+          path: artifacts/event-probe/${{ matrix.browser }}-${{ matrix.keys }}/

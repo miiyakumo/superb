@@ -33,7 +33,7 @@ Superb 本地网页事件测试台
   “设置”按钮打开普通 WPF 对照窗口；它验证阅读窗口的点击/命令链，而不是完整 MainWindow 的初始化。
   Playwright 默认强制页面处于焦点/可见状态。脚本启动独立临时浏览器，再用 connect_over_cdp(no_defaults=True) 连接默认上下文，从一开始就不启用该模拟；以失焦/隐藏正对照验证原生行为。
   Windows 输入经 SendInput（扫描码模式）注入；浏览器 isTrusted=true 仍不能说明真人硬件输入。
-  页面、鼠标、快捷键均保持正常系统行为，没有注入网页防检测脚本或安装输入钩子。
+  测试页保持正常 DOM 事件行为，不注入防检测脚本。legacy 模式使用原有组合键；exclusive 模式由 Superb 安装限定 F6/F7/F8 的系统输入钩子。
   必须确认前台 HWND、页面焦点/可见性、显示保护和热键注册，才能开始采样。
   动作证据：可见状态、鼠标计数、实际滚动偏移、快捷键命令记录。
   环境失败报告 BLOCKED；记录器单测通过仅标 RECORDER_ONLY_PASS；有效原生测量标 MEASURED。
@@ -58,3 +58,16 @@ Superb 本地网页事件测试台
 自动化默认值依据：
   https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/crPage.ts
   https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setFocusEmulationEnabled
+
+独占阅读快捷键复测
+  在“高级设置 → 偏好与快捷键”勾选独占阅读快捷键并保存。默认关闭。
+  F6 显示/收起，F7 向下，F8 向上；单独按键时其他应用暂时失去这三个键的功能。
+  带 Ctrl/Alt/Shift/Win 的组合保持透传。其他动作仍使用原组合键，不承诺没有网页事件。
+  松开所有键后再切换模式或退出；在按键周期中途卸载钩子不能保证收尾事件被消费。
+  python tools/event-probe/run_probe.py --browser msedge --reader-keys exclusive --repeats 3 --output artifacts/event-probe/msedge-exclusive
+  python tools/event-probe/run_probe.py --browser chrome --reader-keys exclusive --repeats 3 --output artifacts/event-probe/chrome-exclusive
+  exclusive 模式有 22 个场景，包含长按去重、Ctrl+A、Shift+F8、修饰键释放顺序、关闭与重新开启；另做 F6 注册冲突与释放检查。
+  核心独占场景同时要求动作发生、按下/释放为零、失焦/隐藏为零、日志无丢弃，才能通过。
+  此模式不读取或保存普通按键内容，不缓冲/重放 Ctrl 或 Alt，不读取网页。
+  Windows 可能因低级钩子超时静默移除钩子；独立线程缩短回调，但不能承诺所有环境永久零事件。
+  依据：https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc

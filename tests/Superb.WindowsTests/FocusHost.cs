@@ -17,7 +17,7 @@ namespace Superb.WindowsTests;
 internal static class FocusHost
 {
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
-    public static int Run()
+    public static int Run(bool exclusiveReaderKeys = false)
     {
         var app = new App(); app.InitializeComponent();
         var dispatcher = Dispatcher.CurrentDispatcher;
@@ -28,7 +28,8 @@ internal static class FocusHost
         var control = new Window { Title = "Superb focus positive control", Topmost = true, Width = 360, Height = 220, Left = 25, Top = 40,
             Content = new TextBlock { Text = "Synthetic activation control", Margin = new Thickness(20) } };
         using var hotkeys = new HotkeyManager(hwnd);
-        var registrationFailures = hotkeys.Register(new Configuration().Hotkeys);
+        var registrationFailures = hotkeys.Register(new Configuration().Hotkeys, exclusiveReaderKeys);
+        var conflictReserved = false;
         var actions = new List<string>();
         var mouseDown = 0; var wheel = 0; var activated = 0; var mouseActivate = 0;
         var text = string.Join("\n", Enumerable.Range(1, 180).Select(n => $"Synthetic test line {n:000} — focus and paging only."));
@@ -71,7 +72,7 @@ internal static class FocusHost
             return new
             {
                 hwnd = hwnd.ToInt64(), foreground = GetForegroundWindow().ToInt64(), visible = reader.IsVisible,
-                controlVisible = control.IsVisible,
+                controlVisible = control.IsVisible, exclusiveReaderKeys, conflictReserved,
                 affinityReadable, affinity, compositionResult, compositionEnabled,
                 protection = reader.Check(), styles = Native.GetWindowLongPtr(hwnd, -20).ToInt64(),
                 mouseDown, wheel, activated, mouseActivate, actions = actions.ToArray(), registrationFailures,
@@ -106,6 +107,21 @@ internal static class FocusHost
                                 case "pageUp": reader.Page(false); break;
                                 case "control": Action("settings"); break;
                                 case "closeControl": control.Hide(); break;
+                                case "exclusiveOn":
+                                    exclusiveReaderKeys = true;
+                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys, true); break;
+                                case "exclusiveOff":
+                                    exclusiveReaderKeys = false;
+                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys); break;
+                                case "conflictOn":
+                                    hotkeys.Dispose();
+                                    conflictReserved = Native.RegisterHotKey(hwnd, 900, 0x4000, 0x75);
+                                    if (!conflictReserved) throw new InvalidOperationException("Test reservation failed");
+                                    exclusiveReaderKeys = true;
+                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys, true); break;
+                                case "conflictOff":
+                                    Native.UnregisterHotKey(hwnd, 900); conflictReserved = false;
+                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys, exclusiveReaderKeys); break;
                                 case "state": break;
                                 case "quit": dispatcher.BeginInvokeShutdown(DispatcherPriority.Background); break;
                                 default: throw new InvalidOperationException("unknown fixture command");
@@ -121,6 +137,7 @@ internal static class FocusHost
             dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
         });
         Dispatcher.Run();
+        if (conflictReserved) Native.UnregisterHotKey(hwnd, 900);
         reader.Finish(); control.Close();
         return 0;
     }

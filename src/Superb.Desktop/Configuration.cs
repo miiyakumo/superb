@@ -18,6 +18,7 @@ internal sealed record Configuration
     public Pipeline Pipeline { get; init; } = Pipeline.Direct;
     public CaptureTarget? Capture { get; init; }
     public bool AutoCopy { get; init; }
+    public bool ExclusiveReaderKeys { get; init; }
     public bool CombineCaptureAndSend { get; init; }
     public bool ClearOwnedClipboardOnPause { get; init; } = true;
     public int SyncMinutes { get; init; } = 10;
@@ -44,6 +45,8 @@ internal sealed record Configuration
             Routing is null || Panel is null || SyncMinutes is < 1 or > 60 || Backends.Length > 32 || Hotkeys.Length > 32 ||
             Pipeline.Steps.Length > 32 || string.IsNullOrWhiteSpace(Pipeline.Version)) throw new SafeFailure("config_invalid");
         foreach (var b in Backends) Policy.ValidateBackend(b);
+        if (ExclusiveReaderKeys && ExclusiveReaderHotkeys.Keys.Keys.Any(action => Hotkeys.Count(k => k.Action == action) != 1))
+            throw new SafeFailure("hotkey_required_action_missing");
         if (Backends.Select(x => x.Id).Distinct().Count() != Backends.Length) throw new SafeFailure("backend_id_duplicate");
         foreach (var id in new[] { SelectedBackendId, Routing.TextBackendId, Routing.ImageBackendId }.Where(x => !string.IsNullOrEmpty(x)))
             if (!Backends.Any(x => x.Id == id)) throw new SafeFailure("route_backend_missing");

@@ -108,3 +108,11 @@ dotnet run --project tests/Superb.WindowsTests -c Release -- --clipboard
 本地测试页位于 `tools/event-probe/index.html`，记录窗口失焦、页面隐藏、控件焦点及按键事件，支持手动导出 JSON / HTML。运行 `python -m http.server 8765 --bind 127.0.0.1 --directory tools/event-probe` 后访问 `http://127.0.0.1:8765/`。
 
 Windows 自动实验使用真实阅读窗口与热键管理器的隔离测试宿主，在有界面的 Edge / Chrome 中采样，鼠标与键盘由 `SendInput` 合成。每轮同时确认原生动作、浏览器前台状态和网页事件；没有动作证据时不能把零事件当作通过。它不加载用户配置或调用模型，不屏蔽事件，也不代表其他网页或本机监控不可检测。完整步骤和报告边界见 [测试说明](tools/event-probe/README.txt)。独立工作流为 `.github/workflows/focus-probe.yml`。
+
+### 可选独占阅读快捷键
+
+在“高级设置 → 偏好与快捷键”开启并保存：F6 显示/收起、F7 向下翻页、F8 向上翻页。这三个动作暂时替代原配置中的组合键；关闭后恢复原配置。默认关闭。
+
+开启时，Superb 消费单独 F6/F7/F8 的按下、重复与释放，每次按住只执行一次；其他应用暂时不能使用这三个单键。带修饰键的组合及普通输入继续透传；其他 Superb 动作仍使用原组合键，可能被网页观察到。冲突或安装失败会在偏好页列出，不会抢占已注册的快捷键。请松开按键后保存设置或退出。
+
+这通过独立线程的 Windows 低级键盘钩子实现，不记录普通按键、不重放修饰键、不修改网页事件。Windows 可因超时静默移除钩子，不能将功能描述为普遍“不可检测”。可用 `tools/event-probe/run_probe.py --reader-keys exclusive --browser msedge --repeats 3` 验证本机行为；本地事件页提供对应手工场景。

@@ -137,6 +137,7 @@ public partial class MainWindow : Window
         PipelineBox.Text = JsonSerializer.Serialize(config.Pipeline.Steps, Configuration.Json);
         RoutingBox.Text = JsonSerializer.Serialize(config.Routing, Configuration.Json);
         HotkeysBox.Text = JsonSerializer.Serialize(config.Hotkeys, Configuration.Json);
+        ExclusiveReaderKeys.IsChecked = config.ExclusiveReaderKeys;
         AutoCopy.IsChecked = config.AutoCopy;
         ClearClipboard.IsChecked = config.ClearOwnedClipboardOnPause;
         SyncDuration.Text = config.SyncMinutes.ToString(); PanelFont.Text = config.Panel.FontSize.ToString();
@@ -372,7 +373,9 @@ public partial class MainWindow : Window
     }
     private void RegisterHotkeys()
     {
-        var failed = hotkeys!.Register(config.Hotkeys);
+        var failed = hotkeys!.Register(config.Hotkeys, config.ExclusiveReaderKeys);
+        HotkeyStatus.Text = failed.Count > 0 ? "未启用的动作：" + string.Join(", ", failed)
+            : config.ExclusiveReaderKeys ? "独占阅读快捷键已启用：F6 / F7 / F8" : "使用原有组合快捷键（可能产生网页按键事件）";
         if (failed.Count > 0) Status("快捷键冲突或无效（动作）：" + string.Join(", ", failed));
     }
     private void Resume_Click(object sender, RoutedEventArgs e)
@@ -656,7 +659,7 @@ public partial class MainWindow : Window
         string[] required = ["capture", "clipboard", "toggle", "copy", "cancel", "pause", "settings", "exit"];
         if (keys.IsDefault || required.Any(action => !keys.Any(x => x.Action == action)) || keys.Select(x => x.Action).Distinct().Count() != keys.Length)
             throw new SafeFailure("hotkey_required_action_missing");
-        var candidate = config with { Hotkeys = keys, AutoCopy = AutoCopy.IsChecked == true,
+        var candidate = config with { Hotkeys = keys, AutoCopy = AutoCopy.IsChecked == true, ExclusiveReaderKeys = ExclusiveReaderKeys.IsChecked == true,
             ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true, SyncMinutes = int.Parse(SyncDuration.Text),
             Panel = reader.Layout() with { FontSize = double.Parse(PanelFont.Text) } };
         candidate.Validate(); config = candidate; reader.ApplyLayout(config.Panel); RegisterHotkeys();

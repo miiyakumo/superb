@@ -12,6 +12,15 @@ internal static class Native
     [StructLayout(LayoutKind.Sequential)] internal struct Bitmap { public int Type, Width, Height, WidthBytes; public ushort Planes, BitsPixel; public nint Bits; }
     internal delegate bool MonitorCallback(nint monitor, nint dc, ref Rect rect, nint data);
     internal delegate bool WindowCallback(nint window, nint data);
+    internal delegate nint KeyboardHook(int code, nint message, nint data);
+    [StructLayout(LayoutKind.Sequential)] internal struct KeyboardInput
+    { public uint Key, ScanCode, Flags, Time; public nuint ExtraInfo; }
+    [DllImport("user32.dll", EntryPoint = "SetWindowsHookExW", SetLastError = true)] internal static extern nint SetWindowsHookEx(int type, KeyboardHook callback, nint module, uint thread);
+    [DllImport("user32.dll")] internal static extern bool UnhookWindowsHookEx(nint hook);
+    [DllImport("user32.dll")] internal static extern nint CallNextHookEx(nint hook, int code, nint message, nint data);
+    [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll", EntryPoint = "PostMessageW")] internal static extern bool PostMessage(nint hwnd, uint message, nint w, nint l);
+    [DllImport("kernel32.dll", EntryPoint = "GetModuleHandleW", CharSet = CharSet.Unicode)] internal static extern nint GetModuleHandle(string? name);
     [DllImport("user32.dll")] internal static extern bool SetWindowDisplayAffinity(nint hwnd, uint affinity);
     [DllImport("user32.dll")] internal static extern bool GetWindowDisplayAffinity(nint hwnd, out uint affinity);
     [DllImport("dwmapi.dll")] internal static extern int DwmIsCompositionEnabled(out bool enabled);

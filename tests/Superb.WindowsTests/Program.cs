@@ -21,8 +21,30 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        if (args.Contains("--focus-host")) return FocusHost.Run();
+        if (args.Contains("--focus-host")) return FocusHost.Run(args.Contains("--exclusive-reader"));
         var tests = new List<(string, Action)>();
+        tests.Add(("Exclusive reader keys own complete cycles without repeats or modifier replay", () =>
+        {
+            var key = new ExclusiveKeyCycle();
+            Assert(key.Process(true, false) == (true, true));
+            Assert(key.Process(true, false) == (true, false));
+            Assert(key.Process(false, true) == (true, false));
+            Assert(key.Process(true, true) == (false, false));
+            Assert(key.Process(true, false) == (false, false));
+            Assert(key.Process(false, false) == (false, false));
+            key.AlreadyDown();
+            Assert(key.Process(true, false) == (false, false));
+            Assert(key.Process(false, false) == (false, false));
+            Assert(key.Process(true, false) == (true, true));
+        }));
+        tests.Add(("Exclusive reader keys are opt-in and persist independently of saved gestures", () =>
+        {
+            var legacy = JsonSerializer.Deserialize<Configuration>("{}", Configuration.Json)!;
+            Assert(!legacy.ExclusiveReaderKeys);
+            var updated = legacy with { ExclusiveReaderKeys = true };
+            var restored = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(updated, Configuration.Json), Configuration.Json)!;
+            Assert(restored.ExclusiveReaderKeys && restored.Hotkeys.SequenceEqual(legacy.Hotkeys));
+        }));
         var source = BitmapSource.Create(4, 4, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 64).ToArray(), 16);
         var input = ImageProcessor.Encode(source);
         var processor = new ImageProcessor();

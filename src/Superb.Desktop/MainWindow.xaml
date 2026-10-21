@@ -90,6 +90,9 @@
         <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
         <TextBlock Text="同步授权期限（分钟，1–60）"/><TextBox x:Name="SyncDuration" Text="10"/>
         <TextBlock Text="阅读字号（11–36）"/><TextBox x:Name="PanelFont" Text="16"/>
+        <CheckBox x:Name="ExclusiveReaderKeys" Content="独占阅读快捷键：F6 显示/收起 · F7 向下 · F8 向上"/>
+        <TextBlock Text="开启后，单独按 F6/F7/F8 由 Superb 接管，其他应用不会收到这些键的按下与释放；这三个动作的原有组合键暂时停用。带 Ctrl/Alt/Shift/Win 的组合仍交给系统。其他动作维持原配置，可能产生网页键盘事件。请松开按键后保存或退出。" Style="{StaticResource Hint}"/>
+        <TextBlock x:Name="HotkeyStatus" Style="{StaticResource Hint}"/>
         <TextBlock Text="快捷键配置"/><TextBox x:Name="HotkeysBox" AcceptsReturn="True" Height="210" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
         <TextBlock Text="capture / clipboard / toggle / copy / cancel / pause / send / pageDown / pageUp / settings / exit。冲突时会显示未注册的动作；控制中心始终可手动操作。" Style="{StaticResource Hint}"/>
         <WrapPanel><Button Content="保存偏好" Style="{StaticResource Primary}" Click="SavePreferences_Click"/><Button Content="导出无凭据配置" Click="Export_Click"/></WrapPanel>
