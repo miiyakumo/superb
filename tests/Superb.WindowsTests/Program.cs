@@ -124,22 +124,27 @@ internal static class Program
             var root = (FrameworkElement)window.Content;
             // Render WPF content off-screen; this does not exercise a logged-in interactive desktop.
             window.Content = null;
+            var surface = new Border { Background = window.Background, Child = root };
+            System.Windows.Documents.TextElement.SetForeground(surface, window.Foreground);
+            System.Windows.Documents.TextElement.SetFontFamily(surface, window.FontFamily);
+            System.Windows.Documents.TextElement.SetFontSize(surface, window.FontSize);
             var renderIndex = Array.IndexOf(args, "--render-dir");
             for (var i = 0; i < tabs.Items.Count; i++)
             {
                 tabs.SelectedIndex = i;
-                root.Measure(new Size(904, 708)); root.Arrange(new Rect(0, 0, 904, 708)); root.UpdateLayout();
-                Assert(root.ActualWidth == 904 && root.ActualHeight == 708);
+                surface.Measure(new Size(904, 708)); surface.Arrange(new Rect(0, 0, 904, 708)); surface.UpdateLayout();
+                Assert(surface.ActualWidth == 904 && surface.ActualHeight == 708 && root.ActualWidth > 0);
                 if (renderIndex >= 0 && renderIndex + 1 < args.Length)
                 {
                     Directory.CreateDirectory(args[renderIndex + 1]);
-                    var bitmap = new RenderTargetBitmap(904, 708, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
+                    var bitmap = new RenderTargetBitmap(904, 708, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
                     var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                     using var file = File.Create(Path.Combine(args[renderIndex + 1], $"ui-{i}.png")); encoder.Save(file);
                 }
             }
             var question = (TextBox)window.FindName("QuestionBox");
             var answer = (TextBox)window.FindName("AnswerText");
+            Assert(!question.IsUndoEnabled && !answer.IsUndoEnabled);
             var key = (PasswordBox)window.FindName("QuickApiKey");
             var advancedKey = (PasswordBox)window.FindName("ApiKey");
             question.Text = "synthetic question"; answer.Text = "synthetic answer";
@@ -174,7 +179,7 @@ internal static class Program
         foreach (var (name, run) in tests)
         {
             try { run(); Console.WriteLine("PASS " + name); }
-            catch { failures++; Console.WriteLine("FAIL " + name); }
+            catch (Exception ex) { failures++; Console.WriteLine("FAIL " + name + " · " + ex.GetType().Name + "\n" + ex.StackTrace); }
         }
         Console.WriteLine($"{tests.Count - failures}/{tests.Count} passed; capture-chain verification requires manual evidence.");
         return failures == 0 ? 0 : 1;

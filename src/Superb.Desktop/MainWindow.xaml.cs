@@ -175,6 +175,7 @@ public partial class MainWindow : Window
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => OnUpdate(update)); return; }
         if (!coordinator.IsCurrent(update.Attempt)) return;
+        if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
         StatusLabel.Text = StateLabel(update);
         SetError(update.Code);
         latestUpdate = update;
