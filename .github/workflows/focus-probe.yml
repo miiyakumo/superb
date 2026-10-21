@@ -5,6 +5,9 @@ on:
     paths:
       - 'tools/event-probe/**'
       - 'tests/Superb.WindowsTests/FocusHost.cs'
+      - 'src/Superb.Desktop/ReaderWindow.xaml*'
+      - 'src/Superb.Desktop/Platform/Protection.cs'
+      - 'src/Superb.Desktop/Platform/HotkeyManager.cs'
       - '.github/workflows/focus-probe.yml'
 permissions:
   contents: read
