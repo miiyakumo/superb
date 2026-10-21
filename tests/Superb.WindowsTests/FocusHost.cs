@@ -16,17 +16,11 @@ namespace Superb.WindowsTests;
 // It never loads user settings, reads the clipboard, contacts a model, or writes credentials.
 internal static class FocusHost
 {
-    // Application queues OnStartup from its constructor, even when only Dispatcher.Run is used.
-    // Load the real resources but never run App.OnStartup (settings, credentials, main window).
-    private sealed class FixtureApp : App
-    {
-        internal bool StartupIntercepted { get; private set; }
-        protected override void OnStartup(StartupEventArgs e) => StartupIntercepted = true;
-    }
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     public static int Run(bool exclusiveReaderKeys = false)
     {
-        var app = new FixtureApp(); app.InitializeComponent();
+        // WPF requires the same root type as compiled App.xaml; opt out before pumping startup.
+        var app = new App(isolatedTestHost: true); app.InitializeComponent();
         var dispatcher = Dispatcher.CurrentDispatcher;
         var reader = new ReaderWindow();
         var area = SystemParameters.WorkArea;

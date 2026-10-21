@@ -6,8 +6,14 @@ namespace Superb.Desktop;
 public partial class App : Application
 {
     private Mutex? instance;
+    private readonly bool isolatedTestHost;
+    internal bool StartupIntercepted { get; private set; }
+    public App() { }
+    // Internal test-only entry: preserve the exact XAML root type without launching user workflows.
+    internal App(bool isolatedTestHost) => this.isolatedTestHost = isolatedTestHost;
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (isolatedTestHost) { StartupIntercepted = true; return; }
         base.OnStartup(e);
         instance = new Mutex(true, "Local\\Superb.Desktop.v1", out var created);
         if (!created) { Shutdown(); return; }

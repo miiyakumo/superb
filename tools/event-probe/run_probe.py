@@ -23,8 +23,13 @@ class Fixture:
         def read():
             for line in self.process.stdout: self.lines.put(line)
         threading.Thread(target=read, daemon=True).start()
-        self.ready = self.receive()
-        if not self.ready.get('ready'): raise RuntimeError('Windows fixture not ready')
+        try:
+            self.ready = self.receive()
+            if not self.ready.get('ready'): raise RuntimeError('Windows fixture not ready')
+        except Exception as error:
+            self.process.kill(); self.process.wait(timeout=5)
+            diagnostic=self.process.stderr.read()[-4000:]
+            raise RuntimeError(str(error)+'; fixture stderr: '+diagnostic) from error
     def receive(self):
         try: return json.loads(self.lines.get(timeout=15))
         except queue.Empty: raise RuntimeError('Windows fixture timed out') from None

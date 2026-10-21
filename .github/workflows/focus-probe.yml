@@ -11,6 +11,7 @@ on:
       - 'src/Superb.Desktop/Platform/ExclusiveReaderHotkeys.cs'
       - 'src/Superb.Desktop/Platform/Native.cs'
       - 'src/Superb.Desktop/Configuration.cs'
+      - 'src/Superb.Desktop/App.xaml*'
       - '.github/workflows/focus-probe.yml'
 permissions:
   contents: read
