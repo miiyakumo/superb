@@ -32,6 +32,7 @@ internal sealed class ExclusiveReaderHotkeys : IDisposable
     private Dispatcher? dispatcher;
     private int disposed;
     internal HashSet<int> RegisteredIds { get; } = [];
+    internal bool IsStopped => !thread.IsAlive;
 
     internal ExclusiveReaderHotkeys(nint target, IReadOnlyDictionary<int, uint> requested)
     {

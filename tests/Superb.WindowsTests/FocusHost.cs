@@ -76,6 +76,7 @@ internal static class FocusHost
                 affinityReadable, affinity, compositionResult, compositionEnabled,
                 protection = reader.Check(), styles = Native.GetWindowLongPtr(hwnd, -20).ToInt64(),
                 mouseDown, wheel, activated, mouseActivate, actions = actions.ToArray(), registrationFailures,
+                registrationErrors = hotkeys.RegistrationErrors, lastWorkerStopped = hotkeys.LastWorkerStopped,
                 scrollOffset = scroll?.VerticalOffset ?? 0, scrollableHeight = scroll?.ScrollableHeight ?? 0,
                 points = new { body = Point(view), hide = Point(Find<Button>(reader, b => Equals(b.Content, "收起"))),
                     settings = Point(Find<Button>(reader, b => Equals(b.Content, "设置"))), pause = Point(Find<Button>(reader, b => Equals(b.Content, "暂停"))) },
