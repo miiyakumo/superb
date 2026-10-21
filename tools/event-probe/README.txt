@@ -60,14 +60,23 @@ Superb 本地网页事件测试台
   https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setFocusEmulationEnabled
 
 独占阅读快捷键复测
-  在“高级设置 → 偏好与快捷键”勾选独占阅读快捷键并保存。默认关闭。
+  在“高级设置 → 偏好与快捷键”为阅读动作选择独占单键 F6/F7/F8，开启独占接管并保存。默认关闭。
   F6 显示/收起，F7 向下，F8 向上；单独按键时其他应用暂时失去这三个键的功能。
   带 Ctrl/Alt/Shift/Win 的组合保持透传。其他动作仍使用原组合键，不承诺没有网页事件。
   松开所有键后再切换模式或退出；在按键周期中途卸载钩子不能保证收尾事件被消费。
   python tools/event-probe/run_probe.py --browser msedge --reader-keys exclusive --repeats 3 --output artifacts/event-probe/msedge-exclusive
   python tools/event-probe/run_probe.py --browser chrome --reader-keys exclusive --repeats 3 --output artifacts/event-probe/chrome-exclusive
-  exclusive 模式有 22 个场景，包含长按去重、Ctrl+A、Shift+F8、修饰键释放顺序、关闭与重新开启；另做 F6 注册冲突与释放检查。
+  exclusive 模式有 30 个场景，包含长按去重、Ctrl+A、Shift+F8、修饰键释放顺序、关闭与重新开启；另做 F6 注册冲突与释放检查。
   核心独占场景同时要求动作发生、按下/释放为零、失焦/隐藏为零、日志无丢弃，才能通过。
   此模式不读取或保存普通按键内容，不缓冲/重放 Ctrl 或 Alt，不读取网页。
   Windows 可能因低级钩子超时静默移除钩子；独立线程缩短回调，但不能承诺所有环境永久零事件。
   依据：https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc
+
+场景和自定义绑定复测（schema 2）
+  普通模式新增三个场景发起键 Ctrl+Alt+C/A/G；独占模式的测试配置将它们设为 F9/F10/F11。
+  测试配置仅用于独立测试会话，不是应用自动开启的默认独占绑定。
+  同时验证改绑为 F4、Ctrl+Alt+B、阅读键 F2，旧 F9 透传，禁用场景键后透传。
+  每个场景向本机临时 HTTP 服务发送合成输入，并逐次核对 system/user 两条消息、模型、成功完成与请求数量。
+  这验证共享请求构造器、生产 HTTP 客户端与快捷键分发；不证明真实服务可用，也不读取真实剪贴板/截图或加载用户配置。
+  普通模式 17 场景，独占模式 30 场景，每项三次；每轮检查启动隔离、前台焦点和保护状态。
+  设置窗口仍为普通 WPF 激活对照，界面编辑通过 Windows 回归测试及截图单独核对。

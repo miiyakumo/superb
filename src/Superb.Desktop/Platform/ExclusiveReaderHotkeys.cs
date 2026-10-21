@@ -3,7 +3,7 @@ using System.Windows.Threading;
 
 namespace Superb.Desktop.Platform;
 
-// Own only complete, unmodified F6/F7/F8 cycles. Never buffer/replay ordinary input.
+// Own only complete cycles of configured unmodified function keys. Never buffer/replay ordinary input.
 internal sealed class ExclusiveKeyCycle
 {
     private bool down, owned;
@@ -25,8 +25,6 @@ internal sealed class ExclusiveKeyCycle
 
 internal sealed class ExclusiveReaderHotkeys : IDisposable
 {
-    internal static readonly IReadOnlyDictionary<string, uint> Keys = new Dictionary<string, uint>
-    { ["toggle"] = 0x75, ["pageDown"] = 0x76, ["pageUp"] = 0x77 };
     private readonly Thread thread;
     private readonly TaskCompletionSource<bool> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Dispatcher? dispatcher;

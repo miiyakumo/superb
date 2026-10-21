@@ -1,4 +1,6 @@
 using System.IO;
+using System.Collections.Immutable;
+using Superb.Core;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
@@ -29,7 +31,32 @@ internal static class FocusHost
         var control = new Window { Title = "Superb focus positive control", Topmost = true, Width = 360, Height = 220, Left = 25, Top = 40,
             Content = new TextBlock { Text = "Synthetic activation control", Margin = new Thickness(20) } };
         using var hotkeys = new HotkeyManager(hwnd);
-        var registrationFailures = hotkeys.Register(new Configuration().Hotkeys, exclusiveReaderKeys);
+        using var endpoint = new SyntheticEndpoint();
+        using var client = new ChatCompletionsClient(endpoint);
+        var sceneErrors = new List<string>(); var sceneCompletions = 0;
+        Configuration Settings(bool exclusive)
+        {
+            var settings = new Configuration { Backends = [new("test", "Synthetic", endpoint.Url, "base-model", "", AllowLoopbackHttp: true, Stream: false)], SelectedBackendId = "test" };
+            if (!exclusive) return settings;
+            return settings with { ExclusiveHotkeysEnabled = true,
+                Hotkeys = settings.Hotkeys.Select(k => k.Action is "toggle" or "pageDown" or "pageUp" ? k with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(k.Action) } : k).ToImmutableArray(),
+                Scenes = settings.Scenes.Select(s => s with { Model = "model-" + s.Id, Trigger = s.Trigger with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(s.Action) } }).ToImmutableArray() };
+        }
+        var configuration = Settings(exclusiveReaderKeys);
+        List<string> Register() => hotkeys.Register(configuration.AllHotkeys(), configuration.ExclusiveHotkeysEnabled);
+        var registrationFailures = Register();
+        async Task SendScene(ScenePreset scene)
+        {
+            try
+            {
+                var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ManualText, Payload.FromText("Synthetic scene input " + scene.Id), 0, DateTimeOffset.UtcNow);
+                var request = SceneRequestFactory.Prepare(configuration, scene, snapshot, new ImageProcessor());
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await foreach (var update in client.SendAsync(request, timeout.Token)) { }
+                sceneCompletions++;
+            }
+            catch (Exception ex) { sceneErrors.Add(ex is SafeFailure f ? f.Code : ex.GetType().Name); }
+        }
         var conflictReserved = false;
         var actions = new List<string>();
         var mouseDown = 0; var wheel = 0; var activated = 0; var mouseActivate = 0;
@@ -37,6 +64,7 @@ internal static class FocusHost
         void Action(string action)
         {
             if (actions.Count < 1000) actions.Add(action);
+            if (configuration.Scenes.FirstOrDefault(s => s.Action == action) is { } scene) { _ = SendScene(scene); return; }
             switch (action)
             {
                 case "toggle": if (reader.IsVisible) reader.Hide(); else { reader.Show(); reader.Check(); } break;
@@ -74,6 +102,8 @@ internal static class FocusHost
             {
                 hwnd = hwnd.ToInt64(), foreground = GetForegroundWindow().ToInt64(), visible = reader.IsVisible,
                 controlVisible = control.IsVisible, exclusiveReaderKeys, conflictReserved,
+                sceneRequests = endpoint.Requests.ToArray(), sceneCompletions, sceneErrors, endpointError = endpoint.Error,
+                bindings = configuration.AllHotkeys().ToArray(), sceneDefinitions = configuration.Scenes,
                 startupIntercepted = app.StartupIntercepted, productionWindowCount = app.Windows.OfType<MainWindow>().Count(),
                 affinityReadable, affinity, compositionResult, compositionEnabled,
                 protection = reader.Check(), styles = Native.GetWindowLongPtr(hwnd, -20).ToInt64(),
@@ -112,19 +142,33 @@ internal static class FocusHost
                                 case "closeControl": control.Hide(); break;
                                 case "exclusiveOn":
                                     exclusiveReaderKeys = true;
-                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys, true); break;
+                                    configuration = Settings(true); registrationFailures = Register(); break;
                                 case "exclusiveOff":
                                     exclusiveReaderKeys = false;
-                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys); break;
+                                    configuration = Settings(false); registrationFailures = Register(); break;
                                 case "conflictOn":
                                     hotkeys.Dispose();
                                     conflictReserved = Native.RegisterHotKey(hwnd, 900, 0x4000, 0x75);
                                     if (!conflictReserved) throw new InvalidOperationException("Test reservation failed");
                                     exclusiveReaderKeys = true;
-                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys, true); break;
+                                    configuration = Settings(true); registrationFailures = Register(); break;
                                 case "conflictOff":
                                     Native.UnregisterHotKey(hwnd, 900); conflictReserved = false;
-                                    registrationFailures = hotkeys.Register(new Configuration().Hotkeys, exclusiveReaderKeys); break;
+                                    registrationFailures = Register(); break;
+                                case "remapReader":
+                                    configuration = Settings(true);
+                                    configuration = configuration with { Hotkeys = configuration.Hotkeys.Select(k => k.Action == "toggle" ? k with { Gesture = "F2" } : k).ToImmutableArray() };
+                                    registrationFailures = Register(); break;
+                                case "remapScenes":
+                                    configuration = Settings(true);
+                                    configuration = configuration with { Scenes = configuration.Scenes.Select(s => s.Id switch {
+                                        "coding" => s with { Trigger = s.Trigger with { Gesture = "F4" } },
+                                        "algorithm" => s with { Trigger = s.Trigger with { Mode = HotkeyMode.Combination, Gesture = "Ctrl+Alt+B" } }, _ => s }).ToImmutableArray() };
+                                    registrationFailures = Register(); break;
+                                case "disableScene":
+                                    configuration = Settings(true);
+                                    configuration = configuration with { Scenes = configuration.Scenes.Select(s => s.Id == "coding" ? s with { Trigger = s.Trigger with { Enabled = false } } : s).ToImmutableArray() };
+                                    registrationFailures = Register(); break;
                                 case "state": break;
                                 case "quit": dispatcher.BeginInvokeShutdown(DispatcherPriority.Background); break;
                                 default: throw new InvalidOperationException("unknown fixture command");

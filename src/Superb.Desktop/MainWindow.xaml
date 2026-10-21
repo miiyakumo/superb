@@ -1,4 +1,4 @@
-<Window x:Class="Superb.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource {x:Type Window}}" Title="Superb" Width="960" Height="860" MinWidth="800" MinHeight="680" WindowStartupLocation="CenterScreen">
+<Window x:Class="Superb.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:Superb.Desktop" Style="{StaticResource {x:Type Window}}" Title="Superb" Width="960" Height="860" MinWidth="800" MinHeight="680" WindowStartupLocation="CenterScreen">
   <Grid Margin="28">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <DockPanel Margin="0,0,0,18">
@@ -15,7 +15,8 @@
           <DockPanel><Button DockPanel.Dock="Right" Content="连接模型" Click="OpenConnection_Click"/><ComboBox x:Name="BackendPicker" DisplayMemberPath="Name" SelectionChanged="BackendPicker_SelectionChanged" MinWidth="220"/></DockPanel>
           <TextBlock Grid.Row="1" x:Name="ModelSummary" Text="先连接一个模型，即可开始提问。" Style="{StaticResource Hint}"/>
           <Grid Grid.Row="2"><TextBox x:Name="QuestionBox" IsUndoEnabled="False" AcceptsReturn="True" Height="72" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" AutomationProperties.Name="输入问题" ToolTip="输入问题后点击发送"/><TextBlock Text="输入问题…" IsHitTestVisible="False" Margin="12,14,12,0" VerticalAlignment="Top" Foreground="{StaticResource Muted}"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding Text, ElementName=QuestionBox}" Value=""><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock></Grid>
-          <WrapPanel Grid.Row="3"><Button Content="发送问题" Style="{StaticResource Primary}" Click="Ask_Click"/><Button Content="问剪贴板" Click="Clipboard_Click"/><Button Content="截图提问" Click="Capture_Click"/><Button Content="取消" Click="Cancel_Click"/></WrapPanel>
+          <StackPanel Grid.Row="3"><WrapPanel><Button Content="发送问题" Style="{StaticResource Primary}" Click="Ask_Click"/><Button Content="问剪贴板" Click="Clipboard_Click"/><Button Content="截图提问" Click="Capture_Click"/><Button Content="取消" Click="Cancel_Click"/></WrapPanel>
+          <DockPanel><Button DockPanel.Dock="Right" Content="管理场景" Click="OpenScenes_Click"/><ItemsControl x:Name="SceneButtons"><ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><Button Content="{Binding Label}" Tag="{Binding Id}" ToolTip="{Binding Hint}" Click="SceneLaunch_Click"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></DockPanel></StackPanel>
           <Border Grid.Row="4" Background="{StaticResource Surface}" CornerRadius="8" Padding="14" Margin="0,8,0,12">
             <Grid><TextBlock x:Name="AnswerPlaceholder" Text="回答会显示在这里。
 问题与回答仅在本次运行中保留。" Foreground="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Center" TextAlignment="Center"/><TextBox x:Name="AnswerText" IsUndoEnabled="False" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0" Margin="0" FontSize="16" AutomationProperties.Name="模型回答"/></Grid>
@@ -42,6 +43,23 @@
       </TabItem>
       <TabItem x:Name="AdvancedTab" Header="高级设置"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
         <TextBlock Text="按需调整" Style="{StaticResource Heading}"/>
+        <Expander x:Name="SceneSettings" Header="场景管理" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
+          <TextBlock Text="一键使用独立提示词与请求配置" FontSize="18"/>
+          <TextBlock Text="每次独立请求，不带其他场景或历史对话。系统提示词和模板会保存到配置；输入正文不会保存。全局预处理（包括遮罩）始终先执行。" Style="{StaticResource Hint}"/>
+          <ComboBox x:Name="ScenePicker" DisplayMemberPath="Name" SelectionChanged="ScenePicker_SelectionChanged"/>
+          <WrapPanel><Button Content="新建场景" Click="NewScene_Click"/><Button Content="删除场景" Click="DeleteScene_Click"/><Button Content="恢复当前预设内容" Click="RestoreScene_Click"/><Button Content="补回缺失的内置场景" Click="RestoreMissingScenes_Click"/></WrapPanel>
+          <TextBlock Text="名称"/><TextBox x:Name="SceneName"/>
+          <TextBlock Text="输入来源（按钮和快捷键使用同一来源）"/><ComboBox x:Name="SceneInputPicker" SelectedIndex="0"><ComboBoxItem Content="剪贴板"/><ComboBoxItem Content="提问输入框"/><ComboBoxItem Content="已配置的截图范围"/></ComboBox>
+          <TextBlock Text="系统提示词"/><TextBox x:Name="SceneSystemPrompt" AcceptsReturn="True" Height="120" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+          <TextBlock Text="用户消息模板（保留 {input}）"/><TextBox x:Name="SceneUserTemplate" AcceptsReturn="True" Height="90" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+          <TextBlock Text="场景后端"/><ComboBox x:Name="SceneBackendPicker" DisplayMemberPath="Label" SelectedValuePath="Id"/>
+          <TextBlock Text="继承时遵循当前后端与固定路由；指定场景后端时，以该后端为准，不自动切换。" Style="{StaticResource Hint}"/>
+          <TextBlock Text="模型覆盖（留空继承后端）"/><TextBox x:Name="SceneModel"/>
+          <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="温度覆盖（留空继承）"/><TextBox x:Name="SceneTemperature"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="生成 tokens 覆盖（留空继承）"/><TextBox x:Name="SceneTokens"/></StackPanel></Grid>
+          <TextBlock Text="后端禁用 temperature 时仍不发送该参数。每个场景的发起键可在下方统一配置。" Style="{StaticResource Hint}"/>
+          <TextBlock x:Name="SceneTriggerSummary" Style="{StaticResource Hint}"/>
+          <WrapPanel><Button Content="保存场景" Style="{StaticResource Primary}" Click="SaveScene_Click"/><Button Content="配置发起键" Click="OpenHotkeys_Click"/></WrapPanel>
+        </StackPanel></Expander>
         <Expander x:Name="BackendSettings" Header="模型与连接" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0"><TextBlock Text="编辑后端"/><ComboBox x:Name="EditBackendPicker" DisplayMemberPath="Name" SelectionChanged="EditBackendPicker_SelectionChanged"/>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="名称"/><TextBox x:Name="BackendName"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="模型 ID"/><ComboBox x:Name="ModelName" IsEditable="True"/></StackPanel></Grid>
         <TextBlock Text="完整端点 URL"/><TextBox x:Name="Endpoint"/>
@@ -84,17 +102,25 @@
           <TextBlock x:Name="SyncSummary" Text="当前无授权" Style="{StaticResource Hint}"/>
           <WrapPanel><Button Content="开始 Live Clipboard" Click="StartSync_Click"/><Button Content="停止 Live Clipboard" Click="StopSync_Click"/></WrapPanel>
         </StackPanel></Border><Button Content="发送已准备内容" HorizontalAlignment="Left" Click="Send_Click"/></StackPanel></Expander>
-        <Expander Header="偏好与快捷键" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
+        <Expander x:Name="HotkeySettings" Header="偏好与快捷键" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
         <TextBlock Text="保持可控，减少打扰" Style="{StaticResource Heading}"/>
         <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
         <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
         <TextBlock Text="同步授权期限（分钟，1–60）"/><TextBox x:Name="SyncDuration" Text="10"/>
         <TextBlock Text="阅读字号（11–36）"/><TextBox x:Name="PanelFont" Text="16"/>
-        <CheckBox x:Name="ExclusiveReaderKeys" Content="独占阅读快捷键：F6 显示/收起 · F7 向下 · F8 向上"/>
-        <TextBlock Text="开启后，单独按 F6/F7/F8 由 Superb 接管，其他应用不会收到这些键的按下与释放；这三个动作的原有组合键暂时停用。带 Ctrl/Alt/Shift/Win 的组合仍交给系统。其他动作维持原配置，可能产生网页键盘事件。请松开按键后保存或退出。" Style="{StaticResource Hint}"/>
+        <CheckBox x:Name="ExclusiveReaderKeys" Content="开启独占单键接管（仅作用于已启用且选择独占模式的绑定）"/>
+        <TextBlock Text="独占单键可选 F1–F11、F13–F24，消费按下和释放；其他应用将暂时失去同键功能。F6 常用于切换焦点，F11 常用于全屏；F13–F24 通常需要专用键盘。普通组合键可能产生网页按键事件。请松开所有按键再保存或退出。" Style="{StaticResource Hint}"/>
         <TextBlock x:Name="HotkeyStatus" Style="{StaticResource Hint}"/>
-        <TextBlock Text="快捷键配置"/><TextBox x:Name="HotkeysBox" AcceptsReturn="True" Height="210" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
-        <TextBlock Text="capture / clipboard / toggle / copy / cancel / pause / send / pageDown / pageUp / settings / exit。冲突时会显示未注册的动作；控制中心始终可手动操作。" Style="{StaticResource Hint}"/>
+        <TextBlock Text="全部动作与场景发起键" FontSize="18"/>
+        <TextBlock Text="切换模式会填入该动作的建议值，可继续编辑。禁用绑定后仍可点击按钮；独占接管关闭时，该类绑定不生效。重复绑定会阻止保存；系统注册冲突会列出失败动作，网页自行定义的冲突无法全面检测。" Style="{StaticResource Hint}"/>
+        <ItemsControl x:Name="HotkeyRows"><ItemsControl.ItemTemplate><DataTemplate><Grid Margin="0,0,0,6">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="180"/><ColumnDefinition Width="140"/><ColumnDefinition/></Grid.ColumnDefinitions>
+          <CheckBox Content="启用" IsChecked="{Binding Enabled, Mode=TwoWay}"/>
+          <TextBlock Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" Margin="0,0,10,10"/>
+          <ComboBox Grid.Column="2" ItemsSource="{x:Static local:HotkeyEditorRow.Modes}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Mode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,10,10"/>
+          <TextBox Grid.Column="3" Text="{Binding Gesture, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="例如 Ctrl+Alt+C 或 F9"/>
+        </Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+        <Button Content="填入默认绑定（保存后生效）" HorizontalAlignment="Left" Click="ResetHotkeys_Click"/>
         <WrapPanel><Button Content="保存偏好" Style="{StaticResource Primary}" Click="SavePreferences_Click"/><Button Content="导出无凭据配置" Click="Export_Click"/></WrapPanel>
       </StackPanel></Expander>
         <Expander Header="保护状态" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">

@@ -4,13 +4,15 @@ on:
   push:
     paths:
       - 'tools/event-probe/**'
-      - 'tests/Superb.WindowsTests/FocusHost.cs'
+      - 'tests/Superb.WindowsTests/**'
       - 'src/Superb.Desktop/ReaderWindow.xaml*'
       - 'src/Superb.Desktop/Platform/Protection.cs'
       - 'src/Superb.Desktop/Platform/HotkeyManager.cs'
       - 'src/Superb.Desktop/Platform/ExclusiveReaderHotkeys.cs'
       - 'src/Superb.Desktop/Platform/Native.cs'
       - 'src/Superb.Desktop/Configuration.cs'
+      - 'src/Superb.Desktop/ScenarioSettings.cs'
+      - 'src/Superb.Core/**'
       - 'src/Superb.Desktop/App.xaml*'
       - '.github/workflows/focus-probe.yml'
 permissions:

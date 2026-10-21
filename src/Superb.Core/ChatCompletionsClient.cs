@@ -41,10 +41,13 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
             parts.Add(new { type = "image_url", image_url = new { url = "data:image/png;base64," + Convert.ToBase64String(request.Content.Png.AsSpan()) } });
             content = parts;
         }
+        var messages = new List<object>();
+        if (!string.IsNullOrWhiteSpace(request.SystemPrompt)) messages.Add(new { role = "system", content = (object)request.SystemPrompt });
+        messages.Add(new { role = "user", content });
         var body = new Dictionary<string, object>
         {
             ["model"] = backend.Model,
-            ["messages"] = new[] { new { role = "user", content } },
+            ["messages"] = messages,
             ["stream"] = backend.Stream,
             [backend.TokenLimitParameter == TokenLimitParameter.MaxCompletionTokens ? "max_completion_tokens" : "max_tokens"] = backend.MaxTokens
         };

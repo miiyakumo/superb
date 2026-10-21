@@ -23,6 +23,7 @@ internal static class Program
     {
         if (args.Contains("--focus-host")) return FocusHost.Run(args.Contains("--exclusive-reader"));
         var tests = new List<(string, Action)>();
+        ScenarioTests.Add(tests);
         tests.Add(("Exclusive reader keys own complete cycles without repeats or modifier replay", () =>
         {
             var key = new ExclusiveKeyCycle();
@@ -138,10 +139,12 @@ internal static class Program
         }));
         tests.Add(("WPF simplified views render and emergency pause clears all sensitive controls", () =>
         {
-            var app = new App(); app.InitializeComponent();
+            var app = new App(isolatedTestHost: true); app.InitializeComponent();
             var window = new MainWindow();
             var tabs = (TabControl)window.FindName("MainTabs");
             Assert(tabs.Items.Count == 3);
+            Assert(((ItemsControl)window.FindName("SceneButtons")).Items.Count == 3);
+            Assert(((ItemsControl)window.FindName("HotkeyRows")).Items.Count == HotkeyDefaults.All.Length + 3);
             Assert(!((Expander)window.FindName("BackendSettings")).IsExpanded);
             Assert(!((Expander)window.FindName("CaptureSettings")).IsExpanded);
             Assert(window.Background == app.Resources["Base"] && window.Foreground == app.Resources["Ink"]);
@@ -154,9 +157,13 @@ internal static class Program
             System.Windows.Documents.TextElement.SetFontFamily(surface, window.FontFamily);
             System.Windows.Documents.TextElement.SetFontSize(surface, window.FontSize);
             var renderIndex = Array.IndexOf(args, "--render-dir");
-            for (var i = 0; i < tabs.Items.Count; i++)
+            for (var i = 0; i < tabs.Items.Count + 2; i++)
             {
-                tabs.SelectedIndex = i;
+                tabs.SelectedIndex = Math.Min(i, tabs.Items.Count - 1);
+                var sceneSection = (Expander)window.FindName("SceneSettings");
+                var keySection = (Expander)window.FindName("HotkeySettings");
+                sceneSection.IsExpanded = i == 3; keySection.IsExpanded = i == 4;
+                if (i >= 3) (i == 3 ? sceneSection : keySection).BringIntoView();
                 surface.Measure(new Size(904, 780)); surface.Arrange(new Rect(0, 0, 904, 780)); surface.UpdateLayout();
                 Assert(surface.ActualWidth == 904 && surface.ActualHeight == 780 && root.ActualWidth > 0);
                 if (renderIndex >= 0 && renderIndex + 1 < args.Length)

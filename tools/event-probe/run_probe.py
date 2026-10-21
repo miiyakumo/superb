@@ -168,14 +168,22 @@ EXCLUSIVE_SCENARIOS = [
  ('owned_release','F8 按住后按 Shift，再释放 F8'),
  ('disabled_function','关闭独占后 F8 恢复透传'), ('reenabled_function','重新开启后 F8 恢复独占')]
 
+SCENE_SCENARIOS = [('scene_coding','AI Coding 场景发起'), ('scene_algorithm','算法题场景发起'), ('scene_general','通用问答场景发起')]
+CUSTOM_SCENARIOS = [('remap_scene_exclusive','自定义 F4 发起 AI Coding'), ('remap_scene_combo','自定义 Ctrl+Alt+B 发起算法题'),
+ ('old_scene_key','改绑后旧 F9 恢复透传'), ('disabled_scene','禁用场景发起键后 F9 透传'), ('remap_reader','自定义 F2 显示/收起阅读窗')]
+
 def native_trials(page, context, fixture, native, repeats, results, exclusive=False):
     hwnd=native.browser_handle()
-    scenarios=list(SCENARIOS)+(EXCLUSIVE_SCENARIOS if exclusive else [])
+    scenarios=list(SCENARIOS)+(EXCLUSIVE_SCENARIOS if exclusive else [])+SCENE_SCENARIOS+(CUSTOM_SCENARIOS if exclusive else [])
     if exclusive:
         labels={'hotkey_show':'F6 显示浮窗','hotkey_hide':'F6 收起浮窗','hotkey_down':'F7 向下翻页','hotkey_up':'F8 向上翻页'}
         scenarios=[(s,labels.get(s,label)) for s,label in scenarios]
     for scenario,label in scenarios:
         for repeat in range(1,repeats+1):
+            if scenario.startswith('scene_'): fixture.command('exclusiveOn' if exclusive else 'exclusiveOff')
+            if scenario in ('remap_scene_exclusive','remap_scene_combo','old_scene_key'): fixture.command('remapScenes')
+            if scenario=='disabled_scene': fixture.command('disableScene')
+            if scenario=='remap_reader': fixture.command('remapReader')
             if scenario in ('disabled_function','reenabled_function'):
                 fixture.command('exclusiveOff' if scenario=='disabled_function' else 'exclusiveOn')
             fixture.command('closeControl'); fixture.command('show'); fixture.command('render')
@@ -216,6 +224,13 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
             elif scenario=='owned_release':
                 native.key(0x77); native.key(0x10); native.key(0x77,True); native.key(0x10,True)
             elif scenario in ('disabled_function','reenabled_function'): native.chord(0x77)
+            elif scenario in ('scene_coding','scene_algorithm','scene_general'):
+                index={'scene_coding':0,'scene_algorithm':1,'scene_general':2}[scenario]
+                native.chord(*((0x78+index,) if exclusive else (0x11,0x12,(0x43,0x41,0x47)[index])))
+            elif scenario=='remap_scene_exclusive': native.chord(0x73)
+            elif scenario=='remap_scene_combo': native.chord(0x11,0x12,0x42)
+            elif scenario in ('old_scene_key','disabled_scene'): native.chord(0x78)
+            elif scenario=='remap_reader': native.chord(0x71)
             page.wait_for_timeout(650)
             after=fixture.command('state')
             run=page.evaluate('eventProbe.stop()')['trials'][-1]
@@ -246,10 +261,24 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
                 'modified_release':not new_actions and key_pair('F8') and key_pair('ShiftLeft'),
                 'owned_release':new_actions==['pageUp'] and after['scrollOffset']<before['scrollOffset'] and key_pair('ShiftLeft') and not any(e['code']=='F8' for e in key_events),
                 'disabled_function':not new_actions and key_pair('F8') and not after['exclusiveReaderKeys'],
-                'reenabled_function':new_actions==['pageUp'] and after['scrollOffset']<before['scrollOffset'] and after['exclusiveReaderKeys']
+                'reenabled_function':new_actions==['pageUp'] and after['scrollOffset']<before['scrollOffset'] and after['exclusiveReaderKeys'],
+                'scene_coding':True, 'scene_algorithm':True, 'scene_general':True, 'remap_scene_exclusive':True, 'remap_scene_combo':True,
+                'old_scene_key':not new_actions and key_pair('F9') and len(before['sceneRequests'])==len(after['sceneRequests']),
+                'disabled_scene':not new_actions and key_pair('F9') and len(before['sceneRequests'])==len(after['sceneRequests']),
+                'remap_reader':new_actions==['toggle'] and not after['visible']
             }[scenario]
+            scene_id={'scene_coding':'coding','scene_algorithm':'algorithm','scene_general':'general','remap_scene_exclusive':'coding','remap_scene_combo':'algorithm'}.get(scenario)
+            if scene_id:
+                definitions={s['Id']:s for s in before['sceneDefinitions']}
+                definition=definitions[scene_id]
+                requests=after['sceneRequests'][len(before['sceneRequests']):]
+                expected_messages=[{'role':'system','content':definition['SystemPrompt']},
+                    {'role':'user','content':definition['UserTemplate'].replace('{input}','Synthetic scene input '+scene_id)}]
+                confirmed=(new_actions==['scene:'+scene_id] and len(requests)==1 and requests[0]['messages']==expected_messages
+                    and requests[0]['model']==(definition['Model'] or 'base-model') and after['sceneCompletions']==before['sceneCompletions']+1
+                    and not after['sceneErrors'] and not after['endpointError'])
             event_expectation=None
-            if exclusive and scenario in ('hotkey_show','hotkey_hide','hotkey_down','hotkey_up','repeat_toggle','repeat_down','reenabled_function'):
+            if exclusive and scenario in ('hotkey_show','hotkey_hide','hotkey_down','hotkey_up','repeat_toggle','repeat_down','reenabled_function','scene_coding','scene_algorithm','scene_general','remap_scene_exclusive','remap_reader'):
                 event_expectation=not key_events and counts['windowBlur']==0 and counts['hidden']==0 and run['dropped']==0
                 confirmed=confirmed and event_expectation
             result={'scenario':scenario,'label':label,'repeat':repeat,'actionConfirmed':confirmed,
@@ -269,10 +298,10 @@ def write_report(data, output):
     details=html.escape(json.dumps(data,ensure_ascii=False,indent=2))
     text=f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Superb 浮窗事件实测报告</title><style>body{{font:15px/1.7 system-ui;max-width:1200px;margin:40px auto;padding:20px;color:#17251e}}h1{{font-size:30px}}table{{border-collapse:collapse;font-size:13px;width:100%}}td,th{{border:1px solid #ccd6cf;padding:9px;text-align:left}}th{{background:#eaf2ec}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}.note{{background:#eef5ef;padding:18px;border-left:4px solid #477f58}}</style>
 <h1>Superb 浮窗事件实测报告</h1><p>生成时间：{html.escape(data['time'])} · 浏览器：{html.escape(data['browser'])} · 版本：{html.escape(data.get('browserVersion','unknown'))} · 快捷键模式：{html.escape(data.get('readerKeys','legacy'))}</p>
-<div class="note"><b>执行状态：{html.escape(data['status'])}</b><p>{html.escape(data.get('error',''))}</p><p>执行环境：{html.escape(data['platform'])}。本报告使用真实生产 ReaderWindow、Protection、HotkeyManager 的隔离测试宿主。鼠标和快捷键由 Windows SendInput 合成，非真人硬件输入；不加载用户配置、不调用模型。</p><p>“设置”按钮打开的是普通 WPF 对照窗口；未验证完整 Superb 主程序、用户本机、第三方网站、浏览器扩展或系统监控。窗口显示、滚轮和快捷键须同时有原生动作证据，否则不能用零事件宣称无影响。</p></div>
+<div class="note"><b>执行状态：{html.escape(data['status'])}</b><p>{html.escape(data.get('error',''))}</p><p>执行环境：{html.escape(data['platform'])}。本报告使用真实生产 ReaderWindow、Protection、HotkeyManager 的隔离测试宿主。鼠标和快捷键由 Windows SendInput 合成，非真人硬件输入；不加载用户配置；场景动作通过生产请求构造器和 HTTP 客户端向本机合成服务发送测试内容，不调用真实模型。</p><p>“设置”按钮打开的是普通 WPF 对照窗口；未验证完整 Superb 主程序、用户本机、第三方网站、浏览器扩展或系统监控。窗口显示、滚轮和快捷键须同时有原生动作证据，否则不能用零事件宣称无影响。</p></div>
 <h2>观察矩阵</h2><p>window.blur 与页面内部 focusout 分开。每轮采样前确认浏览器 HWND 处于前台、document.hasFocus() 为真且页面可见。isTrusted 不代表真人输入。最后一列只比较前后台 HWND，瞬时失焦由事件列记录。</p>
 <table><tr><th>场景</th><th>轮次</th><th>动作确认</th><th>窗口失焦</th><th>隐藏</th><th>按下/松开</th><th>网页收到的 code</th><th>前台 HWND 保持</th></tr>{''.join(rows)}</table>
-<h2>适用边界</h2><p>结果只说明这一环境下本地页面观察到什么。未观察到事件不等于不可检测；网页以外的观察机制不在本实验内。测试页不屏蔽事件、不覆盖焦点/可见性 API；独占模式由 Superb 在系统输入层消费 F6/F7/F8 的完整按键周期。使用独立临时浏览器配置和 connect_over_cdp(no_defaults=True)，从启动时就不启用焦点模拟，并以正对照验证原生焦点/可见性行为。原始记录与报告一并保存。</p><details><summary>环境、前台窗口、动作计数、滚动偏移及事件明细</summary><pre>{details}</pre></details></html>'''
+<h2>适用边界</h2><p>结果只说明这一环境下本地页面观察到什么。未观察到事件不等于不可检测；网页以外的观察机制不在本实验内。测试页不屏蔽事件、不覆盖焦点/可见性 API；独占模式由 Superb 在系统输入层消费已配置功能键的完整按键周期。使用独立临时浏览器配置和 connect_over_cdp(no_defaults=True)，从启动时就不启用焦点模拟，并以正对照验证原生焦点/可见性行为。原始记录与报告一并保存。</p><details><summary>环境、前台窗口、动作计数、滚动偏移及事件明细</summary><pre>{details}</pre></details></html>'''
     output.mkdir(parents=True,exist_ok=True)
     (output/'results.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'report.html').write_text(text,encoding='utf-8')

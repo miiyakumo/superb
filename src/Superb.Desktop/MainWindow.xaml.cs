@@ -70,6 +70,7 @@ public partial class MainWindow : Window
             }
         };
         Closing += (_, _) => Shutdown();
+        Populate();
     }
     private void InitializePlatform(object? sender, EventArgs e)
     {
@@ -136,8 +137,8 @@ public partial class MainWindow : Window
         EditBackendPicker.SelectedItem = BackendPicker.SelectedItem;
         PipelineBox.Text = JsonSerializer.Serialize(config.Pipeline.Steps, Configuration.Json);
         RoutingBox.Text = JsonSerializer.Serialize(config.Routing, Configuration.Json);
-        HotkeysBox.Text = JsonSerializer.Serialize(config.Hotkeys, Configuration.Json);
-        ExclusiveReaderKeys.IsChecked = config.ExclusiveReaderKeys;
+        PopulateScenesAndKeys();
+        ExclusiveReaderKeys.IsChecked = config.ExclusiveHotkeysEnabled;
         AutoCopy.IsChecked = config.AutoCopy;
         ClearClipboard.IsChecked = config.ClearOwnedClipboardOnPause;
         SyncDuration.Text = config.SyncMinutes.ToString(); PanelFont.Text = config.Panel.FontSize.ToString();
@@ -230,7 +231,7 @@ public partial class MainWindow : Window
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return false; }
         return true;
     }
-    private async Task CaptureInput(bool screen, bool automatic = false)
+    private async Task CaptureInput(bool screen, bool automatic = false, ScenePreset? scene = null)
     {
         if (!Ready() || preparing) return;
         if (!automatic && config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
@@ -272,18 +273,25 @@ public partial class MainWindow : Window
             if (version != operation || !Ready()) return;
             coordinator.Invalidate(); completed = null; prepared = null; latestUpdate = null; ClearOutput();
             Status("本地处理中");
-            var notices = new List<string>();
-            var processed = await Task.Run(() => Preprocessor.Process(snapshot.Content, settings.Pipeline, new ImageProcessor(), notices.Add));
+            PreparedRequest request;
+            if (scene is not null)
+                request = await Task.Run(() => SceneRequestFactory.Prepare(settings, scene, snapshot, new ImageProcessor()));
+            else
+            {
+                var localNotices = new List<string>();
+                var content = await Task.Run(() => Preprocessor.Process(snapshot.Content, settings.Pipeline, new ImageProcessor(), localNotices.Add));
+                var selected = settings.Routing.Select(content, settings.SelectedBackendId, settings.Backends);
+                request = new(snapshot with { Content = content }, content, settings.Pipeline, selected, localNotices.ToImmutableArray());
+            }
             if (version != operation || !Ready()) return;
             if (automatic && (activeSyncGeneration != syncGeneration || grant is null)) return;
-            var route = settings.Routing.Select(processed, settings.SelectedBackendId, settings.Backends);
+            var route = request.Backend; var processed = request.Content;
+            var notices = request.ProcessingNotices;
             if (automatic && !activeGrant!.Allows(snapshot.Kind, route.Id, DateTimeOffset.UtcNow, false)) throw new SafeFailure("sync_route_not_authorized");
-            // Do not retain the raw source once local transformations have completed.
-            snapshot = snapshot with { Content = processed };
-            prepared = new(snapshot, processed, settings.Pipeline, route, notices.ToImmutableArray());
+            prepared = request;
             Policy.Check(prepared);
             reader.Preview(processed);
-            StatusLabel.Text = $"已准备 · {route.Name} / {route.Model} · 等待发送" + (notices.Count > 0 ? $" · {notices.Count} 个可选步骤已按规则跳过" : "");
+            StatusLabel.Text = $"已准备 · {route.Name} / {route.Model} · 等待发送" + (notices.Length > 0 ? $" · {notices.Length} 个可选步骤已按规则跳过" : "");
             if (automatic) lastAutoCapture = DateTimeOffset.UtcNow;
             var send = automatic ? activeGrant!.AllowSend : true;
             if (send) await SendPrepared(automatic, activeGrant);
@@ -315,8 +323,15 @@ public partial class MainWindow : Window
     {
         try
         {
+            if (action.StartsWith("scene:", StringComparison.Ordinal))
+            {
+                var scene = config.Scenes.FirstOrDefault(s => s.Action == action) ?? throw new SafeFailure("scene_missing");
+                await RunScene(scene); return;
+            }
             switch (action)
             {
+                case "ask": await AskQuestion(); break;
+                case "resume": Resume_Click(this, new RoutedEventArgs()); break;
                 case "clipboard": await CaptureInput(false); break;
                 case "capture": await CaptureInput(true); break;
                 case "send": await SendPrepared(); break;
@@ -373,9 +388,9 @@ public partial class MainWindow : Window
     }
     private void RegisterHotkeys()
     {
-        var failed = hotkeys!.Register(config.Hotkeys, config.ExclusiveReaderKeys);
+        var failed = hotkeys!.Register(config.AllHotkeys(), config.ExclusiveHotkeysEnabled);
         HotkeyStatus.Text = failed.Count > 0 ? "未启用的动作：" + string.Join(", ", failed)
-            : config.ExclusiveReaderKeys ? "独占阅读快捷键已启用：F6 / F7 / F8" : "使用原有组合快捷键（可能产生网页按键事件）";
+            : config.ExclusiveHotkeysEnabled ? "独占接管已开启；已启用的绑定注册成功" : "独占接管关闭；普通组合键可能产生网页按键事件";
         if (failed.Count > 0) Status("快捷键冲突或无效（动作）：" + string.Join(", ", failed));
     }
     private void Resume_Click(object sender, RoutedEventArgs e)
@@ -387,7 +402,8 @@ public partial class MainWindow : Window
     private void OpenConnection_Click(object sender, RoutedEventArgs e) => MainTabs.SelectedItem = ConnectionTab;
     private void OpenWorkspace_Click(object sender, RoutedEventArgs e) => MainTabs.SelectedItem = WorkspaceTab;
     private async void CopyAnswer_Click(object sender, RoutedEventArgs e) => await RunCommand("copy");
-    private async void Ask_Click(object sender, RoutedEventArgs e)
+    private async void Ask_Click(object sender, RoutedEventArgs e) => await AskQuestion();
+    private async Task AskQuestion(ScenePreset? scene = null)
     {
         if (!Ready() || preparing) return;
         if (config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
@@ -401,12 +417,20 @@ public partial class MainWindow : Window
             var sequence = clipboard!.Sequence;
             if (content.Size > Policy.AbsoluteInputLimit) throw new SafeFailure("input_too_large");
             coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; ClearOutput();
-            var notices = new List<string>();
-            var processed = await Task.Run(() => Preprocessor.Process(content, settings.Pipeline, new ImageProcessor(), notices.Add));
+            var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ManualText, content, sequence, DateTimeOffset.UtcNow);
+            PreparedRequest request;
+            if (scene is not null)
+                request = await Task.Run(() => SceneRequestFactory.Prepare(settings, scene, snapshot, new ImageProcessor()));
+            else
+            {
+                var notices = new List<string>();
+                var processed = await Task.Run(() => Preprocessor.Process(content, settings.Pipeline, new ImageProcessor(), notices.Add));
+                var selected = settings.Routing.Select(processed, settings.SelectedBackendId, settings.Backends);
+                request = new(snapshot with { Content = processed }, processed, settings.Pipeline, selected, notices.ToImmutableArray());
+            }
             if (version != operation || !Ready()) return;
-            var selected = settings.Routing.Select(processed, settings.SelectedBackendId, settings.Backends);
-            var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ManualText, processed, sequence, DateTimeOffset.UtcNow);
-            prepared = new(snapshot, processed, settings.Pipeline, selected, notices.ToImmutableArray());
+            if (!IsVisible && !reader.IsVisible) reader.Show();
+            prepared = request;
             Policy.Check(prepared);
             await SendPrepared();
         }
@@ -614,6 +638,7 @@ public partial class MainWindow : Window
     private void DeleteBackend_Click(object sender, RoutedEventArgs e)
     {
         if (EditBackendPicker.SelectedItem is not Backend b) return;
+        if (config.Scenes.Any(s => s.BackendId == b.Id)) { Status("该后端仍被场景引用，请先调整场景后端"); return; }
         StopSync();
         Mutate(() =>
         {
@@ -655,11 +680,10 @@ public partial class MainWindow : Window
     }
     private void SavePreferences_Click(object sender, RoutedEventArgs e) => Mutate(() =>
     {
-        var keys = JsonSerializer.Deserialize<ImmutableArray<Hotkey>>(HotkeysBox.Text, Configuration.Json);
-        string[] required = ["capture", "clipboard", "toggle", "copy", "cancel", "pause", "settings", "exit"];
-        if (keys.IsDefault || required.Any(action => !keys.Any(x => x.Action == action)) || keys.Select(x => x.Action).Distinct().Count() != keys.Length)
-            throw new SafeFailure("hotkey_required_action_missing");
-        var candidate = config with { Hotkeys = keys, AutoCopy = AutoCopy.IsChecked == true, ExclusiveReaderKeys = ExclusiveReaderKeys.IsChecked == true,
+        var bindings = ((IEnumerable<HotkeyEditorRow>)HotkeyRows.ItemsSource).Select(r => r.Binding()).ToArray();
+        var candidate = config with { Hotkeys = bindings.Where(k => !k.Action.StartsWith("scene:")).ToImmutableArray(),
+            Scenes = config.Scenes.Select(s => s with { Trigger = bindings.Single(k => k.Action == s.Action) }).ToImmutableArray(),
+            AutoCopy = AutoCopy.IsChecked == true, ExclusiveHotkeysEnabled = ExclusiveReaderKeys.IsChecked == true,
             ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true, SyncMinutes = int.Parse(SyncDuration.Text),
             Panel = reader.Layout() with { FontSize = double.Parse(PanelFont.Text) } };
         candidate.Validate(); config = candidate; reader.ApplyLayout(config.Panel); RegisterHotkeys();

@@ -30,7 +30,7 @@ public sealed record Backend(string Id, string Name, string Endpoint, string Mod
     ProxyMode ProxyMode = ProxyMode.Direct, string ProxyAddress = "",
     bool SendTemperature = true, TokenLimitParameter TokenLimitParameter = TokenLimitParameter.MaxTokens);
 public sealed record PreparedRequest(InputSnapshot Snapshot, Payload Content, Pipeline Pipeline, Backend Backend,
-    ImmutableArray<string> ProcessingNotices = default);
+    ImmutableArray<string> ProcessingNotices = default, string SystemPrompt = "", string? SceneId = null);
 public sealed record Attempt(Guid Id, long Generation, PreparedRequest Request);
 public sealed record RequestUpdate(Attempt Attempt, RequestState State, string Text = "", string? Code = null);
 public sealed record BackendEvent(string? Delta = null, bool Completed = false, bool Waiting = false);

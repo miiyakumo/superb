@@ -41,7 +41,8 @@ public static class Policy
         ValidateBackend(request.Backend);
         var p = request.Content;
         if (string.IsNullOrWhiteSpace(p.Text) && !p.HasImage) throw new SafeFailure("input_empty");
-        if (p.Size > request.Backend.MaxInputBytes) throw new SafeFailure("input_too_large");
+        if (request.SystemPrompt is null || request.SystemPrompt.Length > 16000) throw new SafeFailure("system_prompt_invalid");
+        if (p.Size + System.Text.Encoding.UTF8.GetByteCount(request.SystemPrompt) > request.Backend.MaxInputBytes) throw new SafeFailure("input_too_large");
         if (p.HasImage && !request.Backend.SupportsImages) throw new SafeFailure("backend_has_no_vision");
         if (p.HasImage && (p.Width <= 0 || p.Height <= 0 || (long)p.Width * p.Height > MaximumPixels))
             throw new SafeFailure("image_dimensions_invalid");

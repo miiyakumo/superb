@@ -10,27 +10,29 @@ internal sealed class HotkeyManager(nint handle) : IDisposable
     private ExclusiveReaderHotkeys? exclusive;
     public Dictionary<string, string> RegistrationErrors { get; } = [];
     public bool LastWorkerStopped { get; private set; } = true;
-    public List<string> Register(IEnumerable<Hotkey> keys, bool exclusiveReaderKeys = false)
+    public List<string> Register(IEnumerable<Hotkey> keys, bool exclusiveEnabled = false)
     {
+        var entries = keys.ToArray();
+        HotkeyDefaults.Validate(entries);
         Dispose();
         RegistrationErrors.Clear();
         var failures = new List<string>();
-        var converter = new KeyGestureConverter();
         var id = 100;
         var exclusiveActions = new Dictionary<int, string>();
         var exclusiveKeys = new Dictionary<int, uint>();
-        foreach (var entry in keys)
+        foreach (var entry in entries)
         {
             ++id;
-            if (exclusiveReaderKeys && ExclusiveReaderHotkeys.Keys.TryGetValue(entry.Action, out var key))
-            {
-                exclusiveActions[id] = entry.Action;
-                exclusiveKeys[id] = key;
-                continue;
-            }
+            if (!entry.Enabled || (entry.Mode == HotkeyMode.Exclusive && !exclusiveEnabled)) continue;
             try
             {
-                var gesture = (KeyGesture?)converter.ConvertFromInvariantString(entry.Gesture) ?? throw new SafeFailure("hotkey_invalid");
+                var gesture = HotkeyDefaults.Parse(entry);
+                if (entry.Mode == HotkeyMode.Exclusive)
+                {
+                    exclusiveActions[id] = entry.Action;
+                    exclusiveKeys[id] = (uint)KeyInterop.VirtualKeyFromKey(gesture.Key);
+                    continue;
+                }
                 uint mods = 0x4000;
                 if (gesture.Modifiers.HasFlag(ModifierKeys.Alt)) mods |= 1;
                 if (gesture.Modifiers.HasFlag(ModifierKeys.Control)) mods |= 2;
