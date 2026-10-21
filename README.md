@@ -2,7 +2,7 @@
 
 面向 Windows 11 x64 的受控 Agent 转发客户端。使用原生 WPF 阅读面板、Win32 采集与剪贴板接口，以及可配置的 Chat Completions 后端。
 
-**当前为 0.1 开发版本，尚未完成 Windows 实机验收，不能作为已验证的保密产品发布。** 已实现采集 → 本地处理 → 独立发送 → 流式阅读 → 可选剪贴板输出的代码闭环。采集排除、焦点行为、多屏 DPI、锁屏和系统剪贴板兼容性需要实测；没有任何采集软件组合被标记为已通过。
+**当前为 0.1.1 开发版本，尚未完成 Windows 桌面采集保护验收，不能作为已验证的保密产品发布。** 已实现采集 → 本地处理 → 受控发送 → 流式阅读 → 可选剪贴板输出的代码闭环。采集排除、焦点行为、多屏 DPI、锁屏和系统剪贴板兼容性需要实测；没有任何采集软件组合被标记为已通过。
 
 ## 运行与构建
 
@@ -70,13 +70,15 @@ Live Clipboard 需在每次会话中明确授权输入格式、接收后端、�
 
 - 配置保存在 `%LOCALAPPDATA%\Superb\settings.json`，凭据单独保存在 `credentials\*.dpapi`，采用当前用户 DPAPI。配置导出去掉凭据引用及采集目标。规则模板属于持久配置，不要把敏感正文写进模板。
 - 截图、剪贴板正文、回答和请求历史默认只在内存；无应用内容日志、自动遥测、崩溃上传或临时图像文件。暂停/锁屏/退出清除显示和会话引用，默认只清除仍由本应用拥有的剪贴板输出。托管字符串、图形缓冲、系统分页与第三方转储无法保证绝对擦除。
-- 所有后端流量经过同一个客户端，验证 HTTPS 证书，禁用重定向、Cookie、系统代理和自动重试。若需代理，应把获授权代理自身配置成端点。模型协议目前仅实现 Chat Completions；不支持工具调用、Responses、Anthropic 原生协议、OCR 或浏览器自动化。
+- 所有后端流量经过同一个客户端，验证 HTTPS 证书，禁用重定向、Cookie 和自动重试。每个后端可选择直连、系统代理或自定义 HTTP/HTTPS/SOCKS5 代理；旧配置仍为直连。普通网络代理填写在“自定义代理地址”，不要替换模型端点。模型协议目前仅实现 Chat Completions；不支持工具调用、Responses、Anthropic 原生协议、OCR 或浏览器自动化。
 - 每次请求独立，流必须包含合法 `finish_reason: stop` 及 `[DONE]` 才完成。截断、长度上限、限流及内容过滤结果不会自动写回。手动重试沿用冻结后的输入和后端，但创建新的尝试 ID，可能产生新的计费。
 - 阅读器只生成本地文本与代码段，不解析 HTML/XAML、不自动加载链接或执行命令。系统剪贴板历史/云标记不阻止其他进程读取当前剪贴板。
 - 当前采集原型采用 GDI `BitBlt` 和窗口 `PrintWindow`，不是 WGC。拒绝黑帧和变化的几何范围，不做全桌面回退。部分 GPU 窗口可能无法正确采集；需要用验收证据冻结支持范围。PrintWindow 超过 5 秒后停止消费结果，底层调用不能强制终止，最多保留一个在途采集线程。
 - `WDA_EXCLUDEFROMCAPTURE` 设置成功只表示属性可检查，不能证明所有采集链路安全。运行中每 100 ms 及敏感渲染前检查；外部改变保护与检测之间存在时间窗口，必须逐帧验证。不存在进程隐藏、注入、关闭系统安全提示或对高权限攻击者的保证。
 
 ## 验证
+
+连接问题先在“模型后端”保存正确的连接方式，再点“测试已保存后端”。该动作使用同一请求实现和固定文本 `Reply with OK.`，不读取剪贴板、不显示或写回测试回答。界面会区分 DNS、TCP、TLS、代理、HTTP 状态和响应格式错误；模型不支持 `temperature` 或 `max_tokens` 时，可关闭前者并选择 `max_completion_tokens`。详细步骤见 [后端连接排查](docs/backend-connectivity.md)。
 
 跨平台核心测试（自包含控制台测试器，失败时非零退出）：
 
@@ -94,6 +96,6 @@ dotnet run --project tests/Superb.WindowsTests -c Release -- --interactive
 dotnet run --project tests/Superb.WindowsTests -c Release -- --clipboard
 ```
 
-普通 Windows 测试只处理合成位图和一次性合成凭据；`--interactive` 检查窗口属性，不能替代采集排除实测；`--clipboard` 会覆盖当前剪贴板。CI 已配置 Windows 构建、核心/图像/DPAPI 测试及打包，尚未运行远端工作流。
+普通 Windows 测试只处理合成位图、一次性合成凭据和本机模拟后端；`--interactive` 检查窗口属性，不能替代采集排除实测；`--clipboard` 会覆盖当前剪贴板。CI 固定使用 Windows Server 2025，运行核心/真实代理传输/图像/DPAPI 到 HTTP 集成测试并打包，同时保留操作系统、SDK 和测试记录。其结论不等于 Windows 11 桌面行为已验收。
 
 详细设计、需求覆盖和发布门槛见 [架构与需求映射](docs/architecture.md)、[Windows 验收矩阵](docs/acceptance.md)、[本次验证记录](docs/verification.md)。原始需求保存在 [requirements.zh-CN.txt](docs/requirements.zh-CN.txt)。

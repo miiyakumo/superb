@@ -76,7 +76,7 @@ public sealed class Coordinator(IBackendClient client)
         }
         catch (OperationCanceledException) { Emit(RequestState.Failed, "request_timed_out"); }
         catch (SafeFailure ex) { Emit(RequestState.Failed, ex.Code); }
-        catch (Exception) { Emit(RequestState.Failed, "backend_request_failed"); }
+        catch (Exception ex) { Emit(RequestState.Failed, ConnectionDiagnostics.CodeFor(ex)); }
         finally
         {
             output.Clear();

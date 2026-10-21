@@ -32,11 +32,20 @@
         <TextBlock Text="编辑后端"/><ComboBox x:Name="EditBackendPicker" DisplayMemberPath="Name" SelectionChanged="EditBackendPicker_SelectionChanged"/>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="名称"/><TextBox x:Name="BackendName"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="模型 ID"/><TextBox x:Name="ModelName"/></StackPanel></Grid>
         <TextBlock Text="完整端点 URL"/><TextBox x:Name="Endpoint"/>
+        <TextBlock Text="例如 https://你的服务/v1/chat/completions；不要只填域名或 /v1。" Style="{StaticResource Hint}"/>
         <TextBlock Text="API 密钥（留空保留已有凭据）"/><PasswordBox x:Name="ApiKey"/>
+        <TextBlock Text="连接方式"/><ComboBox x:Name="ProxyModePicker" SelectedIndex="0"><ComboBoxItem Content="直连（不使用代理）"/><ComboBoxItem Content="系统代理（环境变量 / Windows 用户代理）"/><ComboBoxItem Content="自定义代理"/></ComboBox>
+        <TextBlock Text="自定义代理地址（仅自定义模式使用）"/><TextBox x:Name="ProxyAddressBox"/>
+        <TextBlock Text="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891，端口需与你的代理程序一致。选择系统或自定义代理即授权该代理参与连接；不会在失败后切换连接方式。" Style="{StaticResource Hint}"/>
         <WrapPanel><CheckBox x:Name="Vision" Content="支持图像输入" Margin="0,6,24,10"/><CheckBox x:Name="Streaming" Content="流式输出" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="Loopback" Content="允许本机 IP 回环 HTTP"/></WrapPanel>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="超时（秒，1–600）"/><TextBox x:Name="TimeoutSeconds" Text="120"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="最大输入（MiB，1–16）"/><TextBox x:Name="InputLimit" Text="8"/></StackPanel></Grid>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="温度（0–2）"/><TextBox x:Name="Temperature" Text="0.2"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="最大生成 tokens"/><TextBox x:Name="MaxTokens" Text="4096"/></StackPanel><StackPanel Grid.Column="4"><TextBlock Text="最大响应字符"/><TextBox x:Name="MaxOutput" Text="200000"/></StackPanel></Grid>
+        <WrapPanel><CheckBox x:Name="SendTemperature" Content="发送 temperature 参数" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="UseCompletionTokens" Content="使用 max_completion_tokens（替代 max_tokens）"/></WrapPanel>
+        <TextBlock Text="若后端因生成参数返回 400/422，请按模型文档选择；部分推理模型需关闭 temperature，并改用 max_completion_tokens。" Style="{StaticResource Hint}"/>
         <WrapPanel><Button Content="保存后端" Style="{StaticResource Primary}" Click="SaveBackend_Click"/><Button Content="新建后端" Click="NewBackend_Click"/><Button Content="删除后端与凭据" Click="DeleteBackend_Click"/></WrapPanel>
+        <WrapPanel><Button x:Name="TestBackendButton" Content="测试已保存后端" Click="TestBackend_Click"/><Button Content="取消连接测试" Click="CancelProbe_Click"/></WrapPanel>
+        <TextBlock Text="测试只发送固定文本 Reply with OK.，沿用已保存的模型、密钥、代理、流式及生成参数，可能计费；不读取剪贴板，不写回回答。编辑后请先保存。" Style="{StaticResource Hint}"/>
+        <TextBlock x:Name="ConnectionStatus" Text="尚未测试" Style="{StaticResource Hint}"/>
         <TextBlock Text="凭据单独使用 DPAPI 加密保存，配置仅保留引用。同一用户权限下的恶意程序不在隔离承诺内。" Style="{StaticResource Hint}"/>
       </StackPanel></ScrollViewer></TabItem>
       <TabItem Header="采集与策略"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
@@ -64,6 +73,6 @@
         <WrapPanel><Button Content="保存偏好" Style="{StaticResource Primary}" Click="SavePreferences_Click"/><Button Content="导出无凭据配置" Click="Export_Click"/></WrapPanel>
       </StackPanel></ScrollViewer></TabItem>
     </TabControl>
-    <DockPanel Grid.Row="3" Margin="0,18,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起控制中心" Click="HideControl_Click"/><Button Content="退出" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.1 · 待 Windows 验收的开发版本" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></DockPanel>
+    <DockPanel Grid.Row="3" Margin="0,18,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起控制中心" Click="HideControl_Click"/><Button Content="退出" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.1.1 · 后端连接修复开发版本" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></DockPanel>
   </Grid>
 </Window>

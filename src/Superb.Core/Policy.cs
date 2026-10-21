@@ -9,6 +9,7 @@ public static class Policy
     public static Uri ValidateBackend(Backend b)
     {
         if (b.Adapter != "chat-completions") throw new SafeFailure("adapter_unsupported");
+        ValidateProxy(b);
         if (!Uri.TryCreate(b.Endpoint, UriKind.Absolute, out var uri) ||
             uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 || uri.Query.Length != 0)
             throw new SafeFailure("endpoint_invalid");
@@ -18,8 +19,20 @@ public static class Policy
         if (string.IsNullOrWhiteSpace(b.Model) || string.IsNullOrWhiteSpace(b.Id) ||
             b.TimeoutSeconds is < 1 or > 600 || b.MaxInputBytes is < 1 or > AbsoluteInputLimit ||
             b.MaxOutputChars is < 1 or > 1_000_000 || b.MaxTokens is < 1 or > 32768 ||
-            !double.IsFinite(b.Temperature) || b.Temperature is < 0 or > 2)
+            !double.IsFinite(b.Temperature) || b.Temperature is < 0 or > 2 || !Enum.IsDefined(b.TokenLimitParameter))
             throw new SafeFailure("backend_limits_invalid");
+        return uri;
+    }
+
+    public static Uri? ValidateProxy(Backend b)
+    {
+        if (!Enum.IsDefined(b.ProxyMode)) throw new SafeFailure("proxy_mode_invalid");
+        if (b.ProxyMode != ProxyMode.Custom) return null;
+        if (!Uri.TryCreate(b.ProxyAddress, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https" or "socks5") || string.IsNullOrEmpty(uri.Host) ||
+            uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0 ||
+            uri.AbsolutePath is not ("" or "/") || uri.Port is < 1 or > 65535)
+            throw new SafeFailure("proxy_address_invalid");
         return uri;
     }
 

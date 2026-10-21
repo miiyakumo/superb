@@ -6,6 +6,8 @@ public enum InputKind { ClipboardText, ClipboardImage, Screen }
 public enum RequestState { Idle, Capturing, Processing, AwaitingApproval, PolicyCheck, Connecting, Waiting, Streaming, Completed, Failed, Cancelled }
 public enum RunState { Ready, Paused, Locked, ProtectionUnavailable }
 public enum StepKind { NormalizeText, Template, Crop, Mask, Resize }
+public enum ProxyMode { Direct, System, Custom }
+public enum TokenLimitParameter { MaxTokens, MaxCompletionTokens }
 public sealed class SafeFailure(string code) : Exception(code) { public string Code { get; } = code; }
 public sealed record PixelRect(int X, int Y, int Width, int Height);
 public sealed record Payload(string? Text, ImmutableArray<byte> Png, int Width = 0, int Height = 0)
@@ -24,7 +26,9 @@ public sealed record Pipeline(string Version, ImmutableArray<ProcessStep> Steps)
 public sealed record Backend(string Id, string Name, string Endpoint, string Model, string CredentialRef,
     bool SupportsImages = false, bool AllowLoopbackHttp = false, bool Stream = true,
     int TimeoutSeconds = 120, int MaxInputBytes = 8_388_608, int MaxOutputChars = 200_000,
-    double Temperature = 0.2, int MaxTokens = 4096, string Adapter = "chat-completions");
+    double Temperature = 0.2, int MaxTokens = 4096, string Adapter = "chat-completions",
+    ProxyMode ProxyMode = ProxyMode.Direct, string ProxyAddress = "",
+    bool SendTemperature = true, TokenLimitParameter TokenLimitParameter = TokenLimitParameter.MaxTokens);
 public sealed record PreparedRequest(InputSnapshot Snapshot, Payload Content, Pipeline Pipeline, Backend Backend,
     ImmutableArray<string> ProcessingNotices = default);
 public sealed record Attempt(Guid Id, long Generation, PreparedRequest Request);

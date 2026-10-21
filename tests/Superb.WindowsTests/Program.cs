@@ -1,4 +1,10 @@
 using System.Diagnostics;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+using Superb.Desktop;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -47,6 +53,19 @@ internal static class Program
             try { store.Read("../../arbitrary-file"); throw new Exception("Accepted invalid reference"); }
             catch (SafeFailure ex) { Assert(ex.Code == "credential_unavailable"); }
         }));
+        tests.Add(("Existing backend JSON retains direct transport and legacy generation defaults", () =>
+        {
+            const string old = "{\"Id\":\"old\",\"Name\":\"old\",\"Endpoint\":\"https://example.test/v1/chat/completions\",\"Model\":\"test\",\"CredentialRef\":\"\"}";
+            var saved = JsonSerializer.Deserialize<Backend>(old, Configuration.Json)!;
+            Policy.ValidateBackend(saved);
+            Assert(saved.ProxyMode == ProxyMode.Direct && saved.SendTemperature && saved.TokenLimitParameter == TokenLimitParameter.MaxTokens);
+        }));
+        tests.Add(("Saved proxy configuration and DPAPI credentials authenticate a real HTTP request", () =>
+        {
+            var store = new CredentialStore(); var reference = store.Save("synthetic-test-key");
+            try { TestSavedBackend(store, reference).GetAwaiter().GetResult(); }
+            finally { store.Delete(reference); }
+        }));
         if (args.Contains("--interactive")) tests.Add(("Protection attributes and no-activate styles on an interactive desktop", () =>
         {
             var window = new Window { ShowActivated = false, ShowInTaskbar = false, Topmost = true, Width = 200, Height = 120 };
@@ -77,5 +96,38 @@ internal static class Program
         }
         Console.WriteLine($"{tests.Count - failures}/{tests.Count} passed; capture-chain verification requires manual evidence.");
         return failures == 0 ? 0 : 1;
+    }
+    private static async Task TestSavedBackend(CredentialStore store, string reference)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+        using var unused = new TcpListener(IPAddress.Loopback, 0); unused.Start();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var configured = new Backend("saved", "synthetic", $"http://127.0.0.1:{((IPEndPoint)unused.LocalEndpoint).Port}/v1/chat/completions", "test", reference,
+            AllowLoopbackHttp: true, Stream: false, ProxyMode: ProxyMode.Custom, ProxyAddress: $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}",
+            SendTemperature: false, TokenLimitParameter: TokenLimitParameter.MaxCompletionTokens);
+        var json = JsonSerializer.Serialize(new Configuration { Backends = [configured], SelectedBackendId = configured.Id }, Configuration.Json);
+        Assert(!json.Contains("synthetic-test-key"));
+        var restored = JsonSerializer.Deserialize<Configuration>(json, Configuration.Json)!; restored.Validate();
+        var server = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptTcpClientAsync(cancellation.Token);
+            await using var stream = socket.GetStream(); using var reader = new StreamReader(stream, Encoding.UTF8, false, 1024, true);
+            var authorized = false; string? line; var size = 0;
+            while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(cancellation.Token)))
+            {
+                if (line == "Authorization: Bearer synthetic-test-key") authorized = true;
+                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) size = int.Parse(line[15..]);
+            }
+            var input = new char[size]; await reader.ReadBlockAsync(input.AsMemory(), cancellation.Token);
+            using var request = JsonDocument.Parse(new string(input));
+            Assert(request.RootElement.GetProperty("messages")[0].GetProperty("content").GetString() == BackendProbe.TestPrompt);
+            Assert(!request.RootElement.TryGetProperty("temperature", out _) && request.RootElement.TryGetProperty("max_completion_tokens", out _));
+            const string body = "{\"choices\":[{\"message\":{\"content\":\"OK\",\"tool_calls\":null},\"finish_reason\":\"stop\"}]}";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}"), cancellation.Token);
+            return authorized;
+        });
+        using var client = new ChatCompletionsClient(store);
+        var result = await BackendProbe.RunAsync(client, restored.Backends[0], cancellation.Token);
+        Assert(result.Success && await server && !unused.Pending());
     }
 }

@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private RequestUpdate? latestUpdate;
     private RequestUpdate? completed;
     private Task<Payload>? captureTask;
+    private CancellationTokenSource? probeCancellation;
     private long operation, syncGeneration;
     private bool preparing, exiting, loading, pausedForProtection, sessionLocked, configLoadFailed;
     private bool clipboardListenerReady, sessionListenerReady;
@@ -143,7 +144,7 @@ public partial class MainWindow : Window
     {
         RequestState.PolicyCheck => "正在校验外发策略", RequestState.Connecting => "连接中", RequestState.Waiting => "等待响应",
         RequestState.Streaming => "生成中", RequestState.Completed => "已完成", RequestState.Cancelled => "已取消",
-        RequestState.Failed => "失败 · " + update.Code, _ => update.State.ToString()
+        RequestState.Failed => "失败 · " + ConnectionDiagnostics.Describe(update.Code), _ => update.State.ToString()
     }) + (update.Attempt.Request.ProcessingNotices.IsDefaultOrEmpty ? "" : $" · 已按规则跳过 {update.Attempt.Request.ProcessingNotices.Length} 个可选步骤");
     private void OnUpdate(RequestUpdate update)
     {
@@ -176,6 +177,7 @@ public partial class MainWindow : Window
     private void UpdateMode() => ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }} · {(grant is null ? "同步关闭" : "同步已授权")}";
     public void EmergencyPause(string reason, RunState mode = RunState.Paused)
     {
+        CancelProbe();
         operation++; coordinator.SetMode(mode); prepared = null; completed = null; latestUpdate = null;
         reader.Clear(); StopSync(); ApiKey.Clear();
         if (config.ClearOwnedClipboardOnPause) { try { clipboard?.ClearOwned(); } catch { /* Clear best effort only our own data. */ } }
@@ -309,11 +311,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Report(ex); }
     }
-    private void Report(Exception ex) => Status("操作未完成 · " + (ex is SafeFailure safe ? safe.Code : ex is TimeoutException ? "capture_timed_out" : "operation_failed"));
+    private void Report(Exception ex) => Status("操作未完成 · " + (ex is TimeoutException ? "capture_timed_out" : ConnectionDiagnostics.Describe(ConnectionDiagnostics.CodeFor(ex))));
     private void Mutate(Action action)
     {
         try
         {
+            CancelProbe();
             if (configLoadFailed)
             {
                 File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"), false);
@@ -375,6 +378,7 @@ public partial class MainWindow : Window
     private void EditBackendPicker_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (!loading) LoadBackendEditor(); }
     private void LoadBackendEditor()
     {
+        CancelProbe();
         var b = EditBackendPicker.SelectedItem as Backend;
         BackendName.Text = b?.Name ?? ""; ModelName.Text = b?.Model ?? ""; Endpoint.Text = b?.Endpoint ?? "";
         ApiKey.Clear(); Vision.IsChecked = b?.SupportsImages ?? false; Streaming.IsChecked = b?.Stream ?? true;
@@ -382,6 +386,11 @@ public partial class MainWindow : Window
         InputLimit.Text = ((b?.MaxInputBytes ?? 8_388_608) / 1_048_576).ToString();
         Temperature.Text = (b?.Temperature ?? 0.2).ToString(System.Globalization.CultureInfo.InvariantCulture);
         MaxTokens.Text = (b?.MaxTokens ?? 4096).ToString(); MaxOutput.Text = (b?.MaxOutputChars ?? 200000).ToString();
+        ProxyModePicker.SelectedIndex = (int)(b?.ProxyMode ?? ProxyMode.Direct);
+        ProxyAddressBox.Text = b?.ProxyAddress ?? "";
+        SendTemperature.IsChecked = b?.SendTemperature ?? true;
+        UseCompletionTokens.IsChecked = b?.TokenLimitParameter == TokenLimitParameter.MaxCompletionTokens;
+        ConnectionStatus.Text = "尚未测试此后端";
     }
     private void NewBackend_Click(object sender, RoutedEventArgs e) { EditBackendPicker.SelectedItem = null; LoadBackendEditor(); }
     private void SaveBackend_Click(object sender, RoutedEventArgs e)
@@ -393,11 +402,17 @@ public partial class MainWindow : Window
         var vision = Vision.IsChecked == true; var loopback = Loopback.IsChecked == true; var streaming = Streaming.IsChecked == true;
         var timeout = TimeoutSeconds.Text; var limit = InputLimit.Text;
         var temperature = Temperature.Text; var tokens = MaxTokens.Text; var outputLimit = MaxOutput.Text;
+        var proxyMode = (ProxyMode)ProxyModePicker.SelectedIndex;
+        var proxyAddress = ProxyAddressBox.Text.Trim();
+        var sendTemperature = SendTemperature.IsChecked == true;
+        var tokenParameter = UseCompletionTokens.IsChecked == true ? TokenLimitParameter.MaxCompletionTokens : TokenLimitParameter.MaxTokens;
         Mutate(() =>
         {
             var b = new Backend(old?.Id ?? Guid.NewGuid().ToString("N"), name, endpoint, model, old?.CredentialRef ?? "",
                 vision, loopback, streaming, int.Parse(timeout), checked(int.Parse(limit) * 1_048_576), int.Parse(outputLimit),
-                double.Parse(temperature, System.Globalization.CultureInfo.InvariantCulture), int.Parse(tokens));
+                double.Parse(temperature, System.Globalization.CultureInfo.InvariantCulture), int.Parse(tokens),
+                ProxyMode: proxyMode, ProxyAddress: proxyMode == ProxyMode.Custom ? proxyAddress : "",
+                SendTemperature: sendTemperature, TokenLimitParameter: tokenParameter);
             Policy.ValidateBackend(b);
             if (name.Length is < 1 or > 80) throw new SafeFailure("backend_name_invalid");
             if (secret.Length > 0) b = b with { CredentialRef = credentials.Save(secret) };
@@ -405,6 +420,47 @@ public partial class MainWindow : Window
             config.Save();
             if (secret.Length > 0 && old is not null && old.CredentialRef.Length > 0) credentials.Delete(old.CredentialRef);
         });
+    }
+    private void CancelProbe()
+    {
+        if (probeCancellation is null) return;
+        var pending = probeCancellation;
+        probeCancellation = null;
+        pending.Cancel();
+        TestBackendButton.IsEnabled = true;
+        ConnectionStatus.Text = "连接测试已取消";
+    }
+    private void CancelProbe_Click(object sender, RoutedEventArgs e) => CancelProbe();
+    private async void TestBackend_Click(object sender, RoutedEventArgs e)
+    {
+        if (!Ready()) return;
+        if (EditBackendPicker.SelectedItem is not Backend selected)
+        {
+            ConnectionStatus.Text = "请先保存并选择后端";
+            return;
+        }
+        CancelProbe();
+        using var cancellation = new CancellationTokenSource();
+        probeCancellation = cancellation;
+        TestBackendButton.IsEnabled = false;
+        ConnectionStatus.Text = $"测试中 · {selected.ProxyMode} · 超时 {selected.TimeoutSeconds} 秒";
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var result = await BackendProbe.RunAsync(backend, selected, cancellation.Token);
+            if (!ReferenceEquals(probeCancellation, cancellation)) return;
+            ConnectionStatus.Text = result.Success
+                ? $"连接测试通过 · {(result.ReceivedText ? "已收到完整文本响应" : "后端正常结束但未返回文本")} · {elapsed.Elapsed.TotalSeconds:F1} 秒"
+                : $"测试失败 · {(result.HttpAccepted ? "HTTP 已成功，响应处理失败 · " : "")}{ConnectionDiagnostics.Describe(result.Code)}";
+        }
+        finally
+        {
+            if (ReferenceEquals(probeCancellation, cancellation))
+            {
+                probeCancellation = null;
+                TestBackendButton.IsEnabled = true;
+            }
+        }
     }
     private void DeleteBackend_Click(object sender, RoutedEventArgs e)
     {

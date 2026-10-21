@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -9,21 +10,26 @@ public interface ICredentialStore { string Read(string reference); }
 
 public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBackendClient, IDisposable
 {
-    private readonly HttpClient http = new(new SocketsHttpHandler
+    private bool disposed;
+    private static SocketsHttpHandler CreateHandler(Backend backend) => new()
     {
         AllowAutoRedirect = false,
         UseCookies = false,
-        UseProxy = false,
+        UseProxy = backend.ProxyMode != ProxyMode.Direct,
+        Proxy = backend.ProxyMode == ProxyMode.Custom ? new WebProxy(Policy.ValidateProxy(backend)!) : null,
         MaxResponseHeadersLength = 32,
         ConnectTimeout = TimeSpan.FromSeconds(20)
-    }) { Timeout = Timeout.InfiniteTimeSpan };
+    };
 
     public async IAsyncEnumerable<BackendEvent> SendAsync(PreparedRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         // This is the only production network entry point. Recheck frozen policy here.
         Policy.Check(request);
+        ObjectDisposedException.ThrowIf(disposed, this);
         var backend = request.Backend;
+        // Each attempt freezes its own transport; edits never mutate an in-flight handler.
+        using var http = new HttpClient(CreateHandler(backend)) { Timeout = Timeout.InfiniteTimeSpan };
         using var message = new HttpRequestMessage(HttpMethod.Post, Policy.ValidateBackend(backend));
         if (!string.IsNullOrEmpty(backend.CredentialRef))
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.Read(backend.CredentialRef));
@@ -35,12 +41,15 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
             parts.Add(new { type = "image_url", image_url = new { url = "data:image/png;base64," + Convert.ToBase64String(request.Content.Png.AsSpan()) } });
             content = parts;
         }
-        message.Content = new StringContent(JsonSerializer.Serialize(new
+        var body = new Dictionary<string, object>
         {
-            model = backend.Model,
-            messages = new[] { new { role = "user", content } },
-            stream = backend.Stream, temperature = backend.Temperature, max_tokens = backend.MaxTokens
-        }), Encoding.UTF8, "application/json");
+            ["model"] = backend.Model,
+            ["messages"] = new[] { new { role = "user", content } },
+            ["stream"] = backend.Stream,
+            [backend.TokenLimitParameter == TokenLimitParameter.MaxCompletionTokens ? "max_completion_tokens" : "max_tokens"] = backend.MaxTokens
+        };
+        if (backend.SendTemperature) body["temperature"] = backend.Temperature;
+        message.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if ((int)response.StatusCode is >= 300 and < 400) throw new SafeFailure("redirect_blocked");
         if (!response.IsSuccessStatusCode) throw new SafeFailure("http_" + (int)response.StatusCode);
@@ -48,6 +57,9 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         if (backend.Stream)
         {
+            var mediaType = response.Content.Headers.ContentType?.MediaType;
+            if (mediaType is "application/json" or "text/html" || mediaType?.EndsWith("+json", StringComparison.OrdinalIgnoreCase) == true)
+                throw new SafeFailure("stream_response_expected");
             await foreach (var item in ReadSseAsync(stream, backend.MaxOutputChars, cancellationToken)) yield return item;
         }
         else
@@ -63,7 +75,9 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
             using var doc = JsonDocument.Parse(buffer.ToArray());
             var choice = doc.RootElement.GetProperty("choices")[0];
             CheckFinish(choice);
-            var text = choice.GetProperty("message").GetProperty("content").GetString() ?? "";
+            var answer = choice.GetProperty("message");
+            RejectToolCalls(answer);
+            var text = answer.GetProperty("content").GetString() ?? "";
             yield return new(Delta: text);
             yield return new(Completed: true);
         }
@@ -117,8 +131,7 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
                     if (finished) throw new SafeFailure("stream_after_finish");
                     var choice = choices[0];
                     var delta = choice.GetProperty("delta");
-                    if (delta.TryGetProperty("tool_calls", out _) || delta.TryGetProperty("function_call", out _))
-                        throw new SafeFailure("tool_calls_not_supported");
+                    RejectToolCalls(delta);
                     if (delta.TryGetProperty("content", out var token) && token.ValueKind == JsonValueKind.String)
                         yield return new(Delta: token.GetString());
                     if (choice.TryGetProperty("finish_reason", out var reason) && reason.ValueKind != JsonValueKind.Null)
@@ -136,5 +149,12 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
         if (!choice.TryGetProperty("finish_reason", out var reason) || reason.GetString() != "stop")
             throw new SafeFailure("response_not_complete");
     }
-    public void Dispose() => http.Dispose();
+    private static void RejectToolCalls(JsonElement content)
+    {
+        if ((content.TryGetProperty("tool_calls", out var tools) && tools.ValueKind != JsonValueKind.Null &&
+             !(tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() == 0)) ||
+            (content.TryGetProperty("function_call", out var function) && function.ValueKind != JsonValueKind.Null))
+            throw new SafeFailure("tool_calls_not_supported");
+    }
+    public void Dispose() => disposed = true;
 }

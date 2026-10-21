@@ -4,7 +4,21 @@ using System.Text;
 using System.Threading.Channels;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Diagnostics;
 using Superb.Core;
+
+if (args is ["--proxy-env-child", var endpoint])
+{
+    using var client = new ChatCompletionsClient(new FakeCredentials());
+    var result = await BackendProbe.RunAsync(client, new Backend("env-test", "synthetic", endpoint, "test", "",
+        AllowLoopbackHttp: true, Stream: false, TimeoutSeconds: 5, ProxyMode: ProxyMode.System), CancellationToken.None);
+    Console.WriteLine(result.Success ? "PROBE_OK" : result.Code);
+    return result.Success ? 0 : 1;
+}
 
 var tests = new List<(string Name, Func<Task> Run)>();
 void Test(string name, Action run) => tests.Add((name, () => { run(); return Task.CompletedTask; }));
@@ -110,7 +124,7 @@ AsyncTest("SSE rejects truncated streams and premature DONE", async () =>
 AsyncTest("SSE rejects tool execution and length/content-filter endings", async () =>
 {
     foreach (var wire in new[] {
-        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"call1\",\"type\":\"function\"}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
         "data: {\"error\":{\"message\":\"sensitive body\"}}\n\n" })
     {
@@ -194,7 +208,7 @@ AsyncTest("Timeout cancels a compliant transport and never marks success", async
     coordinator.SetMode(RunState.Ready); await coordinator.RunAsync(Request(useBackend: backend with { TimeoutSeconds = 1 }));
     Assert(last?.State == RequestState.Failed && last.Code == "request_timed_out");
 });
-async Task<(List<BackendEvent> Events, string Request, string? Failure)> Exchange(string response, bool streaming, string text = "processed-only")
+async Task<(List<BackendEvent> Events, string Request, string? Failure)> Exchange(string response, bool streaming, string text = "processed-only", Func<Backend, Backend>? configure = null)
 {
     using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
     var port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -217,6 +231,7 @@ async Task<(List<BackendEvent> Events, string Request, string? Failure)> Exchang
     try
     {
         var request = Request(text, backend with { Endpoint = $"http://127.0.0.1:{port}/v1/chat/completions", AllowLoopbackHttp = true, Stream = streaming, CredentialRef = "reference-only" });
+        if (configure is not null) request = request with { Backend = configure(request.Backend) };
         request = request with { Snapshot = request.Snapshot with { Content = Payload.FromText("RAW-MUST-NOT-LEAVE") } };
         await foreach (var item in client.SendAsync(request, CancellationToken.None)) events.Add(item);
     }
@@ -244,6 +259,194 @@ AsyncTest("Production transport consumes complete SSE", async () =>
     Assert(result.Failure is null && result.Events[^1].Completed && string.Concat(result.Events.Select(x => x.Delta)) == "你好🌍");
 });
 
+AsyncTest("Nullable tool fields in compatible streams are not tool calls", async () =>
+{
+    var wire = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\",\"tool_calls\":null,\"function_call\":null},\"finish_reason\":null}]}\n\n" +
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    var result = await Parse(wire);
+    Assert(result[^1].Completed && result[0].Delta == "ok");
+});
+AsyncTest("DNS failures retain a safe actionable category", async () =>
+{
+    var client = new ThrowingClient(new HttpRequestException(HttpRequestError.NameResolutionError, "private-host and secret must not escape"));
+    var coordinator = new Coordinator(client); RequestUpdate? last = null; coordinator.Updated += u => last = u;
+    coordinator.SetMode(RunState.Ready); await coordinator.RunAsync(Request());
+    Assert(last?.Code == "network_dns_failed", "Expected network_dns_failed, got " + last?.Code);
+});
+
+Test("Proxy settings validate protocols, reject URL secrets and preserve direct default", () =>
+{
+    Assert(backend.ProxyMode == ProxyMode.Direct);
+    foreach (var address in new[] { "http://127.0.0.1:7890", "https://proxy.example:443", "socks5://127.0.0.1:1080" })
+        Assert(Policy.ValidateProxy(backend with { ProxyMode = ProxyMode.Custom, ProxyAddress = address }) is not null);
+    foreach (var address in new[] { "ftp://proxy.example:21", "http://user:password@proxy.example:8080", "http://proxy.example/path", "http://proxy.example?key=secret", "", "socks5://proxy.example" })
+        Fails("proxy_address_invalid", () => Policy.ValidateBackend(backend with { ProxyMode = ProxyMode.Custom, ProxyAddress = address }));
+    Fails("proxy_mode_invalid", () => Policy.ValidateBackend(backend with { ProxyMode = (ProxyMode)999 }));
+});
+Test("Diagnostic categories never include exception bodies or private addresses", () =>
+{
+    foreach (var (error, code) in new[] {
+        (HttpRequestError.NameResolutionError, "network_dns_failed"), (HttpRequestError.ConnectionError, "network_connect_failed"),
+        (HttpRequestError.SecureConnectionError, "network_tls_failed"), (HttpRequestError.ProxyTunnelError, "network_proxy_failed"),
+        (HttpRequestError.ResponseEnded, "stream_incomplete") })
+        Assert(ConnectionDiagnostics.CodeFor(new HttpRequestException(error, "secret body from private endpoint")) == code);
+    Assert(ConnectionDiagnostics.CodeFor(new System.Text.Json.JsonException("private output")) == "response_format_invalid");
+    Assert(ConnectionDiagnostics.Explain("http_401").Contains("认证"));
+});
+AsyncTest("Empty tool lists remain ordinary streaming text", async () =>
+{
+    var wire = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\",\"tool_calls\":[]},\"finish_reason\":null}]}\n\n" +
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    Assert((await Parse(wire))[^1].Completed);
+});
+AsyncTest("Models can omit temperature and select max_completion_tokens without duplicate limits", async () =>
+{
+    const string body = "{\"choices\":[{\"message\":{\"content\":\"ok\",\"tool_calls\":null},\"finish_reason\":\"stop\"}]}";
+    var result = await Exchange($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}", false,
+        configure: b => b with { SendTemperature = false, TokenLimitParameter = TokenLimitParameter.MaxCompletionTokens });
+    Assert(result.Failure is null && result.Events[^1].Completed);
+    using var json = System.Text.Json.JsonDocument.Parse(result.Request.Split("\n\n", 2)[1]);
+    Assert(!json.RootElement.TryGetProperty("temperature", out _) && !json.RootElement.TryGetProperty("max_tokens", out _));
+    Assert(json.RootElement.GetProperty("max_completion_tokens").GetInt32() == backend.MaxTokens);
+});
+AsyncTest("HTTP 200 JSON for a streaming request is diagnosed as a protocol mismatch", async () =>
+{
+    const string body = "{\"private\":\"must-not-appear-in-diagnostic\"}";
+    var result = await Exchange($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}", true);
+    Assert(result.Failure == "stream_response_expected" && result.Events.Any(x => x.Waiting));
+});
+foreach (var mode in new[] { ProxyMode.Direct, ProxyMode.System, ProxyMode.Custom })
+{
+    AsyncTest($"Production {mode} proxy routing reaches only the selected listener", async () =>
+    {
+        using var target = new TcpListener(IPAddress.Loopback, 0); target.Start();
+        using var proxy = new TcpListener(IPAddress.Loopback, 0); proxy.Start();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var targetUrl = $"http://127.0.0.1:{((IPEndPoint)target.LocalEndpoint).Port}/v1/chat/completions";
+        var proxyUrl = $"http://127.0.0.1:{((IPEndPoint)proxy.LocalEndpoint).Port}";
+        var savedProxy = HttpClient.DefaultProxy;
+        try
+        {
+            HttpClient.DefaultProxy = new WebProxy(proxyUrl);
+            var serving = mode == ProxyMode.Direct ? target : proxy;
+            var unused = mode == ProxyMode.Direct ? proxy : target;
+            var server = Task.Run(async () =>
+            {
+                using var socket = await serving.AcceptTcpClientAsync(cancellation.Token);
+                await using var stream = socket.GetStream(); using var reader = new StreamReader(stream, Encoding.UTF8, false, 1024, true);
+                var firstLine = await reader.ReadLineAsync(cancellation.Token); string? line; var size = 0;
+                while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(cancellation.Token)))
+                    if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) size = int.Parse(line[15..]);
+                var buffer = new char[size]; await reader.ReadBlockAsync(buffer.AsMemory(), cancellation.Token);
+                const string body = "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}";
+                await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}"), cancellation.Token);
+                return firstLine;
+            });
+            using var client = new ChatCompletionsClient(new FakeCredentials());
+            var result = await BackendProbe.RunAsync(client, backend with { Endpoint = targetUrl, AllowLoopbackHttp = true, Stream = false,
+                ProxyMode = mode, ProxyAddress = proxyUrl }, cancellation.Token);
+            Assert(result.Success, "Selected route failed: " + result.Code);
+            var line = await server;
+            Assert(line == (mode == ProxyMode.Direct ? "POST /v1/chat/completions HTTP/1.1" : $"POST {targetUrl} HTTP/1.1"));
+            Assert(!unused.Pending(), "Unexpected connection on unselected route");
+        }
+        finally { HttpClient.DefaultProxy = savedProxy; cancellation.Cancel(); }
+    });
+}
+AsyncTest("Connection probe uses a fixed prompt and never returns model text", async () =>
+{
+    var client = new InspectingClient();
+    var result = await BackendProbe.RunAsync(client, backend, CancellationToken.None);
+    Assert(result.Success && result.ReceivedText && result.HttpAccepted);
+    Assert(client.Request!.Content.Text == BackendProbe.TestPrompt && !client.Request.Content.HasImage);
+    Assert(!result.ToString().Contains("sensitive-probe-answer"));
+});
+AsyncTest("Connection probe cancellation and timeout produce distinct safe statuses", async () =>
+{
+    using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+    var result = await BackendProbe.RunAsync(new WaitingClient(), backend, cancelled.Token);
+    Assert(result.Code == "request_cancelled");
+    result = await BackendProbe.RunAsync(new WaitingClient(), backend with { TimeoutSeconds = 1 }, CancellationToken.None);
+    Assert(result.Code == "request_timed_out");
+});
+AsyncTest("HTTPS CONNECT proxy failure is categorized without exposing the model credential to the proxy", async () =>
+{
+    using var proxy = new TcpListener(IPAddress.Loopback, 0); proxy.Start();
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    var server = Task.Run(async () =>
+    {
+        using var socket = await proxy.AcceptTcpClientAsync(cancellation.Token);
+        await using var stream = socket.GetStream(); using var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, true);
+        var headers = new List<string>(); string? line;
+        while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(cancellation.Token))) headers.Add(line);
+        await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), cancellation.Token);
+        return string.Join("\n", headers);
+    });
+    using var client = new ChatCompletionsClient(new FakeCredentials());
+    var result = await BackendProbe.RunAsync(client, backend with { Endpoint = "https://backend.example.test/v1/chat/completions", CredentialRef = "synthetic",
+        ProxyMode = ProxyMode.Custom, ProxyAddress = $"http://127.0.0.1:{((IPEndPoint)proxy.LocalEndpoint).Port}" }, cancellation.Token);
+    var headers = await server;
+    Assert(result.Code == "network_proxy_failed", "Expected network_proxy_failed, got " + result.Code);
+    Assert(headers.StartsWith("CONNECT backend.example.test:443 HTTP/1.1") && !headers.Contains("test-secret") && !headers.Contains("Bearer"));
+});
+AsyncTest("Untrusted HTTPS certificate remains rejected with an actionable TLS status", async () =>
+{
+    using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    using var key = RSA.Create(2048);
+    var certificateRequest = new CertificateRequest("CN=Superb untrusted test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    var san = new SubjectAlternativeNameBuilder(); san.AddIpAddress(IPAddress.Loopback);
+    certificateRequest.CertificateExtensions.Add(san.Build());
+    using var certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    var server = Task.Run(async () =>
+    {
+        using var socket = await listener.AcceptTcpClientAsync(cancellation.Token);
+        await using var stream = new SslStream(socket.GetStream());
+        try { await stream.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = certificate }, cancellation.Token); }
+        catch (Exception ex) when (ex is AuthenticationException or IOException) { }
+    });
+    using var client = new ChatCompletionsClient(new FakeCredentials());
+    var result = await BackendProbe.RunAsync(client, backend with { Endpoint = $"https://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/v1/chat/completions" }, cancellation.Token);
+    await server;
+    Assert(result.Code == "network_tls_failed", "Expected network_tls_failed, got " + result.Code);
+});
+AsyncTest("System mode discovers HTTP_PROXY in a fresh process on this operating system", async () =>
+{
+    using var proxy = new TcpListener(IPAddress.Loopback, 0); proxy.Start();
+    using var unusedTarget = new TcpListener(IPAddress.Loopback, 0); unusedTarget.Start();
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+    var target = $"http://127.0.0.1:{((IPEndPoint)unusedTarget.LocalEndpoint).Port}/v1/chat/completions";
+    var server = Task.Run(async () =>
+    {
+        using var socket = await proxy.AcceptTcpClientAsync(cancellation.Token);
+        await using var stream = socket.GetStream(); using var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, true);
+        var first = await reader.ReadLineAsync(cancellation.Token); string? line; var size = 0;
+        while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(cancellation.Token)))
+            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) size = int.Parse(line[15..]);
+        await reader.ReadBlockAsync(new char[size].AsMemory(), cancellation.Token);
+        const string body = "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}"), cancellation.Token);
+        return first;
+    });
+    var start = new ProcessStartInfo(Environment.ProcessPath!) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+    if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
+        start.ArgumentList.Add(typeof(FakeCredentials).Assembly.Location);
+    start.ArgumentList.Add("--proxy-env-child"); start.ArgumentList.Add(target);
+    foreach (var variable in new[] { "http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY" }) start.Environment.Remove(variable);
+    start.Environment["HTTP_PROXY"] = $"http://127.0.0.1:{((IPEndPoint)proxy.LocalEndpoint).Port}";
+    using var child = Process.Start(start)!;
+    try
+    {
+        var output = child.StandardOutput.ReadToEndAsync(cancellation.Token);
+        var errors = child.StandardError.ReadToEndAsync(cancellation.Token);
+        await child.WaitForExitAsync(cancellation.Token);
+        Assert(child.ExitCode == 0 && (await output).Contains("PROBE_OK"), "System proxy environment test failed");
+        _ = await errors;
+        Assert((await server) == $"POST {target} HTTP/1.1" && !unusedTarget.Pending());
+    }
+    finally { if (!child.HasExited) child.Kill(entireProcessTree: true); cancellation.Cancel(); }
+});
+
 var failures = 0;
 foreach (var (name, run) in tests)
 {
@@ -255,6 +458,24 @@ return failures == 0 ? 0 : 1;
 
 sealed class FailingImageProcessor : IImageProcessor { public Payload Apply(Payload input, ProcessStep step) => throw new Exception("sensitive raw input must not escape"); }
 sealed class FakeCredentials : ICredentialStore { public string Read(string reference) => "test-secret"; }
+sealed class InspectingClient : IBackendClient
+{
+    public PreparedRequest? Request { get; private set; }
+    public async IAsyncEnumerable<BackendEvent> SendAsync(PreparedRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        Request = request; await Task.Yield();
+        yield return new(Waiting: true); yield return new("sensitive-probe-answer"); yield return new(Completed: true);
+    }
+}
+sealed class ThrowingClient(Exception error) : IBackendClient
+{
+    public async IAsyncEnumerable<BackendEvent> SendAsync(PreparedRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        if (!cancellationToken.IsCancellationRequested) throw error;
+        yield break;
+    }
+}
 sealed class WaitingClient : IBackendClient
 {
     public async IAsyncEnumerable<BackendEvent> SendAsync(PreparedRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)

@@ -4,7 +4,8 @@ permissions:
   contents: read
 jobs:
   verify:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    timeout-minutes: 15
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_NOLOGO: '1'
@@ -13,11 +14,30 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - name: Record Windows environment
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/diagnostics | Out-Null
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture | Format-List | Out-File artifacts/diagnostics/windows.txt
+          dotnet --info | Out-File artifacts/diagnostics/dotnet.txt
       - run: dotnet build Superb.slnx -c Release
-      - run: dotnet run --project tests/Superb.Tests -c Release --no-build
-      - run: dotnet run --project tests/Superb.WindowsTests -c Release --no-build
+      - name: Core and actual HTTP proxy regressions
+        shell: pwsh
+        run: |
+          dotnet run --project tests/Superb.Tests -c Release --no-build | Tee-Object artifacts/diagnostics/core-tests.txt
+          exit $LASTEXITCODE
+      - name: Windows imaging, configuration and DPAPI-to-HTTP integration
+        shell: pwsh
+        run: |
+          dotnet run --project tests/Superb.WindowsTests -c Release --no-build | Tee-Object artifacts/diagnostics/windows-tests.txt
+          exit $LASTEXITCODE
       - run: dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/win-x64
       - uses: actions/upload-artifact@v4
         with:
           name: superb-windows-x64-development
           path: artifacts/win-x64/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-backend-diagnostics
+          path: artifacts/diagnostics/

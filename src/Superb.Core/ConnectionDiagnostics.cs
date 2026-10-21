@@ -1,0 +1,95 @@
+using System.Net.Http;
+using System.Text.Json;
+
+namespace Superb.Core;
+
+// Never return Exception.Message, endpoint URLs, headers or remote error bodies.
+public static class ConnectionDiagnostics
+{
+    public static string CodeFor(Exception error) => error switch
+    {
+        SafeFailure safe => safe.Code,
+        HttpRequestException http => HttpCode(http.HttpRequestError),
+        HttpIOException http => HttpCode(http.HttpRequestError),
+        JsonException or InvalidOperationException or KeyNotFoundException or IndexOutOfRangeException => "response_format_invalid",
+        System.Text.DecoderFallbackException => "response_encoding_invalid",
+        IOException => "network_read_failed",
+        OperationCanceledException => "request_timed_out",
+        _ => "backend_request_failed"
+    };
+
+    private static string HttpCode(HttpRequestError error) => error switch
+    {
+        HttpRequestError.NameResolutionError => "network_dns_failed",
+        HttpRequestError.ConnectionError => "network_connect_failed",
+        HttpRequestError.SecureConnectionError => "network_tls_failed",
+        HttpRequestError.ProxyTunnelError => "network_proxy_failed",
+        HttpRequestError.UserAuthenticationError => "network_auth_failed",
+        HttpRequestError.ResponseEnded => "stream_incomplete",
+        HttpRequestError.ConfigurationLimitExceeded => "response_too_large",
+        HttpRequestError.HttpProtocolError or HttpRequestError.VersionNegotiationError or HttpRequestError.InvalidResponse => "network_protocol_failed",
+        _ => "network_request_failed"
+    };
+
+    public static string Explain(string? code) => code switch
+    {
+        "network_dns_failed" => "域名解析失败；检查端点、DNS，或选择可用的代理。",
+        "network_connect_failed" => "无法建立连接；检查网络、防火墙及代理地址/端口。",
+        "network_tls_failed" => "TLS 握手或证书验证失败；检查系统时间、证书及代理，不要关闭证书验证。",
+        "network_proxy_failed" or "http_407" => "代理连接或认证失败；检查代理是否运行、端口及协议是否正确。",
+        "network_auth_failed" => "连接认证失败；检查服务端或代理的认证要求。",
+        "request_timed_out" => "请求超时；检查直连/代理、服务是否可达及超时设置。",
+        "request_cancelled" => "测试已取消。",
+        "http_400" or "http_422" => "后端拒绝请求参数；检查模型、图像能力、temperature 和 token 参数名称。",
+        "http_401" => "后端拒绝认证；重新保存该端点对应的 API 密钥。",
+        "http_403" => "后端拒绝访问；检查账号、地区、模型权限及网关规则。",
+        "http_404" or "http_405" => "端点或模型不存在；填写完整 Chat Completions POST 地址，不能只填域名或 /v1。",
+        "http_429" => "后端限流或额度不足；检查配额，不会自动重试。",
+        "http_500" or "http_502" or "http_503" or "http_504" => "后端或网关暂时不可用；检查服务状态后手动重试。",
+        "redirect_blocked" => "后端要求重定向；核对并显式保存最终的授权端点。",
+        "credential_unavailable" => "无法读取当前用户的凭据；请在这台 Windows 设备上重新保存密钥。",
+        "stream_response_expected" => "端点没有返回事件流；检查 API 路径，或关闭流式输出后再测试。",
+        "stream_incomplete" or "stream_missing_finish" => "响应流未完整结束；检查代理缓冲、连接中断及后端的结束信号。",
+        "response_format_invalid" or "response_encoding_invalid" => "响应不符合 Chat Completions 格式；检查是否误填网页、Responses 或其他协议端点。",
+        "tool_calls_not_supported" => "后端返回了工具调用；当前只支持文本或图像问答。",
+        "response_not_complete" => "后端未正常完成回答；检查输出 token 上限或内容过滤。",
+        "proxy_address_invalid" => "代理地址无效；使用 http://主机:端口、https://主机:端口 或 socks5://主机:端口，不附带密码。",
+        "endpoint_invalid" or "encrypted_transport_required" => "检查完整 HTTPS 端点；仅显式授权的 IP 回环端点可使用 HTTP。",
+        "backend_has_no_vision" => "当前后端未启用图像能力。",
+        _ => "请检查已保存的后端、协议和网络配置；错误详情不会包含正文或密钥。"
+    };
+    public static string Describe(string? code) => $"{code ?? "backend_request_failed"} · {Explain(code)}";
+}
+
+public sealed record ProbeResult(bool Success, string Code, bool HttpAccepted, bool ReceivedText);
+public static class BackendProbe
+{
+    public const string TestPrompt = "Reply with OK.";
+    public static async Task<ProbeResult> RunAsync(IBackendClient client, Backend backend, CancellationToken cancellationToken)
+    {
+        var accepted = false;
+        var received = false;
+        try
+        {
+            Policy.ValidateBackend(backend);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(backend.TimeoutSeconds));
+            var payload = Payload.FromText(TestPrompt);
+            var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ClipboardText, payload, 0, DateTimeOffset.UtcNow);
+            var request = new PreparedRequest(snapshot, payload, Pipeline.Direct, backend);
+            var length = 0L;
+            await foreach (var item in client.SendAsync(request, timeout.Token))
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                accepted |= item.Waiting;
+                received |= !string.IsNullOrEmpty(item.Delta);
+                length += item.Delta?.Length ?? 0;
+                if (length > backend.MaxOutputChars) throw new SafeFailure("output_too_large");
+                if (item.Completed) return new(true, "completed", accepted, received);
+            }
+            return new(false, "stream_incomplete", accepted, received);
+        }
+        catch (OperationCanceledException) { return new(false, cancellationToken.IsCancellationRequested ? "request_cancelled" : "request_timed_out", accepted, received); }
+        catch (Exception ex) { return new(false, ConnectionDiagnostics.CodeFor(ex), accepted, received); }
+    }
+}
