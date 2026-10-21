@@ -19,7 +19,7 @@ class Fixture:
         dll = ROOT / 'tests/Superb.WindowsTests/bin/Release/net10.0-windows/Superb.WindowsTests.dll'
         self.process = subprocess.Popen(['dotnet', str(dll), '--focus-host'], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-        self.lines = queue.Queue(); self.seq = 0
+        self.lines = queue.Queue(); self.seq = 0; self.history = []
         def read():
             for line in self.process.stdout: self.lines.put(line)
         threading.Thread(target=read, daemon=True).start()
@@ -33,6 +33,7 @@ class Fixture:
         self.process.stdin.write(json.dumps({'id': self.seq, 'command': command})+'\n'); self.process.stdin.flush()
         response = self.receive()
         if response.get('id') != self.seq or 'error' in response: raise RuntimeError('Windows fixture command failed: '+command)
+        self.history.append({'command':command,'state':response['state']})
         return response['state']
     def close(self):
         try: self.command('quit'); self.process.wait(timeout=5)
@@ -226,7 +227,9 @@ def main():
     except Exception as error:
         data['error']=type(error).__name__+': '+str(error)
     finally:
-        if fixture: fixture.close()
+        if fixture:
+            data['fixtureHistory']=fixture.history
+            fixture.close()
         server.shutdown(); server.server_close(); write_report(data,args.output)
     print('REPORT_STATUS='+data['status'],flush=True)
     return 0 if data['status'] in ('MEASURED','RECORDER_ONLY_PASS') else 1

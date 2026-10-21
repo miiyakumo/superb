@@ -66,10 +66,13 @@ internal static class FocusHost
             reader.UpdateLayout();
             var view = (FlowDocumentScrollViewer)reader.FindName("Reader");
             var scroll = Find<ScrollViewer>(view);
+            var affinityReadable = Native.GetWindowDisplayAffinity(hwnd, out var affinity);
+            var compositionResult = Native.DwmIsCompositionEnabled(out var compositionEnabled);
             return new
             {
                 hwnd = hwnd.ToInt64(), foreground = GetForegroundWindow().ToInt64(), visible = reader.IsVisible,
                 controlVisible = control.IsVisible,
+                affinityReadable, affinity, compositionResult, compositionEnabled,
                 protection = reader.Check(), styles = Native.GetWindowLongPtr(hwnd, -20).ToInt64(),
                 mouseDown, wheel, activated, mouseActivate, actions = actions.ToArray(), registrationFailures,
                 scrollOffset = scroll?.VerticalOffset ?? 0, scrollableHeight = scroll?.ScrollableHeight ?? 0,
