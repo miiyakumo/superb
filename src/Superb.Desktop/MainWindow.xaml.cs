@@ -61,7 +61,12 @@ public partial class MainWindow : Window
             if (latestUpdate is { } update)
             {
                 latestUpdate = null;
-                if (coordinator.IsCurrent(update.Attempt)) reader.Render(update.Text, StateLabel(update));
+                if (coordinator.IsCurrent(update.Attempt))
+                {
+                    reader.Render(update.Text, StateLabel(update));
+                    AnswerText.Text = update.Text;
+                    AnswerPlaceholder.Visibility = update.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+                }
             }
         };
         Closing += (_, _) => Shutdown();
@@ -78,6 +83,7 @@ public partial class MainWindow : Window
         try { config = Configuration.Load(); }
         catch { configLoadFailed = true; Status("配置无法读取；已使用安全默认值，未覆盖原文件"); }
         Populate();
+        if (config.Backends.IsDefaultOrEmpty) MainTabs.SelectedItem = ConnectionTab;
         reader.ApplyLayout(config.Panel);
         // Source initialization installs protection before any sensitive payload can be rendered.
         new WindowInteropHelper(reader).EnsureHandle();
@@ -96,7 +102,7 @@ public partial class MainWindow : Window
             UpdateMode();
             if (!configLoadFailed)
                 Status(config.Backends.IsDefaultOrEmpty
-                    ? "已就绪；请先添加模型后端"
+                    ? "填入 DeepSeek 密钥，即可开始提问"
                     : "已就绪 · Ctrl+Alt+1 问剪贴板，Ctrl+Alt+2 问预设区域");
         }
         guardTimer.Start();
@@ -136,23 +142,45 @@ public partial class MainWindow : Window
         SyncDuration.Text = config.SyncMinutes.ToString(); PanelFont.Text = config.Panel.FontSize.ToString();
         TargetLabel.Text = config.Capture?.Label ?? "未配置采集目标";
         BackendIds.Text = string.Join("\n", config.Backends.Select(x => $"{x.Name} → {x.Id}"));
+        var selected = BackendPicker.SelectedItem as Backend;
+        ModelSummary.Text = selected is null ? "先连接一个模型，即可开始提问。" : $"{selected.Name} · {selected.Model}";
+        if (config.Routing.TextBackendId is not null || config.Routing.ImageBackendId is not null)
+        {
+            string RouteName(string? id) => config.Backends.FirstOrDefault(x => x.Id == (id ?? config.SelectedBackendId))?.Name ?? "未选择";
+            ModelSummary.Text += $" · 固定路由：文字 → {RouteName(config.Routing.TextBackendId)}，图像 → {RouteName(config.Routing.ImageBackendId)}";
+        }
+        var deepSeek = config.Backends.FirstOrDefault(x => x.Endpoint == DeepSeekSetup.Endpoint);
+        QuickStatus.Text = deepSeek is null ? "不需要填写接口地址或模型名称。" : $"已保存 {deepSeek.Name} / {deepSeek.Model}。可直接开始提问，或填入新密钥重新配置。";
         loading = false;
         LoadBackendEditor();
     }
-    private void Status(string message) { StatusLabel.Text = message; reader.Status(message); }
+    private void Status(string message) { StatusLabel.Text = message; reader.Status(message); SetError(null); }
+    private void SetError(string? code)
+    {
+        ErrorCode.Text = code ?? "";
+        ErrorDetails.Visibility = code is null ? Visibility.Collapsed : Visibility.Visible;
+        if (code is null) ErrorDetails.IsExpanded = false;
+    }
+    private void ClearOutput()
+    {
+        reader.Clear(); AnswerText.Clear(); AnswerPlaceholder.Visibility = Visibility.Visible;
+    }
     private static string StateLabel(RequestUpdate update) => (update.State switch
     {
         RequestState.PolicyCheck => "正在校验外发策略", RequestState.Connecting => "连接中", RequestState.Waiting => "等待响应",
         RequestState.Streaming => "生成中", RequestState.Completed => "已完成", RequestState.Cancelled => "已取消",
-        RequestState.Failed => "失败 · " + ConnectionDiagnostics.Describe(update.Code), _ => update.State.ToString()
+        RequestState.Failed => ConnectionDiagnostics.Explain(update.Code), _ => update.State.ToString()
     }) + (update.Attempt.Request.ProcessingNotices.IsDefaultOrEmpty ? "" : $" · 已按规则跳过 {update.Attempt.Request.ProcessingNotices.Length} 个可选步骤");
     private void OnUpdate(RequestUpdate update)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => OnUpdate(update)); return; }
         if (!coordinator.IsCurrent(update.Attempt)) return;
         StatusLabel.Text = StateLabel(update);
+        SetError(update.Code);
         latestUpdate = update;
         if (update.State != RequestState.Completed) return;
+        AnswerText.Text = update.Text;
+        AnswerPlaceholder.Visibility = update.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         completed = update;
         if (!config.AutoCopy || !reader.Check()) return;
         try
@@ -174,12 +202,16 @@ public partial class MainWindow : Window
         SyncSummary.Text = "当前无授权";
         UpdateMode();
     }
-    private void UpdateMode() => ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }} · {(grant is null ? "同步关闭" : "同步已授权")}";
+    private void UpdateMode()
+    {
+        ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }}{(grant is null ? "" : " · 剪贴板同步中")}";
+        ResumeButton.Visibility = coordinator.Mode == RunState.Ready ? Visibility.Collapsed : Visibility.Visible;
+    }
     public void EmergencyPause(string reason, RunState mode = RunState.Paused)
     {
         CancelProbe();
         operation++; coordinator.SetMode(mode); prepared = null; completed = null; latestUpdate = null;
-        reader.Clear(); StopSync(); ApiKey.Clear();
+        ClearOutput(); QuestionBox.Clear(); StopSync(); ApiKey.Clear(); QuickApiKey.Clear();
         if (config.ClearOwnedClipboardOnPause) { try { clipboard?.ClearOwned(); } catch { /* Clear best effort only our own data. */ } }
         UpdateMode(); Status(reason);
     }
@@ -199,7 +231,14 @@ public partial class MainWindow : Window
     private async Task CaptureInput(bool screen, bool automatic = false)
     {
         if (!Ready() || preparing) return;
-        if (!automatic && !reader.IsVisible) reader.Show();
+        if (!automatic && config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
+        if (screen && config.Capture is null)
+        {
+            MainTabs.SelectedItem = AdvancedTab; CaptureSettings.IsExpanded = true;
+            RefreshTargets_Click(this, new RoutedEventArgs());
+            Status("请选择截图范围，再点击“应用采集目标”"); return;
+        }
+        if (!automatic && !IsVisible && !reader.IsVisible) reader.Show();
         var activeGrant = grant;
         var activeSyncGeneration = syncGeneration;
         if (automatic && (activeGrant is null || activeGrant.ExpiresAt <= DateTimeOffset.UtcNow)) { StopSync(); return; }
@@ -229,7 +268,7 @@ public partial class MainWindow : Window
                     !syncFilter.Accept(snapshot, own))) return;
             }
             if (version != operation || !Ready()) return;
-            coordinator.Invalidate(); completed = null; prepared = null; latestUpdate = null; reader.Clear();
+            coordinator.Invalidate(); completed = null; prepared = null; latestUpdate = null; ClearOutput();
             Status("本地处理中");
             var notices = new List<string>();
             var processed = await Task.Run(() => Preprocessor.Process(snapshot.Content, settings.Pipeline, new ImageProcessor(), notices.Add));
@@ -267,7 +306,7 @@ public partial class MainWindow : Window
         if (!Ready()) return;
         if (prepared is null) { Status("尚无已准备输入"); return; }
         var request = prepared;
-        prepared = null; completed = null; latestUpdate = null; reader.Clear();
+        prepared = null; completed = null; latestUpdate = null; ClearOutput();
         await coordinator.RunAsync(request, automatic, authorization);
     }
     private async Task RunCommand(string action)
@@ -301,7 +340,7 @@ public partial class MainWindow : Window
                     else Status("当前没有可复制的完整回答");
                     break;
                 case "cancel":
-                    operation++; coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; reader.Clear(); Status("已取消；迟到输出将被丢弃"); break;
+                    operation++; coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; ClearOutput(); Status("已取消"); break;
                 case "pause": EmergencyPause("紧急暂停已生效"); break;
                 case "pageDown": reader.Page(true); break;
                 case "pageUp": reader.Page(false); break;
@@ -311,7 +350,11 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Report(ex); }
     }
-    private void Report(Exception ex) => Status("操作未完成 · " + (ex is TimeoutException ? "capture_timed_out" : ConnectionDiagnostics.Describe(ConnectionDiagnostics.CodeFor(ex))));
+    private void Report(Exception ex)
+    {
+        var code = ex is TimeoutException ? "capture_timed_out" : ConnectionDiagnostics.CodeFor(ex);
+        Status(ConnectionDiagnostics.Explain(code)); SetError(code);
+    }
     private void Mutate(Action action)
     {
         try
@@ -336,6 +379,106 @@ public partial class MainWindow : Window
         if (sessionLocked || !sessionListenerReady) { Status("系统会话尚未就绪"); return; }
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
         pausedForProtection = false; coordinator.SetMode(RunState.Ready); UpdateMode(); Status("已恢复");
+    }
+    private void OpenConnection_Click(object sender, RoutedEventArgs e) => MainTabs.SelectedItem = ConnectionTab;
+    private void OpenWorkspace_Click(object sender, RoutedEventArgs e) => MainTabs.SelectedItem = WorkspaceTab;
+    private async void CopyAnswer_Click(object sender, RoutedEventArgs e) => await RunCommand("copy");
+    private async void Ask_Click(object sender, RoutedEventArgs e)
+    {
+        if (!Ready() || preparing) return;
+        if (config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
+        if (string.IsNullOrWhiteSpace(QuestionBox.Text)) { Status("请先输入问题"); return; }
+        var version = ++operation;
+        preparing = true;
+        try
+        {
+            var settings = config;
+            var content = Payload.FromText(QuestionBox.Text);
+            var sequence = clipboard!.Sequence;
+            if (content.Size > Policy.AbsoluteInputLimit) throw new SafeFailure("input_too_large");
+            coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; ClearOutput();
+            var notices = new List<string>();
+            var processed = await Task.Run(() => Preprocessor.Process(content, settings.Pipeline, new ImageProcessor(), notices.Add));
+            if (version != operation || !Ready()) return;
+            var selected = settings.Routing.Select(processed, settings.SelectedBackendId, settings.Backends);
+            var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ManualText, processed, sequence, DateTimeOffset.UtcNow);
+            prepared = new(snapshot, processed, settings.Pipeline, selected, notices.ToImmutableArray());
+            Policy.Check(prepared);
+            await SendPrepared();
+        }
+        catch (Exception ex) { if (version == operation) { prepared = null; Report(ex); } }
+        finally { preparing = false; }
+    }
+
+    private sealed class TemporaryCredential(string secret) : ICredentialStore, IDisposable
+    {
+        private string value = secret;
+        public string Read(string reference) => value;
+        public void Dispose() => value = "";
+    }
+    private void SetProbeBusy(bool busy, bool quick = false)
+    {
+        TestBackendButton.IsEnabled = !busy;
+        QuickConnectButton.IsEnabled = !busy;
+        QuickApiKey.IsEnabled = !busy;
+        QuickProxyMode.IsEnabled = !busy;
+        QuickProxyAddress.IsEnabled = !busy;
+        CancelQuickButton.Visibility = busy && quick ? Visibility.Visible : Visibility.Collapsed;
+    }
+    private async void QuickConnect_Click(object sender, RoutedEventArgs e)
+    {
+        if (!Ready()) return;
+        var secret = QuickApiKey.Password.Trim();
+        QuickApiKey.Clear();
+        if (string.IsNullOrWhiteSpace(secret) || secret.Length > 8192 || secret.Any(char.IsControl))
+        { QuickStatus.Text = "请填写有效的 API 密钥。"; return; }
+        CancelProbe();
+        using var cancellation = new CancellationTokenSource();
+        probeCancellation = cancellation;
+        SetProbeBusy(true, quick: true);
+        QuickDetails.Visibility = Visibility.Collapsed;
+        QuickStatus.Text = "正在获取模型并测试连接…";
+        var existing = config.Backends.FirstOrDefault(x => x.Id == config.SelectedBackendId && x.Endpoint == DeepSeekSetup.Endpoint) ??
+            config.Backends.FirstOrDefault(x => x.Endpoint == DeepSeekSetup.Endpoint);
+        var draft = DeepSeekSetup.Preset(existing?.Id ?? Guid.NewGuid().ToString("N"), "temporary",
+            (ProxyMode)QuickProxyMode.SelectedIndex, QuickProxyAddress.Text.Trim());
+        try
+        {
+            using var temporary = new TemporaryCredential(secret);
+            using var client = new ChatCompletionsClient(temporary);
+            var result = await DeepSeekSetup.ConnectAsync(client, client, draft, cancellation.Token);
+            if (!ReferenceEquals(probeCancellation, cancellation) || !Ready()) return;
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (configLoadFailed)
+            {
+                File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"), false);
+                configLoadFailed = false;
+            }
+            config = QuickSetupPersistence.Commit(config, result.Backend, secret, credentials, next => next.Save());
+            StopSync();
+            // Populate cancels probes; detach this successful operation before refreshing controls.
+            probeCancellation = null;
+            Populate();
+            ModelName.ItemsSource = result.Models.Select(x => x.Id).ToArray();
+            ModelName.Text = result.Backend.Model;
+            QuickStatus.Text = $"连接成功 · 已选择 {result.Backend.Model}，可以开始提问。";
+            Status("DeepSeek 已连接并保存");
+            MainTabs.SelectedItem = WorkspaceTab;
+            QuestionBox.Focus();
+        }
+        catch (Exception ex)
+        {
+            if (!ReferenceEquals(probeCancellation, cancellation)) return;
+            var code = ConnectionDiagnostics.CodeFor(ex);
+            QuickStatus.Text = ConnectionDiagnostics.Explain(code);
+            QuickErrorCode.Text = code; QuickDetails.Visibility = Visibility.Visible;
+        }
+        finally
+        {
+            secret = "";
+            if (ReferenceEquals(probeCancellation, cancellation)) probeCancellation = null;
+            if (probeCancellation is null) SetProbeBusy(false);
+        }
     }
     private async void Clipboard_Click(object sender, RoutedEventArgs e) => await RunCommand("clipboard");
     private async void Capture_Click(object sender, RoutedEventArgs e) => await RunCommand("capture");
@@ -380,6 +523,7 @@ public partial class MainWindow : Window
     {
         CancelProbe();
         var b = EditBackendPicker.SelectedItem as Backend;
+        ModelName.ItemsSource = null;
         BackendName.Text = b?.Name ?? ""; ModelName.Text = b?.Model ?? ""; Endpoint.Text = b?.Endpoint ?? "";
         ApiKey.Clear(); Vision.IsChecked = b?.SupportsImages ?? false; Streaming.IsChecked = b?.Stream ?? true;
         Loopback.IsChecked = b?.AllowLoopbackHttp ?? false; TimeoutSeconds.Text = (b?.TimeoutSeconds ?? 120).ToString();
@@ -427,7 +571,8 @@ public partial class MainWindow : Window
         var pending = probeCancellation;
         probeCancellation = null;
         pending.Cancel();
-        TestBackendButton.IsEnabled = true;
+        SetProbeBusy(false);
+        QuickStatus.Text = "连接测试已取消，未保存更改。";
         ConnectionStatus.Text = "连接测试已取消";
     }
     private void CancelProbe_Click(object sender, RoutedEventArgs e) => CancelProbe();
@@ -442,7 +587,7 @@ public partial class MainWindow : Window
         CancelProbe();
         using var cancellation = new CancellationTokenSource();
         probeCancellation = cancellation;
-        TestBackendButton.IsEnabled = false;
+        SetProbeBusy(true);
         ConnectionStatus.Text = $"测试中 · {selected.ProxyMode} · 超时 {selected.TimeoutSeconds} 秒";
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -458,7 +603,7 @@ public partial class MainWindow : Window
             if (ReferenceEquals(probeCancellation, cancellation))
             {
                 probeCancellation = null;
-                TestBackendButton.IsEnabled = true;
+                SetProbeBusy(false);
             }
         }
     }

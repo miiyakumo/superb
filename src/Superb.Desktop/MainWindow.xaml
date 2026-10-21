@@ -1,36 +1,49 @@
-<Window x:Class="Superb.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Superb · 控制中心" Width="1000" Height="820" MinWidth="820" MinHeight="650" WindowStartupLocation="CenterScreen">
+<Window x:Class="Superb.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Superb" Width="960" Height="820" MinWidth="800" MinHeight="680" WindowStartupLocation="CenterScreen">
   <Grid Margin="28">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <DockPanel Margin="0,0,0,24">
-      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Content="显示阅读面板" Click="ShowPanel_Click"/><Button Content="紧急暂停" Click="Pause_Click" Foreground="#F5C5AF"/></StackPanel>
-      <StackPanel><TextBlock Text="S U P E R B" FontSize="26" FontWeight="Bold" Foreground="{StaticResource Accent}"/><TextBlock Text="快捷提问 · 受控外发" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
+    <DockPanel Margin="0,0,0,18">
+      <WrapPanel DockPanel.Dock="Right"><Button Content="悬浮阅读" Click="ShowPanel_Click"/><Button x:Name="ResumeButton" Content="恢复使用" Click="Resume_Click" Visibility="Collapsed"/><Button Content="暂停" Click="Pause_Click"/></WrapPanel>
+      <StackPanel><TextBlock Text="S U P E R B" FontSize="26" FontWeight="Bold" Foreground="{StaticResource Accent}"/><TextBlock Text="随手提问，专注回答" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
     </DockPanel>
-    <Border Grid.Row="1" Background="{StaticResource Surface}" CornerRadius="8" Padding="18,14" Margin="0,0,0,20">
-      <StackPanel><TextBlock x:Name="ModeLabel" Text="正在初始化" FontWeight="SemiBold"/><TextBlock x:Name="StatusLabel" Text="正在检查显示保护与系统会话。" Style="{StaticResource Hint}" Margin="0,6,0,0"/></StackPanel>
+    <Border Grid.Row="1" Background="{StaticResource Surface}" CornerRadius="8" Padding="16,12" Margin="0,0,0,16">
+      <StackPanel><TextBlock x:Name="ModeLabel" Text="正在初始化" FontWeight="SemiBold"/><TextBlock x:Name="StatusLabel" Text="正在检查显示保护。" Style="{StaticResource Hint}" Margin="0,4,0,0"/><Expander x:Name="ErrorDetails" Header="诊断详情" Visibility="Collapsed" Margin="0,6,0,0"><TextBlock x:Name="ErrorCode" Style="{StaticResource Hint}"/></Expander></StackPanel>
     </Border>
-    <TabControl Grid.Row="2" Background="{StaticResource Base}" BorderThickness="0">
-      <TabItem Header="工作台"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
-        <TextBlock Text="快速提问" Style="{StaticResource Heading}"/>
-        <TextBlock Text="“问剪贴板”和“问预设区域”会在本地处理与策略校验后直接发送；只有暂停、锁屏或保护异常后才需要恢复。" Style="{StaticResource Hint}"/>
-        <TextBlock Text="默认模型"/><ComboBox x:Name="BackendPicker" DisplayMemberPath="Name" SelectionChanged="BackendPicker_SelectionChanged"/>
-        <WrapPanel><Button Content="恢复" Style="{StaticResource Primary}" Click="Resume_Click"/><Button Content="问剪贴板" Click="Clipboard_Click"/><Button Content="问预设区域" Click="Capture_Click"/><Button Content="发送已准备" Click="Send_Click"/><Button Content="重新问" Click="Retry_Click"/><Button Content="取消当前请求" Click="Cancel_Click"/></WrapPanel>
-        <Border Background="{StaticResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
-          <TextBlock Text="Live Clipboard（可选）" FontSize="17" FontWeight="SemiBold"/>
-          <TextBlock Text="监听仅在本次运行有效。停止监听只阻止新的自动输入；已提交请求仍可单独取消，紧急暂停会立即遮蔽并停止本地输出。" Style="{StaticResource Hint}"/>
-          <WrapPanel><CheckBox x:Name="SyncText" Content="Unicode 文本" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="SyncImage" Content="静态位图"/></WrapPanel>
-          <CheckBox x:Name="SyncSend" Content="变化后自动提问（关闭时只准备，等待手动发送）"/>
-          <TextBlock x:Name="SyncSummary" Text="当前无授权" Style="{StaticResource Hint}"/>
-          <WrapPanel><Button Content="开始 Live Clipboard" Click="StartSync_Click"/><Button Content="停止 Live Clipboard" Click="StopSync_Click"/></WrapPanel>
-        </StackPanel></Border>
-        <TextBlock Text="保护状态" FontSize="17" FontWeight="SemiBold"/>
-        <TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/>
-        <TextBlock Text="不会保存截图、正文或回答；无自动重试、后台遥测或崩溃上传。远端后端会接收已发送的内容。" Style="{StaticResource Hint}"/>
-      </StackPanel></ScrollViewer></TabItem>
-      <TabItem Header="模型后端"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
-        <TextBlock Text="明确每一次发送的接收方" Style="{StaticResource Heading}"/>
-        <TextBlock Text="首版适配 Chat Completions 协议。端点填写完整请求地址；不自动补路径、切换供应商或跟随重定向。" Style="{StaticResource Hint}"/>
-        <TextBlock Text="编辑后端"/><ComboBox x:Name="EditBackendPicker" DisplayMemberPath="Name" SelectionChanged="EditBackendPicker_SelectionChanged"/>
-        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="名称"/><TextBox x:Name="BackendName"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="模型 ID"/><TextBox x:Name="ModelName"/></StackPanel></Grid>
+    <TabControl x:Name="MainTabs" Grid.Row="2" Background="{StaticResource Base}" BorderThickness="0">
+      <TabItem x:Name="WorkspaceTab" Header="提问">
+        <Grid Margin="8,18,8,0">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <DockPanel><Button DockPanel.Dock="Right" Content="连接模型" Click="OpenConnection_Click"/><ComboBox x:Name="BackendPicker" DisplayMemberPath="Name" SelectionChanged="BackendPicker_SelectionChanged" MinWidth="220"/></DockPanel>
+          <TextBlock Grid.Row="1" x:Name="ModelSummary" Text="先连接一个模型，即可开始提问。" Style="{StaticResource Hint}"/>
+          <TextBox Grid.Row="2" x:Name="QuestionBox" IsUndoEnabled="False" AcceptsReturn="True" Height="96" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" AutomationProperties.Name="输入问题" ToolTip="输入问题后点击发送"/>
+          <WrapPanel Grid.Row="3"><Button Content="发送问题" Style="{StaticResource Primary}" Click="Ask_Click"/><Button Content="问剪贴板" Click="Clipboard_Click"/><Button Content="截图提问" Click="Capture_Click"/><Button Content="取消" Click="Cancel_Click"/></WrapPanel>
+          <Border Grid.Row="4" Background="{StaticResource Surface}" CornerRadius="8" Padding="14" Margin="0,8,0,12">
+            <Grid><TextBlock x:Name="AnswerPlaceholder" Text="回答会显示在这里。
+问题与回答仅在本次运行中保留。" Foreground="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Center" TextAlignment="Center"/><TextBox x:Name="AnswerText" IsUndoEnabled="False" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0" Margin="0" FontSize="16" AutomationProperties.Name="模型回答"/></Grid>
+          </Border>
+          <WrapPanel Grid.Row="5"><Button Content="复制回答" Click="CopyAnswer_Click"/><Button Content="重新回答" Click="Retry_Click"/></WrapPanel>
+        </Grid>
+      </TabItem>
+      <TabItem x:Name="ConnectionTab" Header="连接模型">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+          <TextBlock Text="连接 DeepSeek" Style="{StaticResource Heading}"/>
+          <TextBlock Text="填入密钥即可开始。我们会获取可用模型、发送一条简短测试，并在成功后保存。" Style="{StaticResource Hint}"/>
+          <TextBlock Text="API 密钥"/><PasswordBox x:Name="QuickApiKey" AutomationProperties.Name="DeepSeek API 密钥"/>
+          <TextBlock Text="仅连接 api.deepseek.com；测试可能产生少量费用。密钥加密保存在此 Windows 用户下。" Style="{StaticResource Hint}"/>
+          <Expander Header="高级连接设置 · 代理" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0">
+            <ComboBox x:Name="QuickProxyMode" SelectedIndex="0"><ComboBoxItem Content="直连"/><ComboBoxItem Content="系统代理"/><ComboBoxItem Content="自定义代理"/></ComboBox>
+            <TextBox x:Name="QuickProxyAddress" ToolTip="仅自定义模式填写，例如 http://127.0.0.1:7890"/>
+            <TextBlock Text="自定义地址示例：http://127.0.0.1:7890。使用代理即允许它参与连接，不会自动切换线路。" Style="{StaticResource Hint}"/>
+          </StackPanel></Expander>
+          <WrapPanel><Button x:Name="QuickConnectButton" Content="测试并保存" Style="{StaticResource Primary}" Click="QuickConnect_Click"/><Button x:Name="CancelQuickButton" Content="取消测试" Click="CancelProbe_Click" Visibility="Collapsed"/><Button Content="开始提问" Click="OpenWorkspace_Click"/></WrapPanel>
+          <TextBlock x:Name="QuickStatus" Text="不需要填写接口地址或模型名称。" Style="{StaticResource Hint}"/>
+          <Expander x:Name="QuickDetails" Header="诊断详情" Visibility="Collapsed"><TextBlock x:Name="QuickErrorCode" Style="{StaticResource Hint}"/></Expander>
+          <TextBlock Text="已有配置和其他服务商，可在“高级设置 → 模型与连接”中编辑。" Style="{StaticResource Hint}"/>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+      <TabItem x:Name="AdvancedTab" Header="高级设置"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+        <TextBlock Text="按需调整" Style="{StaticResource Heading}"/>
+        <Expander x:Name="BackendSettings" Header="模型与连接" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0"><TextBlock Text="编辑后端"/><ComboBox x:Name="EditBackendPicker" DisplayMemberPath="Name" SelectionChanged="EditBackendPicker_SelectionChanged"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="名称"/><TextBox x:Name="BackendName"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="模型 ID"/><ComboBox x:Name="ModelName" IsEditable="True"/></StackPanel></Grid>
         <TextBlock Text="完整端点 URL"/><TextBox x:Name="Endpoint"/>
         <TextBlock Text="例如 https://你的服务/v1/chat/completions；不要只填域名或 /v1。" Style="{StaticResource Hint}"/>
         <TextBlock Text="API 密钥（留空保留已有凭据）"/><PasswordBox x:Name="ApiKey"/>
@@ -47,22 +60,31 @@
         <TextBlock Text="测试只发送固定文本 Reply with OK.，沿用已保存的模型、密钥、代理、流式及生成参数，可能计费；不读取剪贴板，不写回回答。编辑后请先保存。" Style="{StaticResource Hint}"/>
         <TextBlock x:Name="ConnectionStatus" Text="尚未测试" Style="{StaticResource Hint}"/>
         <TextBlock Text="凭据单独使用 DPAPI 加密保存，配置仅保留引用。同一用户权限下的恶意程序不在隔离承诺内。" Style="{StaticResource Hint}"/>
-      </StackPanel></ScrollViewer></TabItem>
-      <TabItem Header="采集与策略"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+      </StackPanel></Expander>
+        <Expander x:Name="CaptureSettings" Header="截图范围" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
         <TextBlock Text="固定范围，失败即停止" Style="{StaticResource Heading}"/>
         <WrapPanel><Button Content="刷新可选窗口 / 显示器" Click="RefreshTargets_Click"/><Button Content="应用采集目标" Click="SaveTarget_Click"/></WrapPanel>
         <ComboBox x:Name="TargetPicker"/>
         <CheckBox x:Name="UseRegion" Content="使用所选显示器内的矩形区域（物理像素，相对显示器左上角）"/>
         <TextBox x:Name="RegionBox" Text="0,0,800,600"/>
         <TextBlock x:Name="TargetLabel" Text="未配置采集目标" Style="{StaticResource Hint}"/>
-        <TextBlock Text="预处理步骤（按数组顺序执行，坐标相对上一步图像）"/>
+        </StackPanel></Expander>
+        <Expander Header="内容处理与固定路由" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0"><TextBlock Text="预处理步骤（按数组顺序执行，坐标相对上一步图像）"/>
         <TextBox x:Name="PipelineBox" AcceptsReturn="True" Height="180" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
         <TextBlock Text="支持 NormalizeText、Template、Crop、Mask、Resize；Required=true 的失败会阻止发送。模板使用 {input}。配置会保存这些规则，请勿在模板中粘贴敏感正文。" Style="{StaticResource Hint}"/>
         <TextBlock Text="固定路由（后端 ID；null 表示使用手动选择）"/><TextBox x:Name="RoutingBox" AcceptsReturn="True" Height="74" FontFamily="Consolas"/>
         <TextBlock x:Name="BackendIds" Style="{StaticResource Hint}"/>
         <Button Content="保存处理与路由策略" HorizontalAlignment="Left" Click="SavePipeline_Click"/>
-      </StackPanel></ScrollViewer></TabItem>
-      <TabItem Header="偏好与快捷键"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,24,8,0">
+      </StackPanel></Expander>
+        <Expander Header="自动同步剪贴板" Margin="0,0,0,16"><StackPanel><Border Background="{StaticResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
+          <TextBlock Text="Live Clipboard（可选）" FontSize="17" FontWeight="SemiBold"/>
+          <TextBlock Text="监听仅在本次运行有效。停止监听只阻止新的自动输入；已提交请求仍可单独取消，紧急暂停会立即遮蔽并停止本地输出。" Style="{StaticResource Hint}"/>
+          <WrapPanel><CheckBox x:Name="SyncText" Content="Unicode 文本" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="SyncImage" Content="静态位图"/></WrapPanel>
+          <CheckBox x:Name="SyncSend" Content="变化后自动提问（关闭时只准备，等待手动发送）"/>
+          <TextBlock x:Name="SyncSummary" Text="当前无授权" Style="{StaticResource Hint}"/>
+          <WrapPanel><Button Content="开始 Live Clipboard" Click="StartSync_Click"/><Button Content="停止 Live Clipboard" Click="StopSync_Click"/></WrapPanel>
+        </StackPanel></Border><Button Content="发送已准备内容" HorizontalAlignment="Left" Click="Send_Click"/></StackPanel></Expander>
+        <Expander Header="偏好与快捷键" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
         <TextBlock Text="保持可控，减少打扰" Style="{StaticResource Heading}"/>
         <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
         <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
@@ -71,8 +93,14 @@
         <TextBlock Text="快捷键配置"/><TextBox x:Name="HotkeysBox" AcceptsReturn="True" Height="210" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
         <TextBlock Text="capture / clipboard / toggle / copy / cancel / pause / send / pageDown / pageUp / settings / exit。冲突时会显示未注册的动作；控制中心始终可手动操作。" Style="{StaticResource Hint}"/>
         <WrapPanel><Button Content="保存偏好" Style="{StaticResource Primary}" Click="SavePreferences_Click"/><Button Content="导出无凭据配置" Click="Export_Click"/></WrapPanel>
+      </StackPanel></Expander>
+        <Expander Header="保护状态" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
+        <TextBlock Text="保护状态" FontSize="17" FontWeight="SemiBold"/>
+        <TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/>
+        <TextBlock Text="不会保存截图、正文或回答；无自动重试、后台遥测或崩溃上传。远端后端会接收已发送的内容。" Style="{StaticResource Hint}"/>
+      </StackPanel></Expander>
       </StackPanel></ScrollViewer></TabItem>
     </TabControl>
-    <DockPanel Grid.Row="3" Margin="0,18,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起控制中心" Click="HideControl_Click"/><Button Content="退出" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.1.1 · 后端连接修复开发版本" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></DockPanel>
+    <DockPanel Grid.Row="3" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起" Click="HideControl_Click"/><Button Content="退出" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.2.0 · 开发版本" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></DockPanel>
   </Grid>
 </Window>

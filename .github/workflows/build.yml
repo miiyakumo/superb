@@ -29,7 +29,7 @@ jobs:
       - name: Windows imaging, configuration and DPAPI-to-HTTP integration
         shell: pwsh
         run: |
-          dotnet run --project tests/Superb.WindowsTests -c Release --no-build | Tee-Object artifacts/diagnostics/windows-tests.txt
+          dotnet run --project tests/Superb.WindowsTests -c Release --no-build -- --render-dir artifacts/diagnostics/ui | Tee-Object artifacts/diagnostics/windows-tests.txt
           exit $LASTEXITCODE
       - run: dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/win-x64
       - uses: actions/upload-artifact@v4

@@ -447,6 +447,97 @@ AsyncTest("System mode discovers HTTP_PROXY in a fresh process on this operating
     finally { if (!child.HasExited) child.Kill(entireProcessTree: true); cancellation.Cancel(); }
 });
 
+Test("DeepSeek catalog selects capabilities conservatively and rejects invalid model IDs", () =>
+{
+    var models = DeepSeekSetup.ParseModels(Encoding.UTF8.GetBytes("{\"data\":[{\"id\":\"deepseek-flash\",\"input_modalities\":[\"text\",\"image\"]},{\"id\":\"legacy\"},{\"id\":\"legacy\"}]}"));
+    Assert(models.Count == 2 && models[0].SupportsImages && !models[1].SupportsImages);
+    Fails("model_list_empty", () => DeepSeekSetup.ParseModels(Encoding.UTF8.GetBytes("{\"data\":[]}")));
+    Fails("model_list_invalid", () => DeepSeekSetup.ParseModels(Encoding.UTF8.GetBytes("{\"data\":[{\"id\":\"bad\\nmodel\"}]}")));
+    Fails("model_list_invalid", () => DeepSeekSetup.ParseModels(Encoding.UTF8.GetBytes("{\"data\":{}}")));
+});
+AsyncTest("Quick setup prefers an available Flash model and tests a small fixed prompt before returning", async () =>
+{
+    var catalog = new FixedCatalog([new("deepseek-v4-pro"), new("deepseek-flash", true)]);
+    var client = new InspectingClient();
+    var result = await DeepSeekSetup.ConnectAsync(catalog, client, DeepSeekSetup.Preset("test", "temporary"), CancellationToken.None);
+    Assert(result.Backend.Model == "deepseek-flash" && result.Backend.SupportsImages && result.Backend.MaxTokens == 4096);
+    Assert(result.Backend.Endpoint == DeepSeekSetup.Endpoint && result.Backend.ProxyMode == ProxyMode.Direct);
+    Assert(client.Request!.Content.Text == BackendProbe.TestPrompt && client.Request.Backend.MaxTokens == 64);
+    Assert(!client.Request.Content.HasImage);
+});
+AsyncTest("Quick setup never fabricates an unavailable model or switches a selected proxy", async () =>
+{
+    var catalog = new FixedCatalog([new("deepseek-chat")]);
+    var client = new InspectingClient();
+    var draft = DeepSeekSetup.Preset("test", "temporary", ProxyMode.Custom, "http://127.0.0.1:7890");
+    var result = await DeepSeekSetup.ConnectAsync(catalog, client, draft, CancellationToken.None);
+    Assert(result.Backend.Model == "deepseek-chat" && !result.Backend.SupportsImages);
+    Assert(catalog.Request!.ProxyMode == ProxyMode.Custom && client.Request!.Backend.ProxyAddress == draft.ProxyAddress);
+});
+AsyncTest("Quick setup refuses a different recipient before model discovery", async () =>
+{
+    var catalog = new FixedCatalog([new("deepseek-flash")]);
+    try { await DeepSeekSetup.ConnectAsync(catalog, new InspectingClient(), backend, CancellationToken.None); throw new Exception("Accepted recipient"); }
+    catch (SafeFailure ex) { Assert(ex.Code == "endpoint_invalid" && catalog.Request is null); }
+});
+AsyncTest("Failed authentication or an empty completion never produces a saveable quick setup", async () =>
+{
+    foreach (var (client, code) in new (IBackendClient, string)[] { (new ThrowingClient(new SafeFailure("http_401")), "http_401"), (new EmptyClient(), "probe_empty_response") })
+    {
+        try { await DeepSeekSetup.ConnectAsync(new FixedCatalog([new("deepseek-flash")]), client, DeepSeekSetup.Preset("test", "temporary"), CancellationToken.None); throw new Exception("Accepted failed probe"); }
+        catch (SafeFailure ex) { Assert(ex.Code == code); }
+    }
+});
+AsyncTest("Cancelled quick setup rejects late catalog data and never starts a generation", async () =>
+{
+    using var cancel = new CancellationTokenSource(); cancel.Cancel();
+    var client = new InspectingClient();
+    try { await DeepSeekSetup.ConnectAsync(new FixedCatalog([new("deepseek-flash")]), client, DeepSeekSetup.Preset("test", "temporary"), cancel.Token); throw new Exception("Accepted cancelled setup"); }
+    catch (OperationCanceledException) { Assert(client.Request is null); }
+});
+AsyncTest("Typed questions remain manual requests and obey pipeline, routing and pause policy", async () =>
+{
+    var client = new InspectingClient(); var coordinator = new Coordinator(client);
+    var p = Preprocessor.Process(Payload.FromText(" hello "), new("typed", [new(StepKind.NormalizeText)]), new FailingImageProcessor());
+    var request = Request() with { Content = p, Snapshot = Request().Snapshot with { Kind = InputKind.ManualText, Content = p } };
+    try { await coordinator.RunAsync(request); throw new Exception("Accepted paused session"); }
+    catch (SafeFailure ex) { Assert(ex.Code == "session_not_ready" && client.Request is null); }
+    coordinator.SetMode(RunState.Ready); await coordinator.RunAsync(request);
+    Assert(client.Request!.Content.Text == "hello" && client.Request.Snapshot.Kind == InputKind.ManualText);
+});
+foreach (var scenario in new[] { "success", "redirect", "oversize", "unauthorized" })
+    AsyncTest($"Model discovery HTTP integration: {scenario}", async () =>
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var target = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/v1/chat/completions";
+        var server = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptTcpClientAsync(cancellation.Token);
+            await using var stream = socket.GetStream();
+            using var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, true);
+            var first = await reader.ReadLineAsync(cancellation.Token); var authorized = false; string? line;
+            while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(cancellation.Token)))
+                authorized |= line == "Authorization: Bearer test-secret";
+            Assert(first == "GET /v1/models HTTP/1.1" && authorized);
+            var body = scenario == "oversize" ? new string(' ', 65537) : "{\"data\":[{\"id\":\"deepseek-flash\",\"input_modalities\":[\"text\",\"image\"]}]}";
+            var status = scenario == "redirect" ? "302 Found" : scenario == "unauthorized" ? "401 Unauthorized" : "200 OK";
+            var redirect = scenario == "redirect" ? "Location: https://should-never-be-contacted.invalid/models\r\n" : "";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\n{redirect}Content-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}"), cancellation.Token);
+        });
+        using var client = new ChatCompletionsClient(new FakeCredentials());
+        try
+        {
+            var models = await client.ListModelsAsync(backend with { Endpoint = target, AllowLoopbackHttp = true, CredentialRef = "test" }, cancellation.Token);
+            Assert(scenario == "success" && models.Count == 1 && models[0].SupportsImages);
+        }
+        catch (SafeFailure ex)
+        {
+            Assert(ex.Code == (scenario switch { "redirect" => "redirect_blocked", "oversize" => "response_too_large", "unauthorized" => "http_401", _ => "unexpected" }));
+        }
+        await server;
+    });
+
 var failures = 0;
 foreach (var (name, run) in tests)
 {
@@ -499,4 +590,15 @@ sealed class ControlledClient : IBackendClient
         // Intentionally malicious transport: ignores cancellation and delivers stale events.
         await foreach (var item in channel.Reader.ReadAllAsync()) yield return item;
     }
+}
+
+sealed class FixedCatalog(IReadOnlyList<ModelOption> models) : IModelCatalog
+{
+    public Backend? Request { get; private set; }
+    public Task<IReadOnlyList<ModelOption>> ListModelsAsync(Backend backend, CancellationToken token) { Request = backend; return Task.FromResult(models); }
+}
+sealed class EmptyClient : IBackendClient
+{
+    public async IAsyncEnumerable<BackendEvent> SendAsync(PreparedRequest request, [EnumeratorCancellation] CancellationToken token)
+    { await Task.Yield(); yield return new(Waiting: true); yield return new(Completed: true); }
 }

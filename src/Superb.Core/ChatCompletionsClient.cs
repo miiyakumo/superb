@@ -8,7 +8,7 @@ namespace Superb.Core;
 
 public interface ICredentialStore { string Read(string reference); }
 
-public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBackendClient, IDisposable
+public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBackendClient, IModelCatalog, IDisposable
 {
     private bool disposed;
     private static SocketsHttpHandler CreateHandler(Backend backend) => new()
@@ -24,7 +24,7 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
     public async IAsyncEnumerable<BackendEvent> SendAsync(PreparedRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        // This is the only production network entry point. Recheck frozen policy here.
+        // Recheck the frozen policy at each production network entry point.
         Policy.Check(request);
         ObjectDisposedException.ThrowIf(disposed, this);
         var backend = request.Backend;
@@ -81,6 +81,33 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
             yield return new(Delta: text);
             yield return new(Completed: true);
         }
+    }
+
+    public async Task<IReadOnlyList<ModelOption>> ListModelsAsync(Backend backend, CancellationToken cancellationToken)
+    {
+        var endpoint = Policy.ValidateBackend(backend);
+        ObjectDisposedException.ThrowIf(disposed, this);
+        const string suffix = "/chat/completions";
+        if (!endpoint.AbsolutePath.EndsWith(suffix, StringComparison.Ordinal)) throw new SafeFailure("endpoint_invalid");
+        // Only the path changes; credentials never go to another origin or a redirect.
+        var models = new UriBuilder(endpoint) { Path = endpoint.AbsolutePath[..^suffix.Length] + "/models" }.Uri;
+        using var http = new HttpClient(CreateHandler(backend)) { Timeout = Timeout.InfiniteTimeSpan };
+        using var message = new HttpRequestMessage(HttpMethod.Get, models);
+        if (!string.IsNullOrEmpty(backend.CredentialRef))
+            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.Read(backend.CredentialRef));
+        using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if ((int)response.StatusCode is >= 300 and < 400) throw new SafeFailure("redirect_blocked");
+        if (!response.IsSuccessStatusCode) throw new SafeFailure("http_" + (int)response.StatusCode);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[8192];
+        int count;
+        while ((count = await stream.ReadAsync(chunk, cancellationToken)) > 0)
+        {
+            if (buffer.Length + count > 65536) throw new SafeFailure("response_too_large");
+            buffer.Write(chunk, 0, count);
+        }
+        return DeepSeekSetup.ParseModels(buffer.ToArray());
     }
 
     public static async IAsyncEnumerable<BackendEvent> ReadSseAsync(Stream stream, int maxOutputChars,

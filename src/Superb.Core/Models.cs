@@ -2,7 +2,7 @@ using System.Collections.Immutable;
 
 namespace Superb.Core;
 
-public enum InputKind { ClipboardText, ClipboardImage, Screen }
+public enum InputKind { ClipboardText, ClipboardImage, Screen, ManualText }
 public enum RequestState { Idle, Capturing, Processing, AwaitingApproval, PolicyCheck, Connecting, Waiting, Streaming, Completed, Failed, Cancelled }
 public enum RunState { Ready, Paused, Locked, ProtectionUnavailable }
 public enum StepKind { NormalizeText, Template, Crop, Mask, Resize }

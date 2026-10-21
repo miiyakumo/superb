@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Controls;
 using Superb.Core;
 using Superb.Desktop.Platform;
 
@@ -65,6 +66,87 @@ internal static class Program
             var store = new CredentialStore(); var reference = store.Save("synthetic-test-key");
             try { TestSavedBackend(store, reference).GetAwaiter().GetResult(); }
             finally { store.Delete(reference); }
+        }));
+        tests.Add(("Quick setup persists only encrypted credentials and preserves other backends and routing", () =>
+        {
+            var store = new CredentialStore();
+            var old = store.Save("synthetic-old-key");
+            string? created = null;
+            try
+            {
+                var first = DeepSeekSetup.Preset("deepseek", old);
+                var other = new Backend("other", "Other", "https://example.test/chat/completions", "test", "");
+                var current = new Configuration { Backends = [first, other], SelectedBackendId = other.Id, Routing = new(other.Id) };
+                var updated = QuickSetupPersistence.Commit(current, first, "synthetic-new-key", store, saved =>
+                {
+                    created = saved.Backends.Single(x => x.Id == first.Id).CredentialRef;
+                    Assert(store.Read(created) == "synthetic-new-key");
+                    Assert(!JsonSerializer.Serialize(saved, Configuration.Json).Contains("synthetic-new-key"));
+                });
+                Assert(updated.SelectedBackendId == first.Id && updated.Backends.Length == 2 && updated.Routing == current.Routing);
+                Assert(updated.Backends.Contains(other) && current.Backends[0].CredentialRef == old);
+                try { store.Read(old); throw new Exception("Old credential retained"); }
+                catch (SafeFailure ex) { Assert(ex.Code == "credential_unavailable"); }
+            }
+            finally { store.Delete(old); if (created is not null) store.Delete(created); }
+        }));
+        tests.Add(("Failed quick setup config write removes new credential and keeps previous configuration usable", () =>
+        {
+            var store = new CredentialStore(); var old = store.Save("synthetic-old-key"); string? created = null;
+            try
+            {
+                var first = DeepSeekSetup.Preset("deepseek", old);
+                var current = new Configuration { Backends = [first], SelectedBackendId = first.Id };
+                try
+                {
+                    QuickSetupPersistence.Commit(current, first, "synthetic-new-key", store, saved =>
+                    {
+                        created = saved.Backends[0].CredentialRef;
+                        throw new IOException("synthetic write failure");
+                    });
+                    throw new Exception("Accepted failed save");
+                }
+                catch (IOException) { }
+                Assert(store.Read(old) == "synthetic-old-key" && current.Backends[0].CredentialRef == old && created is not null);
+                try { store.Read(created!); throw new Exception("Orphaned credential"); }
+                catch (SafeFailure ex) { Assert(ex.Code == "credential_unavailable"); }
+            }
+            finally { store.Delete(old); if (created is not null) store.Delete(created); }
+        }));
+        tests.Add(("WPF simplified views render and emergency pause clears all sensitive controls", () =>
+        {
+            var app = new App(); app.InitializeComponent();
+            var window = new MainWindow();
+            var tabs = (TabControl)window.FindName("MainTabs");
+            Assert(tabs.Items.Count == 3);
+            Assert(!((Expander)window.FindName("BackendSettings")).IsExpanded);
+            Assert(!((Expander)window.FindName("CaptureSettings")).IsExpanded);
+            var root = (FrameworkElement)window.Content;
+            // Render WPF content off-screen; this does not exercise a logged-in interactive desktop.
+            window.Content = null;
+            var renderIndex = Array.IndexOf(args, "--render-dir");
+            for (var i = 0; i < tabs.Items.Count; i++)
+            {
+                tabs.SelectedIndex = i;
+                root.Measure(new Size(904, 708)); root.Arrange(new Rect(0, 0, 904, 708)); root.UpdateLayout();
+                Assert(root.ActualWidth == 904 && root.ActualHeight == 708);
+                if (renderIndex >= 0 && renderIndex + 1 < args.Length)
+                {
+                    Directory.CreateDirectory(args[renderIndex + 1]);
+                    var bitmap = new RenderTargetBitmap(904, 708, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                    using var file = File.Create(Path.Combine(args[renderIndex + 1], $"ui-{i}.png")); encoder.Save(file);
+                }
+            }
+            var question = (TextBox)window.FindName("QuestionBox");
+            var answer = (TextBox)window.FindName("AnswerText");
+            var key = (PasswordBox)window.FindName("QuickApiKey");
+            var advancedKey = (PasswordBox)window.FindName("ApiKey");
+            question.Text = "synthetic question"; answer.Text = "synthetic answer";
+            key.Password = "synthetic-key"; advancedKey.Password = "synthetic-key";
+            window.EmergencyPause("synthetic pause");
+            Assert(question.Text == "" && answer.Text == "" && key.Password == "" && advancedKey.Password == "");
+            Assert(((Button)window.FindName("ResumeButton")).Visibility == Visibility.Visible);
         }));
         if (args.Contains("--interactive")) tests.Add(("Protection attributes and no-activate styles on an interactive desktop", () =>
         {
