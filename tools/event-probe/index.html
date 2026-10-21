@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Superb Event Probe</title><link rel="stylesheet" href="style.css"><script defer src="probe.js"></script></head>
+<body><main><header><span class="eyebrow">SUPERB / 本地诊断</span><h1>网页事件测试台</h1><p>观察事件，不屏蔽事件。测试浮窗是否改变焦点，以及哪些按键传到了网页。</p></header>
+<section class="status"><span id="focus">焦点：—</span><span id="visibility">可见性：—</span><span id="recording">未记录</span></section>
+<section><h2>1 · 准备一次操作</h2><p>仅使用合成内容。日志包含按键 code、修饰键和时间，不读取输入框正文、剪贴板或其他网页；不联网、不自动保存。按键 code 仍可能反映所按字符。</p>
+<label for="scenario">场景</label><select id="scenario"><option>静置对照</option><option>显示浮窗</option><option>点击浮窗正文</option><option>浮窗滚轮翻页</option><option>Ctrl+Alt+3 显示/收起</option><option>Ctrl+Alt+8 向下翻页</option><option>Ctrl+Alt+9 向上翻页</option><option>点击浮窗设置（失焦对照）</option><option>切换标签（隐藏对照）</option></select>
+<label for="pad">键盘事件接收区</label><input id="pad" autocomplete="off" spellcheck="false" placeholder="只输入合成测试字符，例如 A">
+<div class="buttons"><button id="start">开始记录（10 秒自动停止）</button><button id="stop">立即停止</button><button id="json">导出 JSON</button><button id="report">导出 HTML 报告</button></div>
+<p id="instruction">开始后，在 10 秒内执行所选操作。尽量等待自动停止后再返回此页，减少回到网页产生的额外事件。每个场景建议重复三次。</p></section>
+<section><h2>2 · 观察结果</h2><div id="summary" aria-live="polite">尚无采样。没有事件只有在操作确实执行、记录器工作正常时才有意义。</div><div class="table"><table><thead><tr><th>时间 ms</th><th>事件</th><th>目标</th><th>按键 code</th><th>修饰键</th><th>可信事件</th><th>焦点 / 可见性</th></tr></thead><tbody id="events"></tbody></table></div></section>
+<section><h2>3 · 判读边界</h2><p>window.blur 表示窗口失焦；focusout 只可能是页面内控件切换，不能当作窗口失焦。visibilitychange 与失焦分别统计。isTrusted=true 也可能来自自动化输入，并不证明是真人按键。没有触发本测试页事件，不代表其他网站、扩展或本机程序无法观察操作。</p><p>本页不会阻止默认按键、覆盖浏览器焦点 API，或安装全局键盘钩子。导出是手动触发，刷新后内存记录消失。</p></section></main></body></html>

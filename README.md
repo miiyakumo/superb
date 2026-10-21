@@ -102,3 +102,9 @@ dotnet run --project tests/Superb.WindowsTests -c Release -- --clipboard
 普通 Windows 测试处理合成位图、一次性合成凭据、本机模拟后端、配置保存失败回滚及 WPF 页面离屏渲染。可追加 `--render-dir artifacts/ui` 导出三个页面的 PNG；这不等于交互式桌面操作验证。`--interactive` 检查窗口属性，不能替代采集排除实测；`--clipboard` 会覆盖当前剪贴板。CI 固定使用 Windows Server 2025，运行核心/真实代理传输/图像/DPAPI 到 HTTP 集成测试并打包，同时保留操作系统、SDK 和测试记录。其结论不等于 Windows 11 桌面行为已验收。
 
 详细设计、需求覆盖和发布门槛见 [架构与需求映射](docs/architecture.md)、[Windows 验收矩阵](docs/acceptance.md)、[本次验证记录](docs/verification.md)。原始需求保存在 [requirements.zh-CN.txt](docs/requirements.zh-CN.txt)。
+
+## 网页焦点与按键事件诊断
+
+本地测试页位于 `tools/event-probe/index.html`，记录窗口失焦、页面隐藏、控件焦点及按键事件，支持手动导出 JSON / HTML。运行 `python -m http.server 8765 --bind 127.0.0.1 --directory tools/event-probe` 后访问 `http://127.0.0.1:8765/`。
+
+Windows 自动实验使用真实阅读窗口与热键管理器的隔离测试宿主，在有界面的 Edge / Chrome 中采样，鼠标与键盘由 `SendInput` 合成。每轮同时确认原生动作、浏览器前台状态和网页事件；没有动作证据时不能把零事件当作通过。它不加载用户配置或调用模型，不屏蔽事件，也不代表其他网页或本机监控不可检测。完整步骤和报告边界见 [测试说明](tools/event-probe/README.txt)。独立工作流为 `.github/workflows/focus-probe.yml`。

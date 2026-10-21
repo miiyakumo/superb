@@ -21,6 +21,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Contains("--focus-host")) return FocusHost.Run();
         var tests = new List<(string, Action)>();
         var source = BitmapSource.Create(4, 4, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 64).ToArray(), 16);
         var input = ImageProcessor.Encode(source);

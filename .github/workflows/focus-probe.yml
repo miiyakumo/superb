@@ -1,0 +1,35 @@
+name: Browser and reader focus probe
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/event-probe/**'
+      - 'tests/Superb.WindowsTests/FocusHost.cs'
+      - '.github/workflows/focus-probe.yml'
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [msedge, chrome]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: dotnet build Superb.slnx -c Release
+      - run: python -m pip install playwright==1.64.0
+      - name: Measure headed browser with native Windows input
+        run: python tools/event-probe/run_probe.py --browser ${{ matrix.browser }} --repeats 3 --output artifacts/event-probe/${{ matrix.browser }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: event-probe-${{ matrix.browser }}
+          path: artifacts/event-probe/${{ matrix.browser }}/
