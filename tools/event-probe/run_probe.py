@@ -179,6 +179,8 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
             page.bring_to_front(); native.focus_browser(hwnd); page.locator('#pad').click(); page.wait_for_timeout(350)
             initial=page.evaluate("({hasFocus:document.hasFocus(),visibility:document.visibilityState})")
             before=fixture.command('state'); sent=native.sent
+            if not before['startupIntercepted'] or before['productionWindowCount']!=0:
+                raise RuntimeError('Fixture isolation failed: production startup must not run')
             if not initial['hasFocus'] or initial['visibility']!='visible' or before['foreground']!=hwnd:
                 raise RuntimeError('Desktop prerequisite failed: browser is not foreground/focused/visible')
             if not before['protection'] or before['registrationFailures']:
