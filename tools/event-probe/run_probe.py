@@ -1,6 +1,6 @@
 """Isolated browser/Windows focus experiment. No browser API patching or event suppression."""
 import argparse, ctypes, functools, html, http.server, json, os, platform, queue
-import subprocess, sys, threading, time
+import subprocess, sys, threading, time, tempfile
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -38,6 +38,40 @@ class Fixture:
     def close(self):
         try: self.command('quit'); self.process.wait(timeout=5)
         except Exception: self.process.kill(); self.process.wait()
+
+class NativeBrowser:
+    """Launch a fresh normal browser and attach without Playwright's focus overrides."""
+    def __init__(self, pw, channel, headless=False):
+        if channel == 'chromium': executable=Path(pw.chromium.executable_path)
+        else:
+            tail = Path('Microsoft/Edge/Application/msedge.exe' if channel=='msedge' else 'Google/Chrome/Application/chrome.exe')
+            candidates=[Path(os.environ.get(key,''))/tail for key in ('PROGRAMFILES','PROGRAMFILES(X86)','LOCALAPPDATA')]
+            executable=next((p for p in candidates if p.is_file()),None)
+            if executable is None: raise RuntimeError('Installed test browser executable missing')
+        self.profile=tempfile.TemporaryDirectory(prefix='superb-focus-',ignore_cleanup_errors=True)
+        self.process=None
+        try:
+            self.arguments=['--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',
+                '--no-first-run','--no-default-browser-check','--window-position=0,0','--window-size=1180,900']
+            if headless: self.arguments+=['--headless=new','--no-sandbox']
+            self.process=subprocess.Popen([str(executable),'--user-data-dir='+self.profile.name,*self.arguments,'about:blank'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            portfile=Path(self.profile.name)/'DevToolsActivePort'
+            deadline=time.monotonic()+20
+            while not portfile.exists():
+                if time.monotonic()>deadline or self.process.poll() is not None: raise RuntimeError('Native browser did not start')
+                time.sleep(.1)
+            port=portfile.read_text().splitlines()[0]
+            self.browser=pw.chromium.connect_over_cdp('http://127.0.0.1:'+port,no_defaults=True)
+            self.context=self.browser.contexts[0]  # New contexts would re-enable the overrides.
+        except Exception:
+            self.close(); raise
+    def close(self):
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            try: self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired: self.process.kill(); self.process.wait()
+        self.profile.cleanup()
+
 
 class NativeInput:
     def __init__(self):
@@ -140,7 +174,7 @@ def native_trials(page, context, fixture, native, repeats, results):
             extra=None
             if scenario=='plain_key': native.chord(0x41)
             elif scenario=='activate_control': fixture.command('control'); native.click({'x':100,'y':75})
-            elif scenario=='tab_control': extra=context.new_page(); context.new_cdp_session(extra).send('Emulation.setFocusEmulationEnabled',{'enabled':False}); extra.goto('about:blank'); extra.bring_to_front()
+            elif scenario=='tab_control': extra=context.new_page(); extra.goto('about:blank'); extra.bring_to_front()
             elif scenario=='show': fixture.command('show')
             elif scenario=='click_body': native.click(before['points']['body'])
             elif scenario=='wheel': native.wheel(before['points']['body'])
@@ -175,6 +209,8 @@ def native_trials(page, context, fixture, native, repeats, results):
                 'nativeInputEvents':native.sent-sent,'before':before,'after':after,'trial':run}
             results.append(result)
             print(json.dumps({'scenario':scenario,'repeat':repeat,'confirmed':confirmed,'counts':run['counts']},ensure_ascii=False),flush=True)
+            if scenario in ('plain_key','activate_control','tab_control') and not confirmed:
+                raise RuntimeError('Calibration failed: '+scenario+'; remaining observations would be invalid')
     return results
 
 
@@ -189,7 +225,7 @@ def write_report(data, output):
 <div class="note"><b>执行状态：{html.escape(data['status'])}</b><p>{html.escape(data.get('error',''))}</p><p>执行环境：{html.escape(data['platform'])}。本报告使用真实生产 ReaderWindow、Protection、HotkeyManager 的隔离测试宿主。鼠标和快捷键由 Windows SendInput 合成，非真人硬件输入；不加载用户配置、不调用模型。</p><p>“设置”按钮打开的是普通 WPF 对照窗口；未验证完整 Superb 主程序、用户本机、第三方网站、浏览器扩展或系统监控。窗口显示、滚轮和快捷键须同时有原生动作证据，否则不能用零事件宣称无影响。</p></div>
 <h2>观察矩阵</h2><p>window.blur 与页面内部 focusout 分开。每轮采样前确认浏览器 HWND 处于前台、document.hasFocus() 为真且页面可见。isTrusted 不代表真人输入。最后一列只比较前后台 HWND，瞬时失焦由事件列记录。</p>
 <table><tr><th>场景</th><th>轮次</th><th>动作确认</th><th>窗口失焦</th><th>隐藏</th><th>按下/松开</th><th>网页收到的 code</th><th>前台 HWND 保持</th></tr>{''.join(rows)}</table>
-<h2>适用边界</h2><p>结果只说明这一环境下本地页面观察到什么。未观察到事件不等于不可检测；网页以外的观察机制不在本实验内。未屏蔽任何事件或覆盖页面焦点/可见性 API；已关闭 Playwright 默认的焦点模拟，以恢复浏览器的原生焦点和可见性行为。原始记录与报告一并保存。</p><details><summary>环境、前台窗口、动作计数、滚动偏移及事件明细</summary><pre>{details}</pre></details></html>'''
+<h2>适用边界</h2><p>结果只说明这一环境下本地页面观察到什么。未观察到事件不等于不可检测；网页以外的观察机制不在本实验内。未屏蔽任何事件或覆盖页面焦点/可见性 API；使用独立临时浏览器配置和 connect_over_cdp(no_defaults=True)，从启动时就不启用焦点模拟，并以正对照验证原生焦点/可见性行为。原始记录与报告一并保存。</p><details><summary>环境、前台窗口、动作计数、滚动偏移及事件明细</summary><pre>{details}</pre></details></html>'''
     output.mkdir(parents=True,exist_ok=True)
     (output/'results.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'report.html').write_text(text,encoding='utf-8')
@@ -205,24 +241,25 @@ def main():
     data['commit']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(StaticHandler,directory=str(HERE)))
     threading.Thread(target=server.serve_forever,daemon=True).start()
-    fixture=None
+    fixture=None; external=None
     try:
         with sync_playwright() as pw:
-            launch={'headless':args.page_only,'args':['--window-position=0,0','--window-size=1180,900'],
-                'ignore_default_args':['--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling']}
-            if args.browser!='chromium': launch['channel']=args.browser
-            data['launchOptions']=launch
-            browser=pw.chromium.launch(**launch); data['browserVersion']=browser.version
-            context=browser.new_context(no_viewport=True); page=context.new_page()
+            if args.page_only:
+                launch={'headless':True}
+                if args.browser!='chromium': launch['channel']=args.browser
+                browser=pw.chromium.launch(**launch); context=browser.new_context()
+                page=context.new_page(); data['launchOptions']=launch
+            else:
+                if sys.platform!='win32': raise RuntimeError('Native WPF trials require Windows')
+                external=NativeBrowser(pw,args.browser)
+                browser=external.browser; context=external.context
+                page=context.pages[0] if context.pages else context.new_page()
+                data['launchOptions']={'args':external.arguments,'headless':False,'connectOverCDP_noDefaults':True,'freshProfile':True}
+                data['focusEmulationDisabled']=True
+            data['browserVersion']=browser.version
             errors=[]; page.on('pageerror',lambda error:errors.append(str(error)))
             page.goto(f'http://127.0.0.1:{server.server_port}/'); page.wait_for_function('!!window.eventProbe')
             data['recorderChecks']=page_checks(page)
-            if not args.page_only:
-                # Playwright enables focus emulation by default. Remove that override so
-                # native window/tab focus can actually reach the page under measurement.
-                cdp=context.new_cdp_session(page)
-                cdp.send('Emulation.setFocusEmulationEnabled',{'enabled':False})
-                data['focusEmulationDisabled']=True
             if not args.page_only:
                 if sys.platform!='win32': raise RuntimeError('Native WPF trials require Windows')
                 fixture=Fixture(); data['fixture']=fixture.ready
@@ -239,6 +276,7 @@ def main():
         if fixture:
             data['fixtureHistory']=fixture.history
             fixture.close()
+        if external: external.close()
         server.shutdown(); server.server_close(); write_report(data,args.output)
     print('REPORT_STATUS='+data['status'],flush=True)
     return 0 if data['status'] in ('MEASURED','RECORDER_ONLY_PASS') else 1
