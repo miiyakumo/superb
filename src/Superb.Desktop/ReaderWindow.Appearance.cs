@@ -1,8 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
-using System.Windows.Input;
+using System.Windows.Threading;
 using Superb.Desktop.Platform;
 
 namespace Superb.Desktop;
@@ -10,13 +11,14 @@ namespace Superb.Desktop;
 public partial class ReaderWindow
 {
     internal event Action? LayoutChanged;
-    private bool applyingAppearance, appearanceReady, answerMode;
+    private bool applyingAppearance, appearanceReady, answerMode, composerLayoutPending;
     private double backgroundOpacity = 1;
     private void InitializeAppearance()
     {
         appearanceReady = true;
         SizeChanged += (_, _) => { SyncAppearanceControls(); NotifyLayoutChanged(); };
         LocationChanged += (_, _) => NotifyLayoutChanged();
+        DraftText.GotKeyboardFocus += (_, _) => QueueComposerLayout();
         SyncAppearanceControls(); SetBackgroundOpacity(1);
     }
     internal void BeginAnswer()
@@ -84,13 +86,15 @@ public partial class ReaderWindow
     }
     private void Appearance_Click(object sender, RoutedEventArgs e)
     {
+        var editingDraft = DraftText.IsKeyboardFocusWithin;
         AppearancePanel.Visibility = AppearancePanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-        if (AppearancePanel.Visibility == Visibility.Visible) { ComposerExpander.IsExpanded = false; SyncAppearanceControls(); }
-    }
-    private void AppearancePointerDown(object sender, MouseButtonEventArgs e)
-    {
-        // Explicit dragging enters interaction before WPF captures the mouse outside the window.
-        if (!Interactive) Command?.Invoke("beginEdit");
+        if (AppearancePanel.Visibility == Visibility.Visible)
+        {
+            // Collapsing the focused editor hides the draft and makes WPF move focus.
+            if (!editingDraft) ComposerExpander.IsExpanded = false;
+            SyncAppearanceControls();
+        }
+        QueueComposerLayout();
     }
     private void Comfortable_Click(object sender, RoutedEventArgs e)
     {
@@ -109,7 +113,33 @@ public partial class ReaderWindow
     }
     private void WorkArea_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        // Inputs scroll when expanded instead of taking away the answer's reading space.
-        ComposerScroll.MaxHeight = Math.Clamp(e.NewSize.Height - 220, 0, 220);
+        QueueComposerLayout();
+    }
+    private void QueueComposerLayout()
+    {
+        if (!appearanceReady || composerLayoutPending) return;
+        composerLayoutPending = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            composerLayoutPending = false;
+            var editingDraft = DraftText.IsKeyboardFocusWithin && ComposerExpander.IsExpanded;
+            var chrome = WorkArea.RowDefinitions[0].ActualHeight - ComposerScroll.ActualHeight
+                + WorkArea.RowDefinitions[1].ActualHeight;
+            // At the minimum window size, shrink the scrollable appearance pane first.
+            // A focused draft takes priority over the answer's usual reserved space.
+            var minimumEditor = Math.Clamp(DraftText.ActualHeight + DraftText.Margin.Top + DraftText.Margin.Bottom, 74, 110);
+            var available = WorkArea.ActualHeight + (AppearancePanel.IsVisible ? AppearancePanel.ActualHeight : 0);
+            AppearanceScroll.MaxHeight = editingDraft ? Math.Clamp(available - chrome - minimumEditor - 16, 30, 142) : 142;
+            ComposerScroll.MaxHeight = editingDraft ? Math.Clamp(WorkArea.ActualHeight - chrome, minimumEditor, 220)
+                : Math.Clamp(WorkArea.ActualHeight - 220, 0, 220);
+            if (!editingDraft) return;
+            // Scroll the existing caret into view; never focus or select the editor.
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (!DraftText.IsKeyboardFocusWithin) return;
+                var caret = DraftText.GetRectFromCharacterIndex(DraftText.CaretIndex, true);
+                if (!caret.IsEmpty) DraftText.BringIntoView(caret);
+            }));
+        }));
     }
 }

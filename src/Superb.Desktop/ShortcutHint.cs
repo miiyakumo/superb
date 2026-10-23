@@ -15,8 +15,10 @@ public static class ShortcutHint
     public static void SetDescription(DependencyObject target, string value) => target.SetValue(DescriptionProperty, value);
     internal static void Apply(Button button, ShortcutLabel label)
     {
-        SetText(button, label.Text); SetDescription(button, label.Description);
-        AutomationProperties.SetHelpText(button, label.Description);
+        // The shortcut caption has its own tooltip; keep the action's focus notice there too.
+        var description = button.ToolTip is string { Length: > 0 } actionHint ? actionHint + " " + label.Description : label.Description;
+        SetText(button, label.Text); SetDescription(button, description);
+        AutomationProperties.SetHelpText(button, description);
     }
 }
 

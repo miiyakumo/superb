@@ -24,6 +24,14 @@ internal static class Program
         if (args.Contains("--focus-host")) return FocusHost.Run(args.Contains("--exclusive-reader"));
         if (args.Contains("--capture-host")) return CaptureSelectionHost.Run();
         if (args.Contains("--diagnose-public-algorithm")) return AlgorithmDiagnostic.Run(args);
+        if (args.Contains("--native-pointer-only") || args.Contains("--appearance-edit-only"))
+        {
+            var app = new App(isolatedTestHost: true); app.InitializeComponent();
+            var pointerTests = new List<(string, Action)>();
+            if (args.Contains("--appearance-edit-only")) PointerFocusTests.AddAppearanceEditing(pointerTests);
+            else PointerFocusTests.Add(pointerTests);
+            return RunTests(pointerTests);
+        }
         var tests = new List<(string, Action)>();
         ScenarioTests.Add(tests);
         tests.Add(("Exclusive reader keys own complete cycles without repeats or modifier replay", () =>
@@ -234,6 +242,10 @@ internal static class Program
             var beforeClear = a.Sequence; a.ClearOwned(); Assert(a.Sequence == beforeClear);
             b.ClearOwned();
         }));
+        return RunTests(tests);
+    }
+    private static int RunTests(List<(string, Action)> tests)
+    {
         var failures = 0;
         foreach (var (name, run) in tests)
         {

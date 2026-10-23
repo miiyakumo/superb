@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
@@ -30,7 +31,6 @@ public partial class ReaderWindow : Window
     public event Action? ProtectionLost;
     internal event Action? DraftChanged;
     private bool allowClose, populating, busy, ready;
-    private nint previousForeground;
     private string interactionKey = "Ctrl+Alt+E";
     internal bool Interactive { get; private set; }
     internal bool ClickThrough { get; private set; }
@@ -40,6 +40,7 @@ public partial class ReaderWindow : Window
     {
         InitializeComponent();
         protection = new(this, true);
+        InitializeFocusPolicy();
         SourceInitialized += (_, _) =>
         {
             var ok = protection.Install();
@@ -74,24 +75,12 @@ public partial class ReaderWindow : Window
         base.Hide();
         if (protection.Handle != 0 && !protection.RefreshDisplayAffinity()) { Clear(); ProtectionLost?.Invoke(); }
     }
-    internal bool SetMode(bool interactive, bool through = false, bool focusDraft = true)
+    internal bool SetMode(bool interactive, bool through = false)
     {
-        // Capture the originating app before changing native window styles.
-        if (interactive && !Interactive)
-        {
-            var foreground = Native.GetForegroundWindow();
-            if (foreground != protection.Handle) previousForeground = foreground;
-        }
         if (!protection.SetInteraction(interactive, through)) { Clear(); ProtectionLost?.Invoke(); return false; }
-        var wasInteractive = Interactive;
         Interactive = interactive; ClickThrough = through; SetEditingControls();
-        if (interactive) { Activate(); Native.SetForegroundWindow(protection.Handle); if (focusDraft && !busy) DraftText.Focus(); }
-        else if (wasInteractive)
-        {
-            Keyboard.ClearFocus();
-            if (previousForeground != 0 && Native.IsWindow(previousForeground)) Native.SetForegroundWindow(previousForeground);
-            previousForeground = 0;
-        }
+        // Modes only change interaction policy. Let the user's click choose the window
+        // and control; never activate, focus a draft, or restore an earlier foreground.
         return true;
     }
     private void SetEditingControls()
@@ -102,8 +91,10 @@ public partial class ReaderWindow : Window
         WorkspaceScene.IsEnabled = ready && !busy;
         Answer.SetInteractive(Interactive);
         InteractionButton.Content = Interactive ? "完成编辑" : "编辑";
-        ModeHint.Text = ClickThrough ? $"穿透阅读 · {interactionKey} 返回编辑" : Interactive
-            ? "交互模式 · Ctrl+Enter 发送 · Esc 返回阅读" : "阅读模式 · 点击输入框或场景即可编辑";
+        InteractionButton.ToolTip = Interactive ? "结束编辑，不自动跳回其他窗口；如需返回原应用，请手动点击。" : "仅启用编辑，不抢焦点；随后点击输入框或选择回答文字会使原窗口失焦。";
+        ModeHint.Text = ClickThrough ? $"穿透阅读 · 点击目标窗口输入 · {interactionKey} 退出穿透" : Interactive
+            ? "输入／选字会使原窗口失焦 · Esc 结束编辑，不自动返回"
+            : "阅读模式 · 常规操作保持焦点 · 输入需切入浮窗";
         ModeHint.Visibility = answerMode && !Interactive && !ClickThrough ? Visibility.Collapsed : Visibility.Visible;
         RefreshShortcutHints();
     }
@@ -222,10 +213,13 @@ public partial class ReaderWindow : Window
     private void DraftText_TextChanged(object sender, TextChangedEventArgs e) { if (!populating) DraftChanged?.Invoke(); }
     private void Editor_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        // A text box's preview route also includes its scrollbar. Scrolling the draft
+        // is passive; only a click on the text area should enable editing.
+        for (var node = e.OriginalSource as DependencyObject; node is not null && !ReferenceEquals(node, sender); node = ParentOf(node))
+            if (node is ScrollBar or Thumb or ButtonBase) return;
         if (ready && !busy && !Interactive) Command?.Invoke("beginEdit");
-        // Let the same mouse event place the caret or open the scene picker normally.
+        // Let the same mouse event place the caret normally.
     }
-    private void DragHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) { if (e.OriginalSource is TextBlock && e.LeftButton == MouseButtonState.Pressed) DragMove(); }
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape && Interactive) { SetMode(false); e.Handled = true; }

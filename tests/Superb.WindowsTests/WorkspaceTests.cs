@@ -24,6 +24,25 @@ internal static class WorkspaceTests
     [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X, Y; }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(NativePoint point);
     [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint source, uint target, bool attach);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint hwnd);
+    internal static void ChooseWindow(Window window)
+    {
+        // Test setup only: a background test runner may not have foreground permission.
+        // Establish a real positive control before asserting that production code leaves it alone.
+        var thread = GetCurrentThreadId();
+        var foregroundThread = Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out _);
+        var attached = foregroundThread != 0 && foregroundThread != thread && AttachThreadInput(thread, foregroundThread, true);
+        try
+        {
+            window.Activate();
+            SetForegroundWindow(new WindowInteropHelper(window).Handle);
+        }
+        finally { if (attached) AttachThreadInput(thread, foregroundThread, false); }
+        Pump();
+        Check(Native.GetForegroundWindow() == new WindowInteropHelper(window).Handle);
+    }
     private static void Check(bool value) { if (!value) throw new Exception("Workspace assertion failed"); }
     private static void Pump()
     {
@@ -45,6 +64,76 @@ internal static class WorkspaceTests
     internal static void Add(List<(string, Action)> tests, string[] args)
     {
         MarkdownTests.Add(tests, args);
+        if (args.Contains("--native-pointer")) PointerFocusTests.Add(tests);
+        tests.Add(("Mouse activation policy rejects hover and non-input clicks even while editing", () =>
+        {
+            var window = new Window { ShowActivated = false, ShowInTaskbar = false };
+            try
+            {
+                new WindowInteropHelper(window).EnsureHandle();
+                var protection = new Protection(window, true);
+                Check(protection.Install());
+                var hwnd = new WindowInteropHelper(window).Handle;
+                var origin = Native.GetForegroundWindow();
+                protection.AllowMouseActivation = () => true;
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x201) == 3);
+                Check(protection.SetInteraction(true));
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x200) == 3); // hover
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x204) == 3); // right click
+                protection.AllowMouseActivation = () => false;
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x201) == 3);
+                protection.AllowMouseActivation = () => true;
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x201) == 1);
+                Check(Native.GetForegroundWindow() == origin && protection.Check());
+            }
+            finally { window.Close(); }
+        }));
+        tests.Add(("Only draft typing and answer selection opt into keyboard focus; scene and drag controls stay passive", () =>
+        {
+            var reader = new ReaderWindow();
+            try
+            {
+                new WindowInteropHelper(reader).EnsureHandle();
+                reader.SetActions(true, false, true, false, false, false);
+                Check(reader.ResizeMode == ResizeMode.NoResize); // only the passive resize thumb owns resizing
+                var draft = (TextBox)reader.FindName("DraftText");
+                Check(!reader.IsKeyboardTarget(draft));
+                Check(!reader.PrepareMouseActivation((ComboBox)reader.FindName("WorkspaceScene")) && !reader.Interactive);
+                var origin = Native.GetForegroundWindow();
+                Check(reader.PrepareMouseActivation(draft) && reader.Interactive && Native.GetForegroundWindow() == origin);
+                Check(reader.SetMode(false));
+                Check(reader.SetMode(true));
+                Check(reader.IsKeyboardTarget(draft) && reader.IsKeyboardTarget((AnswerView)reader.FindName("Answer")));
+                Check(((AnswerView)reader.FindName("Answer")).Reader.Focusable);
+                foreach (var name in new[] { "AppearanceButton", "SettingsButton", "PanelWidth", "ResizeHandle", "WorkspaceScene", "ComposerScroll" })
+                    Check(!reader.IsKeyboardTarget((DependencyObject)reader.FindName(name)));
+                var scene = (ComboBox)reader.FindName("WorkspaceScene");
+                Check(!scene.Focusable && Equals(scene.ItemContainerStyle.Setters.OfType<Setter>().Single().Value, false));
+                reader.SetActions(true, true, true, false, false, false);
+                Check(!reader.IsKeyboardTarget(draft));
+                Check(reader.SetMode(false) && !((AnswerView)reader.FindName("Answer")).Reader.Focusable);
+                foreach (var name in new[] { "DraftText", "Answer", "HideButton", "SettingsButton", "CaptureButton", "ScreenButton" })
+                    Check(((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("焦点") ||
+                        ((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("失焦"));
+            }
+            finally { reader.Finish(); }
+        }));
+        tests.Add(("Settings reject hover activation while permitting deliberate mouse clicks", () =>
+        {
+            var window = new MainWindow(new Configuration(), new WorkspaceBackend());
+            try
+            {
+                var hwnd = new WindowInteropHelper(window).EnsureHandle();
+                var origin = Native.GetForegroundWindow();
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x200) == 3);
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x201) == 1);
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x204) == 1);
+                Check(PointerFocusTests.MouseActivation(hwnd, 0xa1) == 1); // title bar click
+                Check(PointerFocusTests.MouseActivation(hwnd, 0xa0) == 3); // title bar hover
+                Check(Native.GetForegroundWindow() == origin);
+            }
+            finally { window.Close(); }
+        }));
         tests.Add(("Settings pages save independently and reopening settings preserves the floating task and selected page", () =>
         {
             var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "");
@@ -177,6 +266,75 @@ internal static class WorkspaceTests
             }
             finally { reader.Finish(); }
         }));
+        tests.Add(("Appearance presets and drag controls keep reading mode and expose focus notices", () =>
+        {
+            var reader = new ReaderWindow();
+            try
+            {
+                reader.Show(); reader.SetActions(true, false, true, false, false, false); Pump();
+                var commands = new List<string>(); reader.Command += commands.Add;
+                void PointerDown(UIElement target) => target.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseDownEvent });
+                T? Child<T>(DependencyObject root) where T : DependencyObject
+                {
+                    if (root is T match) return match;
+                    for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+                        if (Child<T>(VisualTreeHelper.GetChild(root, i)) is { } found) return found;
+                    return null;
+                }
+                var panel = (Border)reader.FindName("AppearancePanel");
+                var hwnd = new WindowInteropHelper(reader).Handle;
+                foreach (var name in new[] { "ComfortableButton", "ResetAppearanceButton" })
+                {
+                    panel.Visibility = Visibility.Visible; reader.UpdateLayout(); Pump();
+                    var button = (Button)reader.FindName(name);
+                    var caption = Child<TextBlock>(button) ?? throw new Exception("Preset caption not rendered");
+                    var before = reader.Layout();
+                    PointerDown(caption);
+                    button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+                    Check(commands.Count == 0 && !reader.Interactive && !reader.ClickThrough && reader.Check());
+                    Check((Native.GetWindowLongPtr(hwnd, -20).ToInt64() & 0x08000000L) != 0);
+                    Check(reader.Layout() != before);
+                }
+                panel.Visibility = Visibility.Visible; reader.UpdateLayout(); Pump();
+                PointerDown(panel); Check(commands.Count == 0);
+                var slider = (Slider)reader.FindName("PanelWidth");
+                var thumb = Child<Thumb>(slider) ?? throw new Exception("Slider thumb not rendered");
+                PointerDown(thumb); Check(commands.Count == 0 && !reader.Interactive);
+                PointerDown((Thumb)reader.FindName("ResizeHandle")); Check(commands.Count == 0 && !reader.Interactive);
+                reader.SetShortcutHints(HotkeyDefaults.All.ToDictionary(k => k.Action, k => ShortcutLabel.Describe(k, false, true)));
+                foreach (var name in new[] { "InteractionButton", "SettingsButton" })
+                {
+                    var button = (Button)reader.FindName(name);
+                    Check(ShortcutHint.GetDescription(button).Contains("焦点"));
+                    Check(System.Windows.Automation.AutomationProperties.GetHelpText(button).Contains("焦点"));
+                }
+                foreach (var name in new[] { "WorkspaceScene", "DraftText", "PanelWidth", "PanelHeight", "PanelOpacity", "PanelTextSize", "ResizeHandle" })
+                    Check(((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("焦点"));
+            }
+            finally { reader.Finish(); }
+        }));
+        tests.Add(("Sending without a model keeps settings closed and preserves the draft with an actionable notice", () =>
+        {
+            var client = new WorkspaceBackend();
+            var window = new MainWindow(new Configuration { Backends = [], SelectedBackendId = "" }, client);
+            try
+            {
+                new WindowInteropHelper(window).EnsureHandle();
+                var reader = window.WorkspaceWindow; reader.Show(); Pump();
+                ((TextBox)reader.FindName("DraftText")).Text = "synthetic draft without a model";
+                Check(((Button)reader.FindName("SendButton")).IsEnabled && !window.IsVisible);
+                var shown = 0; window.IsVisibleChanged += (_, _) => { if (window.IsVisible) shown++; };
+                window.RunCommand("workspaceSend").GetAwaiter().GetResult(); Pump();
+                Check(!window.IsVisible && shown == 0 && !reader.Interactive && reader.Check());
+                Check(reader.Draft == "synthetic draft without a model" && client.Requests.Count == 0);
+                var status = ((TextBlock)reader.FindName("StateText")).Text;
+                Check(status.Contains("设置") && status.Contains("点击设置窗口") && !status.Contains("会切换焦点"));
+                window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
+                Check(window.IsVisible && reader.Draft == "synthetic draft without a model");
+            }
+            finally { window.Close(); }
+        }));
         tests.Add(("Schema 2 adds edit shortcut without replacing an existing scene binding", () =>
         {
             var config = new Configuration { Hotkeys = HotkeyDefaults.All.Where(k => k.Action != "interact").ToImmutableArray() };
@@ -307,7 +465,7 @@ internal static class WorkspaceTests
                 var sceneClick = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
                     { RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent };
                 picker.RaiseEvent(sceneClick);
-                Check(reader.Interactive && picker.IsEnabled && !sceneClick.Handled && client.Requests.Count == 0);
+                Check(!reader.Interactive && picker.IsEnabled && !picker.Focusable && !sceneClick.Handled && client.Requests.Count == 0);
                 ((ComboBox)reader.FindName("WorkspaceScene")).SelectedValue = "algorithm";
                 reader.SetDraft("only visible manual input");
                 var pending = window.RunCommand("workspaceSend");
@@ -497,22 +655,27 @@ internal static class WorkspaceTests
             }
             reader.Clear(); Check(reader.Draft == "" && answer.Text == "" && ((ItemsControl)reader.FindName("InputQueue")).ItemsSource is null);
         }));
-        if (args.Contains("--interactive")) tests.Add(("Protected floating window preserves foreground on show and verifies native edit and pass-through styles", () =>
+        if (args.Contains("--interactive")) tests.Add(("Floating modes preserve foreground and keyboard focus while retaining edit and pass-through styles", () =>
         {
-            var control = new Window { Title = "Synthetic workspace focus control", Width = 300, Height = 200 };
+            var input = new TextBox();
+            var control = new Window { Title = "Synthetic workspace focus control", Width = 300, Height = 200, Content = input };
             var reader = new ReaderWindow();
+            var activations = 0;
+            reader.Activated += (_, _) => activations++;
             try
             {
-                control.Show(); control.Activate(); Pump();
+                control.Show(); ChooseWindow(control); input.Focus(); Pump();
                 var origin = Native.GetForegroundWindow();
+                Check(origin == new WindowInteropHelper(control).Handle && Keyboard.FocusedElement == input);
                 reader.Show(); Pump(); var hwnd = new WindowInteropHelper(reader).Handle;
                 Check(reader.Check() && reader.Topmost && !reader.ShowInTaskbar && Native.GetForegroundWindow() == origin);
+                reader.SetActions(true, false, false, false, false, false);
                 var edited = reader.SetMode(true); Pump();
-                var focusedEditor = Native.GetForegroundWindow() == hwnd;
                 if (!edited || !reader.Check() || !reader.Interactive || (Native.GetWindowLongPtr(hwnd, -20).ToInt64() & 0x08000000L) != 0)
                     throw new Exception($"Edit mode: success={edited}, protected={reader.Check()}, interactive={reader.Interactive}, active={Native.GetForegroundWindow() == hwnd}, style={Native.GetWindowLongPtr(hwnd, -20):X}");
+                Check(Native.GetForegroundWindow() == origin && Keyboard.FocusedElement == input && activations == 0);
                 var read = reader.SetMode(false); Pump();
-                Check(read && reader.Check() && !reader.Interactive && (!focusedEditor || Native.GetForegroundWindow() == origin));
+                Check(read && reader.Check() && !reader.Interactive && Native.GetForegroundWindow() == origin && Keyboard.FocusedElement == input);
                 var location = reader.PointToScreen(new Point(30, 30));
                 var hit = new NativePoint { X = (int)location.X, Y = (int)location.Y };
                 Check(GetAncestor(WindowFromPoint(hit), 2) == hwnd);
@@ -523,8 +686,78 @@ internal static class WorkspaceTests
                 reader.Hide(); reader.Show(); Pump();
                 Check(reader.Check() && !reader.ClickThrough && (Native.GetWindowLongPtr(hwnd, -20).ToInt64() & 0x20L) == 0);
                 Check(Native.GetWindowDisplayAffinity(hwnd, out var affinity) && affinity == 0x11);
+                Check(Native.GetForegroundWindow() == origin && activations == 0);
+
+                // Simulate the user choosing the editor. Ending editing must neither clear
+                // its keyboard focus nor force the earlier control window back to foreground.
+                Check(reader.SetMode(true)); ChooseWindow(reader);
+                var draft = (TextBox)reader.FindName("DraftText"); draft.Focus(); Pump();
+                Check(Native.GetForegroundWindow() == hwnd && Keyboard.FocusedElement == draft);
+                Check(reader.SetMode(false)); Pump();
+                Check(Native.GetForegroundWindow() == hwnd && Keyboard.FocusedElement == draft);
+
+                // Switching elsewhere during editing must also leave that choice alone.
+                Check(reader.SetMode(true));
+                ChooseWindow(control); input.Focus(); Pump();
+                Check(reader.SetMode(false)); Pump();
+                Check(Native.GetForegroundWindow() == origin && Keyboard.FocusedElement == input);
             }
             finally { reader.Finish(); control.Close(); }
+        }));
+        if (args.Contains("--interactive")) tests.Add(("Settings startup, reopening, minimized restore and workspace send never activate a window", () =>
+        {
+            var control = new Window { Title = "Synthetic settings focus control", Width = 300, Height = 200 };
+            var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "");
+            var client = new WorkspaceBackend();
+            var window = new MainWindow(new Configuration { Backends = [backend], SelectedBackendId = backend.Id }, client);
+            var reader = window.WorkspaceWindow;
+            var activations = 0;
+            window.Activated += (_, _) => activations++;
+            reader.Activated += (_, _) => activations++;
+            var context = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(window.Dispatcher));
+            try
+            {
+                control.Show(); ChooseWindow(control);
+                var origin = new WindowInteropHelper(control).Handle;
+                Check(Native.GetForegroundWindow() == origin);
+                window.Show(); Pump();
+                Check(window.IsVisible && !window.ShowActivated && Native.GetForegroundWindow() == origin && activations == 0);
+                window.Hide();
+                window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
+                Check(window.IsVisible && Native.GetForegroundWindow() == origin && activations == 0);
+                window.WindowState = WindowState.Minimized; Pump();
+                window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
+                Check(window.WindowState == WindowState.Normal && Native.GetForegroundWindow() == origin && activations == 0);
+                window.RunCommand("interact").GetAwaiter().GetResult(); Pump();
+                Check(reader.Interactive && Native.GetForegroundWindow() == origin && activations == 0);
+                reader.SetDraft("Synthetic focus regression question");
+                var pending = window.RunCommand("workspaceSend");
+                Until(() => client.Requests.Count == 1 || pending.IsCompleted);
+                Check(client.Requests.Count == 1 && Native.GetForegroundWindow() == origin && activations == 0);
+                client.Events.Writer.TryWrite(new("Synthetic answer"));
+                client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
+                Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
+                Check(window.WorkspaceCoordinator.Latest is { State: RequestState.Completed });
+                Check(Native.GetForegroundWindow() == origin && activations == 0);
+
+                // Sending from an editor the user has chosen must not jump to the old window.
+                window.RunCommand("newTask").GetAwaiter().GetResult();
+                Check(reader.SetMode(true)); ChooseWindow(reader);
+                var editor = new WindowInteropHelper(reader).Handle;
+                var chosenActivations = activations;
+                reader.SetDraft("Synthetic question from the active editor");
+                pending = window.RunCommand("workspaceSend");
+                Until(() => client.Requests.Count == 2 || pending.IsCompleted);
+                Check(client.Requests.Count == 2 && Native.GetForegroundWindow() == editor && activations == chosenActivations);
+                client.Events.Writer.TryWrite(new("Second synthetic answer"));
+                client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
+                Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
+                reader.Render("Second synthetic answer", "已完成"); Pump();
+                Check(window.WorkspaceCoordinator.Latest is { State: RequestState.Completed });
+                Check(Native.GetForegroundWindow() == editor && activations == chosenActivations);
+            }
+            finally { window.Close(); control.Close(); SynchronizationContext.SetSynchronizationContext(context); }
         }));
     }
     private sealed class WorkspaceBackend : IBackendClient

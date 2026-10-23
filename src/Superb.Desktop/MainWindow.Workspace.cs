@@ -48,11 +48,22 @@ public partial class MainWindow
             ShortcutLabel.Describe(binding, config.ExclusiveHotkeysEnabled, hotkeys?.HasAction(binding.Action) == true,
                 hotkeys?.RegistrationErrors.GetValueOrDefault(binding.Action))));
     }
-    private void OpenWorkspace(bool hideControl = true)
+    private void OpenWorkspace(bool hideControl = true, bool explicitHide = false)
     {
         reader.Show(); RefreshWorkspace();
-        if (hideControl && reader.IsVisible && CanHideControl()) Hide();
+        if (hideControl && reader.IsVisible && CanHideControl())
+        {
+            // A system dialog owned by settings also counts as foreground. A completed
+            // connection must not hide its owner and make Windows select another app.
+            if (explicitHide || !ControlOwnsForeground()) Hide();
+            else Status("浮窗已打开；设置仍在前台，点击“返回悬浮工作区”收起设置（Windows 会转移焦点）");
+        }
         else if (hideControl && !CanHideControl()) Status("浮窗已打开；关键快捷键不可用，保留控制中心入口");
+    }
+    private bool ControlOwnsForeground()
+    {
+        var foreground = Native.GetForegroundWindow();
+        return handle != 0 && (foreground == handle || Native.GetAncestor(foreground, 3) == handle); // GA_ROOTOWNER
     }
     private void SelectWorkspaceScene(string? id)
     {
@@ -163,7 +174,7 @@ public partial class MainWindow
     }
     private void OpenCaptureSettings()
     {
-        Show(); WindowState = WindowState.Normal; Activate();
+        Show();
         MainTabs.SelectedItem = AdvancedTab; CaptureSettings.IsExpanded = true;
         RefreshTargets_Click(this, new RoutedEventArgs()); CaptureSettings.BringIntoView();
         Status("请选择截图范围，再点击“应用采集目标”；随后返回悬浮工作区");
@@ -181,7 +192,7 @@ public partial class MainWindow
     {
         if (!Ready()) return;
         if (Working) { Status("正在处理；请先停止生成"); return; }
-        if (config.Backends.IsDefaultOrEmpty) { Show(); Activate(); MainTabs.SelectedItem = ConnectionTab; Status("请先连接模型"); return; }
+        if (config.Backends.IsDefaultOrEmpty) { Status("尚未连接模型，请打开“设置”并点击设置窗口连接"); return; }
         StopSync();
         // Live Clipboard may have a policy-checked frozen request awaiting manual authorization.
         // Editing the visible draft or scene invalidates it; otherwise preserve its recipient and content.

@@ -8,6 +8,7 @@ internal sealed class Protection(Window window, bool noActivate)
     private bool blocksActivation = noActivate;
     private readonly bool floating = noActivate;
     private bool through;
+    internal Func<bool>? AllowMouseActivation { get; set; }
     public nint Handle { get; private set; }
     public bool Install()
     {
@@ -16,8 +17,8 @@ internal sealed class Protection(Window window, bool noActivate)
         {
             var style = Native.GetWindowLongPtr(Handle, -20).ToInt64();
             Native.SetWindowLongPtr(Handle, -20, (nint)((style | 0x08000080L) & ~0x00040000L));
-            HwndSource.FromHwnd(Handle)?.AddHook(NoActivateHook);
         }
+        HwndSource.FromHwnd(Handle)?.AddHook(NoActivateHook);
         var enabled = 1;
         Native.DwmSetWindowAttribute(Handle, 11, ref enabled, sizeof(int)); // DISALLOW_PEEK
         Native.DwmSetWindowAttribute(Handle, 12, ref enabled, sizeof(int)); // EXCLUDED_FROM_PEEK
@@ -48,7 +49,25 @@ internal sealed class Protection(Window window, bool noActivate)
     }
     private nint NoActivateHook(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
-        if (blocksActivation && msg == 0x21) { handled = true; return 3; } // WM_MOUSEACTIVATE / MA_NOACTIVATE; includes hover activation.
+        if (msg == 0x21) // WM_MOUSEACTIVATE
+        {
+            // Editing must not turn every button, scrollbar and hover into an activation.
+            var mouseMessage = (lParam.ToInt64() >> 16) & 0xffff;
+            var click = mouseMessage is 0x201 or 0x203; // left down / double click
+            handled = true;
+            // Settings permit normal deliberate clicks, but appearing beneath the pointer
+            // must not activate them when Windows' hover-to-activate option is enabled.
+            if (!floating)
+            {
+                var deliberateClick = click || mouseMessage is 0x204 or 0x206 or 0x207 or 0x209 or 0x20b or 0x20d
+                    or 0xa1 or 0xa3 or 0xa4 or 0xa6 or 0xa7 or 0xa9 or 0xab or 0xad;
+                return deliberateClick ? 1 : 3;
+            }
+            // A deliberate draft click may enable editing before Windows decides whether
+            // to activate. Evaluate that target first so the first click can accept input.
+            var allowedTarget = click && (AllowMouseActivation?.Invoke() ?? true);
+            return !blocksActivation && allowedTarget ? 1 : 3;
+        }
         return 0;
     }
 }

@@ -44,6 +44,19 @@ Superb 本地网页事件测试台
   python -m playwright install chromium
   python tools/event-probe/run_probe.py --page-only --browser chromium --output artifacts/event-probe/recorder
 
+只复测鼠标与焦点（正在运行的用户实例可保留）
+  python tools/event-probe/run_probe.py --browser chrome --mouse-only --repeats 3 --output artifacts/focus-native-final/chrome
+  python tools/event-probe/run_probe.py --browser msedge --mouse-only --repeats 3 --output artifacts/focus-native-final/msedge
+  此模式不要求测试宿主占用全部全局键，但仍检查显示保护、浏览器实际前台、动作证据和记录器正对照。
+  普通显示、点击、滚动、翻页、收起与打开设置必须同时满足动作确认、零失焦／隐藏、无丢弃事件、前台保持。
+  Edge 仅在采样前对属于测试浏览器的启动弹窗发送 Esc，再重新校准；不在测量期间屏蔽或修改网页事件。
+
+原生 WPF 鼠标用例（单独或含完整回归）
+  dotnet run --project tests/Superb.WindowsTests -c Release -- --native-pointer-only
+  dotnet run --project tests/Superb.WindowsTests -c Release -- --interactive --native-pointer
+  包括场景下拉、四个滑块、标题／缩放、正文与草稿滚动、回答拖选、实际输入、设置与系统保存对话框取消、截图取消／选点消费及穿透。
+  该模式会移动鼠标和发送合成输入，运行时勿操作当前桌面；不读取用户配置或剪贴板，不调用真实模型。
+
 报告文件
   results.json：浏览器版本、OS、原生动作前后状态、事件明细、前提条件。
   report.html：可离线打开的矩阵报告。

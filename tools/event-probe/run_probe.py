@@ -94,7 +94,15 @@ class NativeInput:
         self.u.GetWindowRect.argtypes = [w.HWND,ctypes.POINTER(w.RECT)]
         self.u.GetWindowTextW.argtypes = [w.HWND,w.LPWSTR,ctypes.c_int]
         self.u.IsWindowVisible.argtypes = [w.HWND]
+        self.u.GetWindowThreadProcessId.argtypes = [w.HWND,ctypes.POINTER(w.DWORD)]
+        self.u.GetClassNameW.argtypes = [w.HWND,w.LPWSTR,ctypes.c_int]
+        self.u.GetAncestor.argtypes = [w.HWND,w.UINT]; self.u.GetAncestor.restype=w.HWND
         self.sent = 0
+    def window_info(self, hwnd):
+        pid=self.w.DWORD(); self.u.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
+        name=ctypes.create_unicode_buffer(256); self.u.GetClassNameW(hwnd,name,256)
+        return {'handle':int(hwnd),'pid':pid.value,'class':name.value,'visible':bool(self.u.IsWindowVisible(hwnd)),
+                'rootOwner':int(self.u.GetAncestor(hwnd,3) or 0)}
     def foreground(self): return int(self.u.GetForegroundWindow() or 0)
     def browser_handle(self):
         found = []
@@ -130,7 +138,8 @@ class NativeInput:
         rect=self.w.RECT()
         if not self.u.GetWindowRect(hwnd,ctypes.byref(rect)): raise RuntimeError('Browser rectangle missing')
         self.u.SetForegroundWindow(hwnd)
-        self.click({'x':rect.left+150,'y':rect.top+15})
+        # Use empty caption space rather than the browser-specific tab/profile buttons.
+        self.click({'x':rect.right-180,'y':rect.top+15})
 
 
 def page_checks(page):
@@ -159,7 +168,7 @@ SCENARIOS = [
  ('page_method','程序调用向下翻页'), ('hotkey_show','Ctrl+Alt+3 显示浮窗'),
  ('hotkey_hide','Ctrl+Alt+3 收起浮窗'), ('hotkey_down','Ctrl+Alt+8 向下翻页'),
  ('hotkey_up','Ctrl+Alt+9 向上翻页'), ('click_hide','点击浮窗收起按钮'),
- ('click_settings','点击浮窗设置按钮（激活对照窗口）')]
+ ('click_settings','点击浮窗设置按钮（显示设置，不主动激活）')]
 
 EXCLUSIVE_SCENARIOS = [
  ('ordinary_chord','Ctrl+A 普通组合透传'), ('modified_function','Shift+F8 透传'),
@@ -172,9 +181,11 @@ SCENE_SCENARIOS = [('scene_coding','AI Coding 场景发起'), ('scene_algorithm'
 CUSTOM_SCENARIOS = [('remap_scene_exclusive','自定义 F4 发起 AI Coding'), ('remap_scene_combo','自定义 Ctrl+Alt+B 发起算法题'),
  ('old_scene_key','改绑后旧 F9 恢复透传'), ('disabled_scene','禁用场景发起键后 F9 透传'), ('remap_reader','自定义 F2 显示/收起阅读窗')]
 
-def native_trials(page, context, fixture, native, repeats, results, exclusive=False):
+def native_trials(page, context, fixture, native, repeats, results, exclusive=False, mouse_only=False):
     hwnd=native.browser_handle()
     scenarios=list(SCENARIOS)+(EXCLUSIVE_SCENARIOS if exclusive else [])+SCENE_SCENARIOS+(CUSTOM_SCENARIOS if exclusive else [])
+    if mouse_only:
+        scenarios=[(s,label) for s,label in scenarios if s in ('idle','plain_key','activate_control','tab_control','show','click_body','wheel','page_method','click_hide','click_settings')]
     if exclusive:
         labels={'hotkey_show':'F6 显示浮窗','hotkey_hide':'F6 收起浮窗','hotkey_down':'F7 向下翻页','hotkey_up':'F8 向上翻页'}
         scenarios=[(s,labels.get(s,label)) for s,label in scenarios]
@@ -189,14 +200,23 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
             fixture.command('closeControl'); fixture.command('show'); fixture.command('render')
             if scenario in ('idle','plain_key','activate_control','tab_control','show','hotkey_show'): fixture.command('hide')
             if scenario in ('hotkey_up','owned_release','reenabled_function'): fixture.command('pageDown')
-            page.bring_to_front(); native.focus_browser(hwnd); page.locator('#pad').click(); page.wait_for_timeout(350)
-            initial=page.evaluate("({hasFocus:document.hasFocus(),visibility:document.visibilityState})")
-            before=fixture.command('state'); sent=native.sent
+            for calibration in range(3):
+                page.bring_to_front(); native.focus_browser(hwnd); page.locator('#pad').click(); page.wait_for_timeout(350)
+                initial=page.evaluate("({hasFocus:document.hasFocus(),visibility:document.visibilityState})")
+                before=fixture.command('state')
+                if initial['hasFocus'] and initial['visibility']=='visible' and before['foreground']==hwnd: break
+                foreground_info=native.window_info(before['foreground'])
+                if foreground_info['handle']!=hwnd and foreground_info['rootOwner']==hwnd:
+                    # Fresh Edge profiles may show an owned startup popup. Dismiss only
+                    # our test browser's popup, then repeat calibration before sampling.
+                    native.chord(0x1b)
+                page.wait_for_timeout(500)
+            sent=native.sent
             if not before['startupIntercepted'] or before['productionWindowCount']!=0:
                 raise RuntimeError('Fixture isolation failed: production startup must not run')
             if not initial['hasFocus'] or initial['visibility']!='visible' or before['foreground']!=hwnd:
-                raise RuntimeError('Desktop prerequisite failed: browser is not foreground/focused/visible')
-            if not before['protection'] or before['registrationFailures']:
+                raise RuntimeError(f'Desktop prerequisite failed: expected={native.window_info(hwnd)}, foreground={native.window_info(before["foreground"])}, document={initial}')
+            if not before['protection'] or (not mouse_only and before['registrationFailures']):
                 raise RuntimeError('Desktop prerequisite failed: reader protection or hotkey registration')
             page.evaluate('(label)=>eventProbe.start(label)',f'{label} / {repeat}')
             extra=None
@@ -281,7 +301,11 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
             if exclusive and scenario in ('hotkey_show','hotkey_hide','hotkey_down','hotkey_up','repeat_toggle','repeat_down','reenabled_function','scene_coding','scene_algorithm','scene_general','remap_scene_exclusive','remap_reader'):
                 event_expectation=not key_events and counts['windowBlur']==0 and counts['hidden']==0 and run['dropped']==0
                 confirmed=confirmed and event_expectation
-            result={'scenario':scenario,'label':label,'repeat':repeat,'actionConfirmed':confirmed,
+            mouse_focus_expectation=None
+            if mouse_only and scenario not in ('activate_control','tab_control'):
+                mouse_focus_expectation=(after['foreground']==hwnd and counts['windowBlur']==0 and counts['hidden']==0 and run['dropped']==0)
+                confirmed=confirmed and mouse_focus_expectation
+            result={'scenario':scenario,'label':label,'repeat':repeat,'actionConfirmed':confirmed,'mouseFocusExpectationMet':mouse_focus_expectation,
                 'nativeInputEvents':native.sent-sent,'before':before,'after':after,'trial':run,'exclusiveExpectationMet':event_expectation}
             results.append(result)
             print(json.dumps({'scenario':scenario,'repeat':repeat,'confirmed':confirmed,'counts':run['counts']},ensure_ascii=False),flush=True)
@@ -310,11 +334,12 @@ def write_report(data, output):
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument('--browser',default='msedge',choices=['msedge','chrome','chromium'])
     parser.add_argument('--page-only',action='store_true'); parser.add_argument('--repeats',type=int,default=3)
+    parser.add_argument('--mouse-only',action='store_true',help='Measure mouse focus paths without requiring global hotkey ownership; retains recorder positive controls')
     parser.add_argument('--reader-keys',choices=['legacy','exclusive'],default='legacy')
     parser.add_argument('--output',type=Path,default=ROOT/'artifacts/event-probe'); args=parser.parse_args()
     if not 1<=args.repeats<=10: parser.error('repeats must be 1..10')
     data={'time':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'platform':platform.platform(),
-          'browser':args.browser,'mode':'recorder-only' if args.page_only else 'headed-native','readerKeys':args.reader_keys,'status':'BLOCKED','trials':[]}
+          'browser':args.browser,'mode':'recorder-only' if args.page_only else 'headed-native','readerKeys':args.reader_keys,'mouseOnly':args.mouse_only,'status':'BLOCKED','trials':[]}
     data['commit']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(StaticHandler,directory=str(HERE)))
     threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -347,7 +372,7 @@ def main():
                     data['conflictCheck']={'conflict':conflict,'restored':restored}
                     if conflict['registrationFailures']!=['toggle'] or restored['registrationFailures']:
                         raise RuntimeError('Exclusive key conflict reporting or release failed')
-                native_trials(page,context,fixture,NativeInput(),args.repeats,data['trials'],exclusive)
+                native_trials(page,context,fixture,NativeInput(),args.repeats,data['trials'],exclusive,args.mouse_only)
                 if not all(x['actionConfirmed'] for x in data['trials']): raise RuntimeError('One or more native actions were not confirmed; inspect per-trial evidence')
             if errors: raise RuntimeError('Recorder JavaScript errors')
             data['status']='RECORDER_ONLY_PASS' if args.page_only else 'MEASURED'

@@ -28,7 +28,7 @@ internal static class FocusHost
         var area = SystemParameters.WorkArea;
         reader.ApplyLayout(new(Math.Max(20, area.Right - 440), area.Top + 35, 420, Math.Min(620, area.Height - 70), 16, false));
         var hwnd = new WindowInteropHelper(reader).EnsureHandle();
-        var control = new Window { Title = "Superb focus positive control", Topmost = true, Width = 360, Height = 220, Left = 25, Top = 40,
+        var control = new Window { Title = "Superb focus positive control", ShowActivated = false, Topmost = true, Width = 360, Height = 220, Left = 25, Top = 40,
             Content = new TextBlock { Text = "Synthetic activation control", Margin = new Thickness(20) } };
         using var hotkeys = new HotkeyManager(hwnd);
         using var endpoint = new SyntheticEndpoint();
@@ -43,6 +43,8 @@ internal static class FocusHost
                 Scenes = settings.Scenes.Select(s => s with { Model = "model-" + s.Id, Trigger = s.Trigger with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(s.Action) } }).ToImmutableArray() };
         }
         var configuration = Settings(exclusiveReaderKeys);
+        reader.Configure(configuration.Scenes, "algorithm", "Synthetic only", "Ctrl+Alt+E");
+        reader.SetActions(true, false, false, false, false, false);
         List<string> Register() => hotkeys.Register(configuration.AllHotkeys(), configuration.ExclusiveHotkeysEnabled);
         var registrationFailures = Register();
         async Task SendScene(ScenePreset scene)
@@ -71,8 +73,10 @@ internal static class FocusHost
                 case "pageDown": reader.Page(true); break;
                 case "pageUp": reader.Page(false); break;
                 case "pause": reader.Clear(); break;
-                case "settings": control.Show(); control.Activate(); break;
+                case "settings": control.Show(); break;
                 case "interact": reader.SetMode(!reader.Interactive); break;
+                case "beginEdit": reader.SetMode(true); break;
+                case "through": reader.SetMode(false, true); break;
                 // The remaining registrations are observable without production side effects.
             }
         }
@@ -138,7 +142,14 @@ internal static class FocusHost
                             {
                                 case "show": reader.Show(); break;
                                 case "hide": reader.Hide(); break;
-                                case "render": reader.Render(text, "Synthetic focus test"); break;
+                                case "render":
+                                    // Production rendering follows the latest answer. Each
+                                    // scroll trial needs a fresh document explicitly at home.
+                                    reader.ClearAnswer(); reader.UpdateLayout();
+                                    reader.Render(text, "Synthetic focus test"); reader.UpdateLayout();
+                                    var answer = (AnswerView)reader.FindName("Answer");
+                                    answer.Page(false); answer.Scroll?.ScrollToHome();
+                                    break;
                                 case "pageDown": reader.Page(true); break;
                                 case "pageUp": reader.Page(false); break;
                                 case "edit": reader.SetMode(true); break;

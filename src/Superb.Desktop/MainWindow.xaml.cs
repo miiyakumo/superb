@@ -96,6 +96,9 @@ public partial class MainWindow : Window
         // visibility transitions; the periodic guard still treats external changes as failure.
         if (!protection.RefreshDisplayAffinity()) ProtectionFailed();
         base.Show();
+        // Restoring with WindowState.Normal can activate the window. Restore visibly
+        // without taking foreground, just as on the first show.
+        if (WindowState == WindowState.Minimized) Native.ShowWindow(handle, 4); // SW_SHOWNOACTIVATE
         if (!protection.RefreshDisplayAffinity()) ProtectionFailed();
     }
     public new void Hide()
@@ -409,7 +412,7 @@ public partial class MainWindow : Window
                     if (Ready()) { if (!reader.IsVisible) reader.Show(); reader.SetMode(!reader.Interactive); }
                     break;
                 case "beginEdit":
-                    if (Ready()) reader.SetMode(true, focusDraft: false);
+                    if (Ready()) reader.SetMode(true);
                     break;
                 case "through":
                     if (Ready() && hotkeys?.HasAction("interact") == true && CanHideControl()) reader.SetMode(false, true);
@@ -447,7 +450,7 @@ public partial class MainWindow : Window
                 case "pause": EmergencyPause("紧急暂停已生效"); break;
                 case "pageDown": reader.Page(true); break;
                 case "pageUp": reader.Page(false); break;
-                case "settings": Show(); WindowState = WindowState.Normal; Activate(); break;
+                case "settings": Show(); break;
                 case "exit": Close(); break;
             }
         }
@@ -596,7 +599,7 @@ public partial class MainWindow : Window
     }
     private async void Send_Click(object sender, RoutedEventArgs e) => await RunCommand("send");
     private void Pause_Click(object sender, RoutedEventArgs e) => EmergencyPause("紧急暂停已生效");
-    private void ShowPanel_Click(object sender, RoutedEventArgs e) => OpenWorkspace();
+    private void ShowPanel_Click(object sender, RoutedEventArgs e) => OpenWorkspace(explicitHide: true);
     private bool CanHideControl() => hotkeys is not null && new[] { "settings", "pause", "exit" }.All(hotkeys.HasAction);
     private void HideControl_Click(object sender, RoutedEventArgs e)
     {

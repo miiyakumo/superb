@@ -42,7 +42,13 @@ public sealed class AnswerView : UserControl
         Clear();
     }
     internal ScrollViewer? Scroll => FindScroll(Reader);
-    internal void SetInteractive(bool interactive) => Reader.IsSelectionEnabled = interactive;
+    internal void SetInteractive(bool interactive)
+    {
+        // WPF's text editor needs keyboard focus to begin a real drag selection.
+        // Keep reading passive, and enable focus only alongside explicit editing.
+        Reader.IsSelectionEnabled = interactive;
+        Reader.Focusable = interactive;
+    }
     internal void Clear()
     {
         revision++; text = ""; rendered.Clear(); SetFollow(true);
