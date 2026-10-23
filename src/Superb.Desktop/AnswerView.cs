@@ -4,10 +4,14 @@ using System.Windows.Data;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Markdig;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
+using Block = System.Windows.Documents.Block;
 
 namespace Superb.Desktop;
 
-// Shared by both protected windows. Streaming preserves completed paragraphs and scroll intent.
+// Markdown stays in native WPF elements; streaming retains unchanged blocks and scroll intent.
 public sealed class AnswerView : UserControl
 {
     internal FlowDocumentScrollViewer Reader { get; } = new()
@@ -17,10 +21,12 @@ public sealed class AnswerView : UserControl
     };
     private readonly Button latest = new() { Content = "回到最新", HorizontalAlignment = HorizontalAlignment.Right, Visibility = Visibility.Collapsed, Focusable = false };
     private FlowDocument document = null!;
-    private Paragraph? tail;
     private string text = "";
-    private int committed, revision;
-    private bool code, adjusting;
+    private readonly List<(string Key, Block Block)> rendered = [];
+    private int revision;
+    private bool adjusting;
+    private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
+        .DisableHtml().UsePipeTables().UseEmphasisExtras(Markdig.Extensions.EmphasisExtras.EmphasisExtraOptions.Strikethrough).Build();
     internal bool Following { get; private set; } = true;
     internal string Text => text;
     public AnswerView()
@@ -39,9 +45,10 @@ public sealed class AnswerView : UserControl
     internal void SetInteractive(bool interactive) => Reader.IsSelectionEnabled = interactive;
     internal void Clear()
     {
-        revision++; text = ""; committed = 0; tail = null; code = false; SetFollow(true);
+        revision++; text = ""; rendered.Clear(); SetFollow(true);
         document = new FlowDocument { PagePadding = new Thickness(0), Foreground = (Brush)FindResource("Ink") };
         document.SetBinding(TextElement.FontSizeProperty, new Binding(nameof(FontSize)) { Source = this });
+        document.SetBinding(TextElement.FontFamilyProperty, new Binding(nameof(FontFamily)) { Source = this });
         Reader.Document = document;
     }
     internal void Render(string value)
@@ -49,18 +56,26 @@ public sealed class AnswerView : UserControl
         if (value == text) return;
         if (!value.StartsWith(text, StringComparison.Ordinal)) Clear();
         var offset = Scroll?.VerticalOffset ?? 0;
-        if (tail is not null) { document.Blocks.Remove(tail); tail = null; }
-        int end;
-        while ((end = value.IndexOf('\n', committed)) >= 0)
+        // Reparse the open tail as well: streamed delimiters can turn a paragraph into
+        // a heading/table, or complete emphasis and fences. Reference links may also
+        // acquire their destination later in the stream, so include it in the key.
+        var parsed = Markdown.Parse(value, Pipeline);
+        var next = parsed.Where(b => b is not LinkReferenceDefinitionGroup).Select(b =>
+            (Node: b, Key: b.GetType().Name + ":" + Source(value, b.Span) +
+                string.Concat((b is LeafBlock { Inline: { } inline } ? inline.Descendants<LinkInline>() : b.Descendants<LinkInline>())
+                    .Select(l => $"\0{l.Url}\0{l.Title}")))).ToArray();
+        var keep = 0;
+        while (keep < rendered.Count && keep < next.Length && rendered[keep].Key == next[keep].Key) keep++;
+        for (var i = rendered.Count - 1; i >= keep; i--)
         {
-            var line = value[committed..end].TrimEnd('\r');
-            if (line.StartsWith("```", StringComparison.Ordinal)) code = !code;
-            else document.Blocks.Add(ParagraphFor(line));
-            committed = end + 1;
+            document.Blocks.Remove(rendered[i].Block); rendered.RemoveAt(i);
         }
-        var remaining = value[committed..];
-        if (remaining.Length > 0 && !remaining.StartsWith("```", StringComparison.Ordinal))
-        { tail = ParagraphFor(remaining); document.Blocks.Add(tail); }
+        var renderer = new AnswerMarkdownRenderer(this);
+        for (var i = keep; i < next.Length; i++)
+        {
+            var block = renderer.Render(next[i].Node);
+            document.Blocks.Add(block); rendered.Add((next[i].Key, block));
+        }
         text = value;
         var version = ++revision;
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
@@ -71,15 +86,12 @@ public sealed class AnswerView : UserControl
             finally { adjusting = false; }
         });
     }
-    private Paragraph ParagraphFor(string line)
+    private static string Source(string value, SourceSpan span)
     {
-        var paragraph = new Paragraph(new Run(line.Length == 0 ? " " : line)) { Margin = new Thickness(0, 0, 0, code ? 0 : 6) };
-        if (code)
-        {
-            paragraph.FontFamily = new FontFamily("Consolas"); paragraph.Background = (Brush)FindResource("Surface");
-            paragraph.Padding = new Thickness(8, 2, 8, 2);
-        }
-        return paragraph;
+        // Open fences can have a synthetic end past EOF while streaming.
+        var start = Math.Clamp(span.Start, 0, value.Length);
+        var end = Math.Clamp(span.End + 1, start, value.Length);
+        return value[start..end];
     }
     private void SetFollow(bool value) { Following = value; latest.Visibility = value ? Visibility.Collapsed : Visibility.Visible; }
     internal void Follow() { SetFollow(true); Scroll?.ScrollToEnd(); }

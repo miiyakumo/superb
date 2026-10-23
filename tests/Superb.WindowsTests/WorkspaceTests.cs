@@ -44,6 +44,7 @@ internal static class WorkspaceTests
     }
     internal static void Add(List<(string, Action)> tests, string[] args)
     {
+        MarkdownTests.Add(tests, args);
         tests.Add(("Settings pages save independently and reopening settings preserves the floating task and selected page", () =>
         {
             var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "");
