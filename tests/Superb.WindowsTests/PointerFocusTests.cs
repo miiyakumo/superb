@@ -221,9 +221,13 @@ internal static class PointerFocusTests
                 Move(Center(answer.Reader)); Mouse(8); Mouse(16); Preserved("edit mode answer right click");
                 Check(reader.SetMode(false), "Reading mode failed");
                 scroll.ScrollToHome(); Settle();
-                Click(answer.Reader); Preserved("reading body click");
-                Move(Center(answer.Reader)); Mouse(0x800, unchecked((uint)-120));
-                Check(scroll.VerticalOffset > 0, "Inactive answer wheel did not scroll"); Preserved("reading wheel");
+                Move(Center(answer.Reader));
+                Native.GetCursorPos(out var readingPoint);
+                Check(GetAncestor(WindowFromPoint(readingPoint), 2) != hwnd, "Read-only body must pass mouse input through");
+                // Do not inject a click into whatever user application is underneath this fixture.
+                Preserved("reading body pass-through");
+                Move(Center(bar)); Mouse(0x800, unchecked((uint)-120));
+                Check(scroll.VerticalOffset > 0, "Scrollbar wheel did not scroll the inactive answer"); Preserved("reading scrollbar wheel");
                 Click(Child<Button>(answer, b => Equals(b.Content, "回到最新")));
                 Check(answer.Following && scroll.VerticalOffset >= scroll.ScrollableHeight - 2, "Follow button did not reach latest"); Preserved("follow latest");
 

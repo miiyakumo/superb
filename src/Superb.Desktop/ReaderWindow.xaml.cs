@@ -30,7 +30,7 @@ public partial class ReaderWindow : Window
     public event Action<string>? Command;
     public event Action? ProtectionLost;
     internal event Action? DraftChanged;
-    private bool allowClose, populating, busy, ready;
+    private bool allowClose, populating, busy, ready, handlingProtectionLoss;
     private string interactionKey = "Ctrl+Alt+E";
     internal bool Interactive { get; private set; }
     internal bool ClickThrough { get; private set; }
@@ -44,6 +44,7 @@ public partial class ReaderWindow : Window
         SourceInitialized += (_, _) =>
         {
             var ok = protection.Install();
+            if (ok) { InitializePassThrough(); ok = displayLayer!.Check(); }
             ProtectionStatus.Text = ok ? "保护属性已设置 · 当前采集配置未实测" : "保护不可用 · 敏感显示已关闭";
             if (!ok) Clear();
         };
@@ -55,10 +56,17 @@ public partial class ReaderWindow : Window
     }
     public bool Check()
     {
+        if (handlingProtectionLoss) return false;
         if (protection.Handle == 0) return false;
-        if (protection.Check()) return true;
-        Clear(); ProtectionStatus.Text = "保护不可用 · 敏感显示已关闭";
-        ProtectionLost?.Invoke(); return false;
+        if (protection.Check() && (displayLayer?.Check() ?? true)) return true;
+        handlingProtectionLoss = true;
+        try
+        {
+            displayLayer?.Invalidate();
+            Clear(); ProtectionStatus.Text = "保护不可用 · 敏感显示已关闭";
+            ProtectionLost?.Invoke(); return false;
+        }
+        finally { handlingProtectionLoss = false; }
     }
     public new void Show()
     {
@@ -94,9 +102,10 @@ public partial class ReaderWindow : Window
         InteractionButton.ToolTip = Interactive ? "结束编辑，不自动跳回其他窗口；如需返回原应用，请手动点击。" : "仅启用编辑，不抢焦点；随后点击输入框或选择回答文字会使原窗口失焦。";
         ModeHint.Text = ClickThrough ? $"穿透阅读 · 点击目标窗口输入 · {interactionKey} 退出穿透" : Interactive
             ? "输入／选字会使原窗口失焦 · Esc 结束编辑，不自动返回"
-            : "阅读模式 · 点击输入会使原窗口失焦";
+            : "内容与空白可穿透 · 点击输入会使原窗口失焦";
         ModeHint.Visibility = answerMode && !Interactive && !ClickThrough ? Visibility.Collapsed : Visibility.Visible;
         RefreshShortcutHints();
+        RefreshInputRegions();
     }
     internal void Configure(IEnumerable<ScenePreset> scenes, string? selectedId, string receiver, string editKey)
     {
@@ -112,7 +121,7 @@ public partial class ReaderWindow : Window
         copyingPartial = partial;
         busy = working;
         SendButton.IsEnabled = ready && !working && hasInput;
-        ClipboardButton.IsEnabled = CaptureButton.IsEnabled = ScreenButton.IsEnabled = ready && !working;
+        ClipboardButton.IsEnabled = CaptureButton.IsEnabled = ScreenButton.IsEnabled = ScreenSendButton.IsEnabled = ready && !working;
         StopButton.IsEnabled = ready && working;
         CopyButton.IsEnabled = ready && canCopy;
         CopyButton.Content = partial ? "复制部分回答" : "复制回答";
@@ -237,6 +246,7 @@ public partial class ReaderWindow : Window
     private void Clipboard_Click(object sender, RoutedEventArgs e) => Command?.Invoke("stageClipboard");
     private void Capture_Click(object sender, RoutedEventArgs e) => Command?.Invoke("stageCapture");
     private void Screen_Click(object sender, RoutedEventArgs e) => Command?.Invoke("captureScreen");
+    private void ScreenSend_Click(object sender, RoutedEventArgs e) => Command?.Invoke("captureScreenSend");
     private void RemoveInput_Click(object sender, RoutedEventArgs e) => Command?.Invoke(sender is Button { Tag: Guid id } ? "removeInput:" + id : "removeInput");
     private void Stop_Click(object sender, RoutedEventArgs e) => Command?.Invoke("cancel");
     private void NewTask_Click(object sender, RoutedEventArgs e) => Command?.Invoke("newTask");

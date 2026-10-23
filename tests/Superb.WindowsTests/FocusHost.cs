@@ -19,7 +19,7 @@ namespace Superb.WindowsTests;
 internal static class FocusHost
 {
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
-    public static int Run(bool exclusiveReaderKeys = false, string? journalPath = null)
+    public static int Run(bool exclusiveReaderKeys = false, string? journalPath = null, bool screenSendKey = false)
     {
         // Append-only evidence for manually operated Chrome trials; never injects browser input.
         if (journalPath is not null) Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(journalPath))!);
@@ -44,6 +44,12 @@ internal static class FocusHost
         Configuration Settings(bool exclusive)
         {
             var settings = new Configuration { Backends = [new("test", "Synthetic", endpoint.Url, "base-model", "", AllowLoopbackHttp: true, Stream: false)], SelectedBackendId = "test" };
+            if (screenSendKey) return settings with
+            {
+                Hotkeys = settings.Hotkeys.Select(k => k with { Enabled = k.Action == "captureScreenSend" }).ToImmutableArray(),
+                Scenes = []
+            };
+            settings = settings with { Hotkeys = settings.Hotkeys.Select(k => k.Action == "captureScreenSend" ? k with { Enabled = false } : k).ToImmutableArray() };
             if (!exclusive) return settings;
             return settings with { ExclusiveHotkeysEnabled = true,
                 Hotkeys = settings.Hotkeys.Select(k => k.Action is "toggle" or "pageDown" or "pageUp" ? k with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(k.Action) } : k).ToImmutableArray(),
@@ -236,6 +242,10 @@ internal static class FocusHost
                                     configuration = configuration with { Scenes = configuration.Scenes.Select(s => s.Id == "coding" ? s with { Trigger = s.Trigger with { Enabled = false } } : s).ToImmutableArray() };
                                     registrationFailures = Register(); break;
                                 case "state": break;
+                                case "screenSendOff":
+                                case "screenSendOn":
+                                    configuration = configuration with { Hotkeys = configuration.Hotkeys.Select(k => k.Action == "captureScreenSend" ? k with { Enabled = command == "screenSendOn" } : k).ToImmutableArray() };
+                                    registrationFailures = Register(); break;
                                 case "quit": selectionCancellation?.Cancel(); dispatcher.BeginInvokeShutdown(DispatcherPriority.Background); break;
                                 default: throw new InvalidOperationException("unknown fixture command");
                             }

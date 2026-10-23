@@ -91,25 +91,35 @@ public partial class MainWindow
         }
         return Task.CompletedTask;
     }
-    internal void QueueSnapshot(InputSnapshot snapshot, string label)
+    internal void QueueSnapshot(InputSnapshot snapshot, string label, bool startNewTask = false)
     {
         // A new acquisition after an answer starts the next task, like Quiz; cancellation before
         // acquisition leaves the previous answer and its input intact.
-        if (coordinator.Latest is not null) { workspace.Set(snapshot, label); reader.SetDraft(""); }
+        if (startNewTask || coordinator.Latest is not null) { workspace.Set(snapshot, label); reader.SetDraft(""); }
         else workspace.Add(snapshot, label);
         coordinator.Invalidate(); completed = null; latestUpdate = null; ClearOutput();
         reader.SetInputs(workspace.Items);
     }
-    private async Task StageScreenshot(bool region)
+    private async Task StageScreenshot(bool region, bool sendImmediately = false)
     {
         if (!Ready()) return;
         if (Working) { Status("正在处理；请先停止当前任务"); return; }
-        if (coordinator.Latest is null && workspace.ImageCount >= Policy.MaximumImages) { Status("最多 5 张图片，请先移除或发送队列"); return; }
+        if (!sendImmediately && coordinator.Latest is null && workspace.ImageCount >= Policy.MaximumImages) { Status("最多 5 张图片，请先移除或发送队列"); return; }
         if (captureTask is { IsCompleted: false }) { Status("上次采集尚未结束，请稍后重试"); return; }
+        // Freeze the recipient and scene before asynchronous capture; settings may change
+        // while the windows are hidden. This action never silently changes the receiver.
+        var settings = config; var scene = WorkspaceScene;
+        PreparedRequest? capturedRequest = null;
+        if (sendImmediately)
+        {
+            var targetBackend = SceneRequestFactory.SelectBackend(settings, scene);
+            Policy.ValidateBackend(targetBackend);
+            if (!targetBackend.SupportsImages) throw new SafeFailure("backend_has_no_vision");
+        }
         var version = ++operation; var wasVisible = reader.IsVisible; var controlVisible = IsVisible;
         var captured = false;
         using var selection = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        preparing = true;
+        preparing = true; RefreshWorkspace();
         try
         {
             var monitors = CaptureService.Monitors();
@@ -139,13 +149,23 @@ public partial class MainWindow
             if (IsVisible) Hide();
             reader.Hide();
             if (Native.DwmFlush() != 0) throw new SafeFailure("capture_unavailable");
-            var worker = Task.Run(() => CaptureService.Capture(target)); captureTask = worker;
+            var worker = captureScreenshot(target); captureTask = worker;
             var payload = await worker.WaitAsync(TimeSpan.FromSeconds(5));
             if (ReferenceEquals(captureTask, worker)) captureTask = null;
             if (version != operation || !Ready()) return;
-            QueueSnapshot(new(Guid.NewGuid(), InputKind.Screen, payload, sequence, DateTimeOffset.UtcNow), region ? "两点截图" : "当前屏幕");
+            var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.Screen, payload, sequence, DateTimeOffset.UtcNow);
+            var label = region ? "两点截图" : "当前屏幕";
+            if (sendImmediately)
+            {
+                // Validate this screenshot alone without clearing the last answer or
+                // changing the user's queue when capture/capability/size checks fail.
+                var candidate = new WorkspaceDraft();
+                candidate.Add(snapshot, label);
+                capturedRequest = SceneRequestFactory.Prepare(settings, scene, candidate.Freeze("", sequence));
+            }
+            QueueSnapshot(snapshot, label, startNewTask: sendImmediately);
             captured = true;
-            Status($"已加入队列 · {workspace.Items.Count} 项 / {workspace.ImageCount} 张图 · 可继续截图或读取剪贴板");
+            Status(sendImmediately ? "截图完成 · 正在发送" : $"已加入队列 · {workspace.Items.Count} 项 / {workspace.ImageCount} 张图 · 可继续截图或读取剪贴板");
         }
         catch (OperationCanceledException) { if (version == operation) Status("截图已取消或超时 · 现有队列保留"); }
         catch (Exception ex) { if (version == operation) Report(ex); }
@@ -165,6 +185,8 @@ public partial class MainWindow
             }
             ObserveCaptureWorker();
         }
+        if (captured && capturedRequest is not null && version == operation && Ready())
+            await SendPrepared(capturedRequest);
     }
     private void ObserveCaptureWorker()
     {
@@ -209,7 +231,7 @@ public partial class MainWindow
     {
         if (!Working) { Status("当前没有正在生成的任务"); return; }
         captureSelectionCancellation?.Cancel();
-        if (captureSelectionCancellation is not null && reader.Check()) reader.Show();
+        if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
         operation++; preparing = false; completed = null; latestUpdate = null;
         coordinator.Stop();
         if (coordinator.Latest is { State: RequestState.Cancelled } stopped && protection.Check() && reader.Check())
@@ -221,7 +243,7 @@ public partial class MainWindow
     private void NewWorkspaceTask()
     {
         captureSelectionCancellation?.Cancel();
-        if (captureSelectionCancellation is not null && reader.Check()) reader.Show();
+        if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
         operation++; preparing = false; coordinator.Invalidate();
         completed = null; latestUpdate = null; workspace.Clear();
         reader.Clear(); ClearOutput(); Status("等待输入 · 新任务"); RefreshWorkspace();

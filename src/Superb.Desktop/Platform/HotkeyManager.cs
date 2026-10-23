@@ -23,7 +23,7 @@ internal sealed class HotkeyManager(nint handle) : IDisposable
         foreach (var entry in entries)
         {
             ++id;
-            if (!entry.Enabled || (entry.Mode == HotkeyMode.Exclusive && !exclusiveEnabled)) continue;
+            if (!entry.Enabled || (entry.Mode == HotkeyMode.Exclusive && !HotkeyDefaults.ExclusiveEnabled(entry, exclusiveEnabled))) continue;
             try
             {
                 var gesture = HotkeyDefaults.Parse(entry);

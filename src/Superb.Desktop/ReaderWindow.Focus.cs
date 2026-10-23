@@ -69,7 +69,9 @@ public partial class ReaderWindow
 
     private void DragHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.OriginalSource is not TextBlock || e.LeftButton != MouseButtonState.Pressed) return;
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+        for (var node = e.OriginalSource as DependencyObject; node is not null && node != DragHeader; node = ParentOf(node))
+            if (node is ButtonBase) return;
         // Native DragMove starts a system move loop that may activate the window.
         // WPF mouse capture lets us move the surface without changing foreground.
         if (!DragHeader.CaptureMouse()) return;

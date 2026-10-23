@@ -38,18 +38,21 @@ internal static class HotkeyDefaults
      new("send", "Ctrl+Alt+Enter"), new("pageDown", "Ctrl+Alt+8"), new("pageUp", "Ctrl+Alt+9"),
      new("settings", "Ctrl+Alt+0"), new("exit", "Ctrl+Alt+Q"),
      new("retry", "Ctrl+Alt+R"), new("resume", "Ctrl+Alt+S"), new("interact", "Ctrl+Alt+E"),
-     new("captureScreen", "Ctrl+Alt+D"), new("deleteCapture", "Ctrl+Alt+Backspace")];
+     new("captureScreen", "Ctrl+Alt+D"), new("captureScreenSend", "F4", HotkeyMode.Exclusive), new("deleteCapture", "Ctrl+Alt+Backspace")];
+    // The explicitly enabled screenshot key is independent of the opt-in switch for
+    // other exclusive actions. Enabling it must not take over unrelated function keys.
+    public static bool ExclusiveEnabled(Hotkey key, bool globalEnabled) => globalEnabled || key.Action == "captureScreenSend";
     public static string Label(string action) => action switch
     {
         "clipboard" => "读取剪贴板加入队列", "capture" => "两点截图加入队列", "captureScreen" => "当前屏幕加入队列", "deleteCapture" => "移除队列最后一项", "toggle" => "显示 / 收起浮窗", "copy" => "复制回答",
-        "cancel" => "停止生成（保留部分回答）", "pause" => "紧急暂停", "send" => "发送工作区输入", "pageDown" => "向下翻页",
+        "captureScreenSend" => "截当前屏并发送", "cancel" => "停止生成（保留部分回答）", "pause" => "紧急暂停", "send" => "发送工作区输入", "pageDown" => "向下翻页",
         "pageUp" => "向上翻页", "settings" => "打开设置", "exit" => "退出", "retry" => "重新回答", "resume" => "恢复使用", "interact" => "编辑 / 返回阅读（退出穿透）", _ => action
     };
     public static string Exclusive(string action) => action switch
     {
         "toggle" => "F6", "pageDown" => "F7", "pageUp" => "F8", "scene:coding" => "F9", "scene:algorithm" => "F10", "scene:general" => "F11",
         "clipboard" => "F1", "capture" => "F2", "copy" => "F3", "cancel" => "F4", "pause" => "F5", "send" => "F13",
-        "settings" => "F14", "exit" => "F15", "retry" => "F17", "resume" => "F18", "interact" => "F19", "captureScreen" => "F20", "deleteCapture" => "F21", _ => "F22"
+        "settings" => "F14", "exit" => "F15", "captureScreenSend" => "F4", "retry" => "F17", "resume" => "F18", "interact" => "F19", "captureScreen" => "F20", "deleteCapture" => "F21", _ => "F22"
     };
     public static KeyGesture Parse(Hotkey binding)
     {

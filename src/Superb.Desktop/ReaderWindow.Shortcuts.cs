@@ -24,6 +24,7 @@ public partial class ReaderWindow
         ShortcutHint.Apply(SendButton, send with { Description = send.Description + " 交互模式下也可按 Ctrl+Enter。" });
         ShortcutHint.Apply(ClipboardButton, KeyHint("clipboard")); ShortcutHint.Apply(CaptureButton, KeyHint("capture"));
         ShortcutHint.Apply(ScreenButton, KeyHint("captureScreen"));
+        ShortcutHint.Apply(ScreenSendButton, KeyHint("captureScreenSend"));
         ShortcutHint.Apply(StopButton, selectingCorners ? new("Esc / 右键", "两点截图时按 Esc 或右键取消；" + KeyHint("cancel").Description, true) : KeyHint("cancel"));
         ShortcutHint.Apply(CopyButton, copyingPartial ? new("仅鼠标", "点击复制部分回答；全局复制键仅复制完整回答。") : KeyHint("copy"));
         ShortcutHint.Apply(RetryButton, KeyHint("retry"));

@@ -64,6 +64,8 @@ internal static class WorkspaceTests
     internal static void Add(List<(string, Action)> tests, string[] args)
     {
         MarkdownTests.Add(tests, args);
+        ScreenSendTests.Add(tests);
+        PassThroughTests.Add(tests, args);
         if (args.Contains("--native-pointer")) PointerFocusTests.Add(tests);
         tests.Add(("Mouse activation policy rejects hover and non-input clicks even while editing", () =>
         {

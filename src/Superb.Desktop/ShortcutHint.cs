@@ -38,7 +38,7 @@ internal sealed record ShortcutLabel(string Text, string Description, bool Activ
     {
         if (binding is null) return new("未设置", "此动作未配置全局快捷键。");
         if (!binding.Enabled) return new("已停用", $"已配置 {binding.Gesture}，当前已停用。");
-        if (binding.Mode == HotkeyMode.Exclusive && !exclusiveEnabled) return new("接管未开", $"已配置独占单键 {binding.Gesture}，独占接管尚未开启。");
+        if (binding.Mode == HotkeyMode.Exclusive && !HotkeyDefaults.ExclusiveEnabled(binding, exclusiveEnabled)) return new("接管未开", $"已配置独占单键 {binding.Gesture}，独占接管尚未开启。");
         if (registered) return new(binding.Gesture, $"当前全局快捷键：{binding.Gesture}。" + (binding.Mode == HotkeyMode.Exclusive ? "此单键由 Superb 独占接管。" : ""), true);
         return error is null ? new("未注册", $"已配置 {binding.Gesture}，本次会话尚未注册成功。")
             : new("未生效", $"已配置 {binding.Gesture}，注册失败：{error}。请在设置中检查快捷键冲突。");

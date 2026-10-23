@@ -32,14 +32,18 @@ public partial class MainWindow : Window
     private bool sessionListenerReady;
     private nint handle;
     private readonly bool isolatedWorkspaceTest;
+    private readonly Func<CaptureTarget, Task<Payload>> captureScreenshot;
     internal ReaderWindow WorkspaceWindow => reader;
     internal Coordinator WorkspaceCoordinator => coordinator;
 
     public MainWindow() : this(null, null) { }
     // Isolated synthetic integration host: no user configuration, global hotkeys, clipboard reads or persistence.
-    internal MainWindow(Configuration? testConfiguration, IBackendClient? testBackend)
+    internal MainWindow(Configuration? testConfiguration, IBackendClient? testBackend,
+        Func<CaptureTarget, Task<Payload>>? testCapture = null)
     {
         isolatedWorkspaceTest = testConfiguration is not null && testBackend is not null;
+        captureScreenshot = isolatedWorkspaceTest && testCapture is not null
+            ? testCapture : target => Task.Run(() => CaptureService.Capture(target));
         if (testConfiguration is not null) config = testConfiguration;
         InitializeComponent();
         backend = new(credentials);
@@ -278,6 +282,7 @@ public partial class MainWindow : Window
                 case "stageClipboard": await StageClipboard(); break;
                 case "stageCapture": await StageScreenshot(true); break;
                 case "captureScreen": await StageScreenshot(false); break;
+                case "captureScreenSend": await StageScreenshot(false, sendImmediately: true); break;
                 case "deleteCapture":
                     if (!Working && workspace.Items.LastOrDefault() is { } last) { workspace.Remove(last.Snapshot.Id); reader.SetInputs(workspace.Items); Status("已移除队列最后一项"); }
                     break;
@@ -357,7 +362,7 @@ public partial class MainWindow : Window
         var failed = hotkeys!.Register(config.AllHotkeys(), config.ExclusiveHotkeysEnabled);
         if (reader.ClickThrough && !hotkeys.HasAction("interact")) reader.SetMode(false);
         HotkeyStatus.Text = failed.Count > 0 ? "未启用的动作：" + string.Join(", ", failed)
-            : config.ExclusiveHotkeysEnabled ? "独占接管已开启；已启用的绑定注册成功" : "独占接管关闭；普通组合键可能产生网页按键事件";
+            : config.ExclusiveHotkeysEnabled ? "独占接管已开启；已启用的绑定注册成功" : "已启用的绑定注册成功；截屏并发送独立接管，其他独占键关闭。普通组合键可能产生网页按键事件";
         if (failed.Count > 0) Status("快捷键冲突或无效（动作）：" + string.Join(", ", failed));
         RefreshWorkspace();
     }

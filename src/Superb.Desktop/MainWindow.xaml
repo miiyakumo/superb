@@ -75,9 +75,9 @@
       </Grid></TabItem>
       <TabItem x:Name="ShortcutsTab" Header="快捷键"><Grid x:Name="HotkeySettings" Margin="8,18,8,0">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <StackPanel><TextBlock Text="快捷键" Style="{StaticResource Heading}"/><TextBlock x:Name="HotkeyStatus" Style="{StaticResource Hint}"/>        <CheckBox x:Name="ExclusiveReaderKeys" Content="开启独占单键接管（仅作用于已启用且选择独占模式的绑定）"/>
+        <StackPanel><TextBlock Text="快捷键" Style="{StaticResource Heading}"/><TextBlock x:Name="HotkeyStatus" Style="{StaticResource Hint}"/>        <CheckBox x:Name="ExclusiveReaderKeys" Content="开启其他动作的独占接管（截屏并发送独立启用）"/>
 
-          <Expander Header="独占模式与冲突说明" Margin="0,0,0,12"><StackPanel Margin="8,8,8,0">        <TextBlock Text="独占单键可选 F1–F11、F13–F24，消费按下和释放；其他应用将暂时失去同键功能。F6 常用于切换焦点，F11 常用于全屏；F13–F24 通常需要专用键盘。普通组合键的修饰键可能传给原应用，并触发其快捷操作或改变焦点；需要保持焦点时请避开冲突绑定。请松开所有按键再保存或退出。" Style="{StaticResource Hint}"/>
+          <Expander Header="独占模式与冲突说明" Margin="0,0,0,12"><StackPanel Margin="8,8,8,0">        <TextBlock Text="截屏并发送默认独占 F4，勾选该行“启用”即可生效，不依赖上方开关。独占单键可选 F1–F11、F13–F24，消费按下和释放；其他应用将暂时失去同键功能。F6 常用于切换焦点，F11 常用于全屏；F13–F24 通常需要专用键盘。普通组合键的修饰键可能传给原应用，并触发其快捷操作或改变焦点；需要保持焦点时请避开冲突绑定。请松开所有按键再保存或退出。" Style="{StaticResource Hint}"/>
 <TextBlock Text="切换模式会填入建议值，可继续编辑。重复绑定阻止保存；注册失败会列出动作。禁用后仍可点击浮窗按钮。" Style="{StaticResource Hint}"/></StackPanel></Expander>
           <Grid Margin="0,0,24,8"><Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="180"/><ColumnDefinition Width="140"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="状态"/><TextBlock Grid.Column="1" Text="动作"/><TextBlock Grid.Column="2" Text="模式"/><TextBlock Grid.Column="3" Text="按键"/></Grid>
         </StackPanel>

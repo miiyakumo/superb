@@ -21,6 +21,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Contains("--pass-through-target")) return PassThroughTests.RunTarget();
         if (args.Contains("--window-audit")) return WindowAudit.Run(args);
         if (args.Contains("--popup-audit")) return PopupAudit.Run(args);
         if (args.Contains("--capture-timeline")) return CaptureTimeline.Run(args);
@@ -28,7 +29,7 @@ internal static class Program
         {
             var journalIndex = Array.IndexOf(args, "--journal");
             if (journalIndex >= 0 && journalIndex + 1 >= args.Length) throw new ArgumentException("--journal requires a file path");
-            return FocusHost.Run(args.Contains("--exclusive-reader"), journalIndex >= 0 ? args[journalIndex + 1] : null);
+            return FocusHost.Run(args.Contains("--exclusive-reader"), journalIndex >= 0 ? args[journalIndex + 1] : null, args.Contains("--screen-send-key"));
         }
         if (args.Contains("--capture-host")) return CaptureSelectionHost.Run(args);
         if (args.Contains("--diagnose-public-algorithm")) return AlgorithmDiagnostic.Run(args);

@@ -4,6 +4,9 @@ namespace Superb.Desktop.Platform;
 
 internal static class Native
 {
+    [DllImport("gdi32.dll")] internal static extern nint CreateRectRgn(int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] internal static extern int CombineRgn(nint destination, nint source1, nint source2, int mode);
+    [DllImport("user32.dll")] internal static extern int SetWindowRgn(nint window, nint region, bool redraw);
     [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] internal struct MouseInput
     { public Point Position; public uint Data, Flags, Time; public nuint ExtraInfo; }

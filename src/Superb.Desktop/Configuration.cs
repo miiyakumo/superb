@@ -42,6 +42,14 @@ internal sealed record Configuration
         if (keys.Any(k => k is null)) throw new SafeFailure("hotkey_invalid");
         if (keys.Count(k => k.Action == "ask") > 1 || keys.Count(k => k.Action == "send") > 1)
             throw new SafeFailure("hotkey_action_duplicate");
+        // Upgrade only the previous stock combination. Reserve existing user keys first,
+        // and preserve a disabled screenshot binding instead of silently enabling it.
+        Hotkey? screenSendUpgrade = null;
+        if (keys.FirstOrDefault(k => k.Action == "captureScreenSend") is { Mode: HotkeyMode.Combination, Gesture: "Ctrl+Alt+X" } oldScreenSend)
+        {
+            screenSendUpgrade = new("captureScreenSend", "F4", HotkeyMode.Exclusive, oldScreenSend.Enabled);
+            keys = keys.Remove(oldScreenSend);
+        }
         // Keep a customized send binding (including its disabled state). Otherwise prefer
         // the enabled former workspace shortcut. The backup retains the discarded alias.
         var send = keys.FirstOrDefault(k => k.Action == "send");
@@ -75,6 +83,7 @@ internal sealed record Configuration
         var scenes = legacy ? Scenes.Select(s => s with { Trigger = Reserve(s.Trigger) }).ToImmutableArray() : Scenes;
         if (!legacy) foreach (var scene in scenes)
             if (scene.Trigger.Enabled) { var gesture = HotkeyDefaults.Parse(scene.Trigger); used.Add((gesture.Key, gesture.Modifiers)); }
+        if (screenSendUpgrade is not null) keys = keys.Add(Reserve(screenSendUpgrade));
         foreach (var key in HotkeyDefaults.All)
             if (!keys.Any(k => k.Action == key.Action)) keys = keys.Add(Reserve(key));
         // Upgrade only the untouched stock prompt; retain user prompts and generation limits.
