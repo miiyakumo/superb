@@ -75,16 +75,19 @@ Test("Explicit thinking controls are restricted to the official provider and pre
     }
     Fails("backend_limits_invalid", () => Policy.ValidateBackend(backend with { ThinkingMode = (ThinkingMode)99 }));
 });
-Test("DeepSeek accepts its documented output ceiling while other endpoints retain their local limit", () =>
+Test("New backends default to 200k output tokens and accept their local output ceilings", () =>
 {
     var official = backend with { Endpoint = DeepSeekSetup.Endpoint, MaxTokens = 393216 };
     Policy.ValidateBackend(official);
     Fails("backend_limits_invalid", () => Policy.ValidateBackend(official with { MaxTokens = 393217 }));
-    Fails("backend_limits_invalid", () => Policy.ValidateBackend(backend with { MaxTokens = 32769 }));
+    Policy.ValidateBackend(backend with { MaxTokens = 200000 });
+    Fails("backend_limits_invalid", () => Policy.ValidateBackend(backend with { MaxTokens = 200001 }));
     var preset = DeepSeekSetup.Preset("new", "");
-    Assert(preset.MaxTokens == 65536 && preset.TimeoutSeconds == 300 && preset.ThinkingMode == ThinkingMode.Default);
+    Assert(preset.MaxTokens == 200000 && preset.TimeoutSeconds == 300 && preset.ThinkingMode == ThinkingMode.Default);
     Policy.ValidateBackend(preset);
-    Assert(backend.MaxTokens == 4096 && backend.ThinkingMode == ThinkingMode.Default);
+    Assert(backend.MaxTokens == 200000 && backend.MaxOutputChars == 1_000_000 && backend.ThinkingMode == ThinkingMode.Default);
+    var saved = System.Text.Json.JsonSerializer.Deserialize<Backend>(System.Text.Json.JsonSerializer.Serialize(backend with { MaxTokens = 4096, MaxOutputChars = 200000 }))!;
+    Assert(saved.MaxTokens == 4096 && saved.MaxOutputChars == 200000);
 });
 Test("Multi-image policy enforces combined bytes and pixels, image count and capability", () =>
 {
@@ -582,7 +585,7 @@ AsyncTest("Quick setup prefers an available Flash model and tests a small fixed 
     var catalog = new FixedCatalog([new("deepseek-v4-pro"), new("deepseek-flash", true)]);
     var client = new InspectingClient();
     var result = await DeepSeekSetup.ConnectAsync(catalog, client, DeepSeekSetup.Preset("test", "temporary"), CancellationToken.None);
-    Assert(result.Backend.Model == "deepseek-flash" && result.Backend.SupportsImages && result.Backend.MaxTokens == 65536 && result.Backend.TimeoutSeconds == 300);
+    Assert(result.Backend.Model == "deepseek-flash" && result.Backend.SupportsImages && result.Backend.MaxTokens == 200000 && result.Backend.TimeoutSeconds == 300);
     Assert(result.Backend.Endpoint == DeepSeekSetup.Endpoint && result.Backend.ProxyMode == ProxyMode.Direct);
     Assert(client.Request!.Content.Text == BackendProbe.TestPrompt && client.Request.Backend.MaxTokens == 64);
     Assert(!client.Request.Content.HasImage);

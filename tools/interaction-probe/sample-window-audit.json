@@ -1,0 +1,55 @@
+{
+  "schema": "superb-window-audit/v1",
+  "capturedAt": "2026-10-22T10:00:01.000Z",
+  "startedAt": "2026-10-22T10:00:00.000Z",
+  "endedAt": "2026-10-22T10:00:01.000Z",
+  "source": {
+    "tool": "Synthetic example only",
+    "version": "1",
+    "scope": "Two fabricated windows; no OS enumeration was performed",
+    "synthetic": true,
+    "limitations": ["All handles, PIDs and window attributes are fabricated."]
+  },
+  "snapshots": [
+    {
+      "timestamp": "2026-10-22T10:00:00.000Z",
+      "foregroundHwnd": "0x1001",
+      "windows": [
+        {
+          "hwnd": "0x1001",
+          "processId": 1234,
+          "processName": "SyntheticHost",
+          "isTarget": true,
+          "title": "SYNTHETIC TEST WINDOW",
+          "className": "SyntheticWindow",
+          "isVisible": true,
+          "isTopmost": true,
+          "isToolWindow": true,
+          "isNoActivate": true,
+          "isTransparent": false,
+          "isLayered": true,
+          "isCloaked": false,
+          "ownerHwnd": "0x0",
+          "displayAffinity": 17,
+          "affinityError": 0,
+          "style": "0x80000000",
+          "exStyle": "0x08080088",
+          "rect": { "left": 100, "top": 100, "right": 500, "bottom": 350 }
+        },
+        {
+          "hwnd": "0x1002",
+          "processId": 5678,
+          "processName": "SyntheticOtherProcess",
+          "isTarget": false,
+          "title": "",
+          "className": "SyntheticUninspectedWindow",
+          "isVisible": true,
+          "displayAffinity": null,
+          "affinityError": 5,
+          "rect": null
+        }
+      ]
+    }
+  ],
+  "notes": ["Only for testing local JSON import and display. Not evidence of a real program run."]
+}

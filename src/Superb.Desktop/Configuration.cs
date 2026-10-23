@@ -27,6 +27,19 @@ internal sealed record Configuration
     public ImmutableArray<ScenePreset> Scenes { get; init; } = SceneDefaults.All;
     public ImmutableArray<Hotkey> Hotkeys { get; init; } = HotkeyDefaults.All;
     public IEnumerable<Hotkey> AllHotkeys() => Hotkeys.Concat(Scenes.Select(s => s.Trigger));
+    internal Configuration WithoutBackend(string id)
+    {
+        if (!Backends.Any(b => b.Id == id)) throw new SafeFailure("backend_missing");
+        if (Scenes.Any(s => s.BackendId == id)) throw new SafeFailure("scene_backend_in_use");
+        var remaining = Backends.Where(b => b.Id != id).ToImmutableArray();
+        return this with
+        {
+            Backends = remaining,
+            SelectedBackendId = SelectedBackendId == id ? remaining.FirstOrDefault()?.Id ?? "" : SelectedBackendId,
+            Routing = new(Routing.TextBackendId == id ? null : Routing.TextBackendId,
+                Routing.ImageBackendId == id ? null : Routing.ImageBackendId)
+        };
+    }
     public Configuration Migrate()
     {
         if (SchemaVersion is not (1 or 2)) throw new SafeFailure("config_invalid");

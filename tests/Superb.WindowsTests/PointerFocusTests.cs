@@ -278,6 +278,91 @@ internal static class PointerFocusTests
         }));
         AddCaptureAndSettings(tests);
         AddAppearanceEditing(tests);
+        AddPauseResume(tests);
+    }
+
+    internal static void AddPauseResume(List<(string, Action)> tests)
+    {
+        tests.Add(("Native production pause and resume retain external, draft and answer focus while clearing sensitive content", () =>
+        {
+            var input = new TextBox { Text = "Synthetic external input" };
+            var control = new Window { Left = 20, Top = 30, Width = 320, Height = 200, Content = input };
+            var main = new MainWindow(new Configuration { ClearOwnedClipboardOnPause = false }, new UnusedBackend());
+            var reader = main.WorkspaceWindow;
+            Native.GetCursorPos(out var oldCursor);
+            try
+            {
+                new WindowInteropHelper(main).EnsureHandle();
+                // The isolated host skips OS listener registration. Model its successful
+                // registration for resume, without registering any global test listeners.
+                typeof(MainWindow).GetField("sessionListenerReady", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .SetValue(main, true);
+                reader.ApplyLayout(new PanelLayout(400, 30, 600, 740, 18, true)); reader.Show();
+                control.Show(); WorkspaceTests.ChooseWindow(control); input.Focus(); Settle();
+                var draft = (TextBox)reader.FindName("DraftText");
+                var answer = (AnswerView)reader.FindName("Answer");
+                var pause = (Button)reader.FindName("PauseButton");
+                foreach (var target in new[] { "external", "draft", "answer" })
+                {
+                    reader.SetDraft("Synthetic private draft");
+                    answer.Render("Synthetic private answer with enough text to select."); Settle();
+                    if (target == "draft") Click(draft);
+                    if (target == "answer")
+                    {
+                        Check(reader.SetMode(true), "Cannot enable answer selection");
+                        var start = answer.Reader.PointToScreen(new Point(12, 10));
+                        Drag(start, 120, 0);
+                        Check(!answer.Reader.Selection.IsEmpty, "Answer selection positive control failed");
+                    }
+                    var focused = Keyboard.FocusedElement;
+                    var foreground = Native.GetForegroundWindow();
+                    Check(ReferenceEquals(focused, target == "external" ? input : target == "draft" ? draft : answer.Reader),
+                        target + ": intended focus positive control failed");
+                    var losses = 0; var deactivations = 0;
+                    var owner = target == "external" ? control : (Window)reader;
+                    var focusedElement = (UIElement)focused;
+                    KeyboardFocusChangedEventHandler lost = (_, _) => losses++;
+                    EventHandler deactivated = (_, _) => deactivations++;
+                    focusedElement.LostKeyboardFocus += lost; owner.Deactivated += deactivated;
+                    void Preserved(string step)
+                    {
+                        Check(Keyboard.FocusedElement == focused && Native.GetForegroundWindow() == foreground && losses == 0 && deactivations == 0,
+                            $"{target} {step}: keyboard={Keyboard.FocusedElement?.GetType().Name}, expected={focused.GetType().Name}, losses={losses}, deactivations={deactivations}, foreground=0x{Native.GetForegroundWindow():X}");
+                        Check(reader.Check(), target + " " + step + ": protection failed");
+                    }
+                    try
+                    {
+                        Click(pause);
+                        Check(main.WorkspaceCoordinator.Mode == RunState.Paused && Equals(pause.Content, "恢复") && draft.IsReadOnly &&
+                            reader.Draft.Length == 0 && answer.Text.Length == 0 && !reader.Interactive,
+                            target + ": pause did not clear/disable the production workspace");
+                        Preserved("pause");
+                        Click(pause);
+                        Check(main.WorkspaceCoordinator.Mode == RunState.Ready && Equals(pause.Content, "暂停") && reader.Draft.Length == 0 && answer.Text.Length == 0,
+                            target + ": resume failed or restored cleared content");
+                        Preserved("resume");
+                        Console.WriteLine($"FOCUS PASS production pause/resume from {target}: zero focus loss; sensitive content cleared");
+                    }
+                    finally { focusedElement.LostKeyboardFocus -= lost; owner.Deactivated -= deactivated; }
+                }
+                reader.Hide(); main.Show(); main.Left = 360; main.Top = 20; Settle();
+                WorkspaceTests.ChooseWindow(control); input.Focus(); Settle();
+                var external = Native.GetForegroundWindow(); var externalLosses = 0; var externalDeactivations = 0;
+                input.LostKeyboardFocus += (_, _) => externalLosses++;
+                control.Deactivated += (_, _) => externalDeactivations++;
+                var settingsPause = Child<Button>(main, b => Equals(b.Content, "暂停"));
+                var settingsResume = (Button)main.FindName("ResumeButton");
+                Click(settingsPause);
+                Check(main.WorkspaceCoordinator.Mode == RunState.Paused, "Settings pause did not execute");
+                Check(Native.GetForegroundWindow() == external && Keyboard.FocusedElement == input && externalLosses == 0 && externalDeactivations == 0,
+                    $"Settings pause changed focus: keyboard={Keyboard.FocusedElement?.GetType().Name}, losses={externalLosses}, deactivations={externalDeactivations}");
+                Click(settingsResume);
+                Check(main.WorkspaceCoordinator.Mode == RunState.Ready && Native.GetForegroundWindow() == external && Keyboard.FocusedElement == input &&
+                    externalLosses == 0 && externalDeactivations == 0, "Settings resume failed or changed external focus");
+                Console.WriteLine("FOCUS PASS settings pause/resume: zero external focus loss; both actions executed");
+            }
+            finally { Mouse(4); main.Close(); control.Close(); SetCursorPos(oldCursor.X, oldCursor.Y); }
+        }));
     }
 
     internal static void AddAppearanceEditing(List<(string, Action)> tests)

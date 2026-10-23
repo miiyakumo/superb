@@ -94,7 +94,7 @@ public partial class ReaderWindow : Window
         InteractionButton.ToolTip = Interactive ? "结束编辑，不自动跳回其他窗口；如需返回原应用，请手动点击。" : "仅启用编辑，不抢焦点；随后点击输入框或选择回答文字会使原窗口失焦。";
         ModeHint.Text = ClickThrough ? $"穿透阅读 · 点击目标窗口输入 · {interactionKey} 退出穿透" : Interactive
             ? "输入／选字会使原窗口失焦 · Esc 结束编辑，不自动返回"
-            : "阅读模式 · 常规操作保持焦点 · 输入需切入浮窗";
+            : "阅读模式 · 点击输入会使原窗口失焦";
         ModeHint.Visibility = answerMode && !Interactive && !ClickThrough ? Visibility.Collapsed : Visibility.Visible;
         RefreshShortcutHints();
     }

@@ -19,8 +19,15 @@ namespace Superb.WindowsTests;
 internal static class FocusHost
 {
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
-    public static int Run(bool exclusiveReaderKeys = false)
+    public static int Run(bool exclusiveReaderKeys = false, string? journalPath = null)
     {
+        // Append-only evidence for manually operated Chrome trials; never injects browser input.
+        if (journalPath is not null) Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(journalPath))!);
+        using var journal = journalPath is null ? null : new StreamWriter(journalPath, append: true) { AutoFlush = true };
+        void Record(string kind, object? data = null) => journal?.WriteLine(JsonSerializer.Serialize(new
+        {
+            schema = "superb-focus-host-journal/v1", timestamp = DateTimeOffset.UtcNow, kind, data
+        }));
         // WPF requires the same root type as compiled App.xaml; opt out before pumping startup.
         var app = new App(isolatedTestHost: true); app.InitializeComponent();
         var dispatcher = Dispatcher.CurrentDispatcher;
@@ -47,6 +54,33 @@ internal static class FocusHost
         reader.SetActions(true, false, false, false, false, false);
         List<string> Register() => hotkeys.Register(configuration.AllHotkeys(), configuration.ExclusiveHotkeysEnabled);
         var registrationFailures = Register();
+        CancellationTokenSource? selectionCancellation = null;
+        string selectionState = "idle";
+        int selectionCompletions = 0, selectionCancellations = 0;
+        async Task SelectCorners()
+        {
+            if (selectionCancellation is not null) return;
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(60)); selectionCancellation = cancellation;
+            selectionState = "first"; reader.SetMode(false, true);
+            Record("selection-start", new { selectionState });
+            try
+            {
+                // Exercise the production selector only; do not acquire desktop pixels.
+                var corners = await TwoPointSelector.SelectAsync(_ => dispatcher.BeginInvoke(() =>
+                {
+                    selectionState = "second"; Record("selection-first-point", new { selectionState });
+                }), cancellation.Token);
+                if (corners is null) { selectionState = "cancelled"; selectionCancellations++; }
+                else { selectionState = "completed"; selectionCompletions++; }
+            }
+            catch (OperationCanceledException) { selectionState = "cancelled"; selectionCancellations++; }
+            catch (Exception ex) { selectionState = "failed"; Record("selection-error", new { error = ex.GetType().Name }); }
+            finally
+            {
+                selectionCancellation = null; reader.SetMode(false);
+                Record("selection-finished", new { selectionState, selectionCompletions, selectionCancellations, reader.ClickThrough });
+            }
+        }
         async Task SendScene(ScenePreset scene)
         {
             try
@@ -65,6 +99,7 @@ internal static class FocusHost
         var text = string.Join("\n", Enumerable.Range(1, 180).Select(n => $"Synthetic test line {n:000} — focus and paging only."));
         void Action(string action)
         {
+            Record("action", new { action, foreground = GetForegroundWindow().ToInt64() });
             if (actions.Count < 1000) actions.Add(action);
             if (configuration.Scenes.FirstOrDefault(s => s.Action == action) is { } scene) { _ = SendScene(scene); return; }
             switch (action)
@@ -77,6 +112,7 @@ internal static class FocusHost
                 case "interact": reader.SetMode(!reader.Interactive); break;
                 case "beginEdit": reader.SetMode(true); break;
                 case "through": reader.SetMode(false, true); break;
+                case "capture": case "stageCapture": _ = SelectCorners(); break;
                 // The remaining registrations are observable without production side effects.
             }
         }
@@ -114,6 +150,7 @@ internal static class FocusHost
                 affinityReadable, affinity, compositionResult, compositionEnabled,
                 protection = reader.Check(), styles = Native.GetWindowLongPtr(hwnd, -20).ToInt64(),
                 mouseDown, wheel, activated, mouseActivate, actions = actions.ToArray(), registrationFailures,
+                selectionState, selectionCompletions, selectionCancellations,
                 registrationErrors = hotkeys.RegistrationErrors, lastWorkerStopped = hotkeys.LastWorkerStopped,
                 scrollOffset = scroll?.VerticalOffset ?? 0, scrollableHeight = scroll?.ScrollableHeight ?? 0,
                 points = new { body = Point(view), hide = Point(Find<Button>(reader, b => Equals(b.Content, "收起"))),
@@ -123,7 +160,18 @@ internal static class FocusHost
                 interactive = Environment.UserInteractive, screen = new { width = area.Width, height = area.Height }
             };
         }
-        Console.WriteLine(JsonSerializer.Serialize(new { ready = true, state = State() }));
+        var initialState = State();
+        Record("ready", initialState);
+        Console.WriteLine(JsonSerializer.Serialize(new { ready = true, state = initialState }));
+        var journalTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        journalTimer.Tick += (_, _) => Record("sample", new
+        {
+            foreground = GetForegroundWindow().ToInt64(), visible = reader.IsVisible,
+            reader.Interactive, reader.ClickThrough, draftLength = reader.Draft.Length,
+            selectionState, selectionCompletions, selectionCancellations, actionCount = actions.Count,
+            mouseDown, activated
+        });
+        if (journal is not null) journalTimer.Start();
         _ = Task.Run(async () =>
         {
             string? line;
@@ -155,6 +203,7 @@ internal static class FocusHost
                                 case "edit": reader.SetMode(true); break;
                                 case "read": reader.SetMode(false); break;
                                 case "through": reader.SetMode(false, true); break;
+                                case "selectCorners": _ = SelectCorners(); break;
                                 case "control": Action("settings"); break;
                                 case "closeControl": control.Hide(); break;
                                 case "exclusiveOn":
@@ -187,10 +236,12 @@ internal static class FocusHost
                                     configuration = configuration with { Scenes = configuration.Scenes.Select(s => s.Id == "coding" ? s with { Trigger = s.Trigger with { Enabled = false } } : s).ToImmutableArray() };
                                     registrationFailures = Register(); break;
                                 case "state": break;
-                                case "quit": dispatcher.BeginInvokeShutdown(DispatcherPriority.Background); break;
+                                case "quit": selectionCancellation?.Cancel(); dispatcher.BeginInvokeShutdown(DispatcherPriority.Background); break;
                                 default: throw new InvalidOperationException("unknown fixture command");
                             }
-                            Console.WriteLine(JsonSerializer.Serialize(new { id, state = State() }));
+                            var result = State();
+                            Record("command", new { id, command, state = result });
+                            Console.WriteLine(JsonSerializer.Serialize(new { id, state = result }));
                         }
                         catch (Exception ex) { Console.WriteLine(JsonSerializer.Serialize(new { id, error = ex.GetType().Name })); }
                     });
@@ -201,6 +252,9 @@ internal static class FocusHost
             dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
         });
         Dispatcher.Run();
+        journalTimer.Stop();
+        Record("shutdown");
+        selectionCancellation?.Cancel();
         if (conflictReserved) Native.UnregisterHotKey(hwnd, 900);
         reader.Finish(); control.Close();
         return 0;

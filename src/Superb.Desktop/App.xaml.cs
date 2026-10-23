@@ -8,9 +8,9 @@ public partial class App : Application
     private Mutex? instance;
     private readonly bool isolatedTestHost;
     internal bool StartupIntercepted { get; private set; }
-    public App() { }
+    public App() => Platform.TransientSurfaceProtection.Initialize();
     // Internal test-only entry: preserve the exact XAML root type without launching user workflows.
-    internal App(bool isolatedTestHost) => this.isolatedTestHost = isolatedTestHost;
+    internal App(bool isolatedTestHost) : this() => this.isolatedTestHost = isolatedTestHost;
     protected override void OnStartup(StartupEventArgs e)
     {
         if (isolatedTestHost) { StartupIntercepted = true; return; }

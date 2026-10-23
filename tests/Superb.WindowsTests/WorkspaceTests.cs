@@ -134,6 +134,32 @@ internal static class WorkspaceTests
             }
             finally { window.Close(); }
         }));
+        tests.Add(("Settings emergency buttons reject mouse activation and keyboard focus while configuration remains interactive", () =>
+        {
+            var window = new MainWindow(new Configuration(), new WorkspaceBackend());
+            var host = new Window { ShowActivated = false, ShowInTaskbar = false };
+            try
+            {
+                new WindowInteropHelper(window).EnsureHandle();
+                foreach (var name in new[] { "SettingsPauseButton", "ResumeButton" })
+                {
+                    var button = (Button)window.FindName(name);
+                    Check(!button.Focusable && !window.CanActivateSettingsTarget(button));
+                    button.ApplyTemplate();
+                    var caption = new TextBlock(); button.Content = caption;
+                    Check(!window.CanActivateSettingsTarget(caption));
+                }
+                Check(window.CanActivateSettingsTarget((PasswordBox)window.FindName("QuickApiKey")));
+                new WindowInteropHelper(host).EnsureHandle();
+                var policy = new Protection(host, false); Check(policy.Install());
+                var hwnd = new WindowInteropHelper(host).Handle;
+                policy.AllowMouseActivation = () => false;
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x201) == 3 && PointerFocusTests.MouseActivation(hwnd, 0x203) == 3);
+                policy.AllowMouseActivation = () => true;
+                Check(PointerFocusTests.MouseActivation(hwnd, 0x201) == 1 && PointerFocusTests.MouseActivation(hwnd, 0x200) == 3);
+            }
+            finally { host.Close(); window.Close(); }
+        }));
         tests.Add(("Settings pages save independently and reopening settings preserves the floating task and selected page", () =>
         {
             var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "");
@@ -163,6 +189,63 @@ internal static class WorkspaceTests
                 window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
                 Check(tabs.SelectedItem == window.FindName("ShortcutsTab") && window.WorkspaceCoordinator.Mode == RunState.Ready);
                 Check(reader.Draft == "retained floating draft" && ((AnswerView)reader.FindName("Answer")).Text == "retained floating answer" && reader.Check());
+            }
+            finally { window.Close(); }
+        }));
+        tests.Add(("Model management exposes deletion, retains saved limits and defaults new models to 200k", () =>
+        {
+            var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "", MaxTokens: 4096);
+            var window = new MainWindow(new Configuration { Backends = [backend], SelectedBackendId = backend.Id }, new WorkspaceBackend());
+            try
+            {
+                Check(((Button)window.FindName("DeleteModelButton")).IsEnabled);
+                Check(((TextBox)window.FindName("MaxTokens")).Text == "4096");
+                Check(((Expander)window.FindName("ClipboardPreferences")).IsExpanded);
+                ((Button)window.FindName("NewModelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(((TextBox)window.FindName("MaxTokens")).Text == "200000");
+                Check(((TextBox)window.FindName("MaxOutput")).Text == "1000000");
+                Check(!((Button)window.FindName("DeleteModelButton")).IsEnabled);
+            }
+            finally { window.Close(); }
+        }));
+        tests.Add(("Deleting models preserves unrelated defaults, resets affected routes and protects scene references", () =>
+        {
+            var first = new Backend("first", "First", "https://example.test/v1/chat/completions", "model", "");
+            var second = first with { Id = "second", Name = "Second", SupportsImages = true };
+            var config = new Configuration { Backends = [first, second], SelectedBackendId = second.Id, Routing = new(first.Id, second.Id) };
+            var removed = config.WithoutBackend(first.Id); removed.Validate();
+            Check(removed.Backends.SequenceEqual([second]) && removed.SelectedBackendId == second.Id);
+            Check(removed.Routing == new Routing(null, second.Id) && removed.Scenes == config.Scenes);
+            var selectedRemoved = config.WithoutBackend(second.Id); selectedRemoved.Validate();
+            Check(selectedRemoved.SelectedBackendId == first.Id && selectedRemoved.Routing == new Routing(first.Id));
+            var empty = removed.WithoutBackend(second.Id); empty.Validate();
+            Check(empty.Backends.IsEmpty && empty.SelectedBackendId == "" && empty.Routing == new Routing());
+            Reject("scene_backend_in_use", () => (config with { Scenes = [config.Scenes[0] with { BackendId = first.Id }] }).WithoutBackend(first.Id));
+            Reject("backend_missing", () => config.WithoutBackend("missing"));
+            Check(config.Backends.Length == 2);
+        }));
+        tests.Add(("Model route pickers inherit defaults, validate image capability and save independently of processing and clipboard edits", () =>
+        {
+            var text = new Backend("text", "Text model", "https://example.test/v1/chat/completions", "model", "");
+            var image = text with { Id = "image", Name = "Image model", SupportsImages = true };
+            var config = new Configuration { Backends = [text, image], SelectedBackendId = text.Id, Routing = new(text.Id, image.Id) };
+            var window = new MainWindow(config, new WorkspaceBackend());
+            try
+            {
+                var textPicker = (ComboBox)window.FindName("TextRoutePicker");
+                var imagePicker = (ComboBox)window.FindName("ImageRoutePicker");
+                Check((string)textPicker.SelectedValue == text.Id && (string)imagePicker.SelectedValue == image.Id);
+                ((TextBox)window.FindName("PipelineBox")).Text = "invalid JSON";
+                ((TextBox)window.FindName("SyncDuration")).Text = "invalid number";
+                textPicker.SelectedValue = "";
+                var updated = window.BuildRoutingSettings(); updated.Validate();
+                Check(updated.Routing == new Routing(null, image.Id) && updated.Pipeline == config.Pipeline && updated.SyncMinutes == config.SyncMinutes);
+                Check(updated.Routing.Select(Payload.FromText("text"), updated.SelectedBackendId, updated.Backends).Id == text.Id);
+                Check(updated.Routing.Select(new Payload(null, [1], 1, 1), updated.SelectedBackendId, updated.Backends).Id == image.Id);
+                imagePicker.SelectedValue = text.Id;
+                Reject("backend_has_no_vision", () => window.BuildRoutingSettings());
+                imagePicker.SelectedValue = "";
+                Check(window.BuildRoutingSettings().Routing == new Routing());
             }
             finally { window.Close(); }
         }));
@@ -546,7 +629,7 @@ internal static class WorkspaceTests
         tests.Add(("Reasoning token exhaustion is visible in the floating answer area and never offers a completed copy", () =>
         {
             var client = new WorkspaceBackend();
-            var b = new Backend("test", "Synthetic", DeepSeekSetup.Endpoint, "reasoning", "");
+            var b = new Backend("test", "Synthetic", DeepSeekSetup.Endpoint, "reasoning", "", MaxTokens: 4096);
             var window = new MainWindow(new Configuration { Backends = [b], SelectedBackendId = b.Id }, client);
             var context = SynchronizationContext.Current;
             SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(window.Dispatcher));

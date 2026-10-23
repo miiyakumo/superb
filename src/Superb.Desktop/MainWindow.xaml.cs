@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Superb.Core;
@@ -50,6 +51,9 @@ public partial class MainWindow : Window
         backend = new(credentials);
         coordinator = new(testBackend ?? backend);
         protection = new(this, false);
+        protection.AllowMouseActivation = () => !IsVisible || PresentationSource.FromVisual(this)?.CompositionTarget is null ||
+            (Native.GetCursorPos(out var point) &&
+                CanActivateSettingsTarget(InputHitTest(PointFromScreen(new Point(point.X, point.Y))) as DependencyObject));
         coordinator.Updated += OnUpdate;
         reader.Command += action => _ = RunCommand(action);
         reader.LayoutChanged += () =>
@@ -88,6 +92,14 @@ public partial class MainWindow : Window
         };
         Closing += (_, _) => Shutdown();
         Populate();
+    }
+    internal bool CanActivateSettingsTarget(DependencyObject? target)
+    {
+        // Emergency actions do not need an input focus, even in the settings window.
+        for (var node = target; node is not null && node != this; node =
+            (node is Visual ? VisualTreeHelper.GetParent(node) : null) ?? LogicalTreeHelper.GetParent(node))
+            if (ReferenceEquals(node, SettingsPauseButton) || ReferenceEquals(node, ResumeButton)) return false;
+        return true;
     }
     public new void Show()
     {
@@ -178,7 +190,12 @@ public partial class MainWindow : Window
         EditBackendPicker.ItemsSource = config.Backends;
         EditBackendPicker.SelectedItem = BackendPicker.SelectedItem;
         PipelineBox.Text = JsonSerializer.Serialize(config.Pipeline.Steps, Configuration.Json);
-        RoutingBox.Text = JsonSerializer.Serialize(config.Routing, Configuration.Json);
+        TextRoutePicker.ItemsSource = new[] { new BackendChoice("", "跟随默认连接") }
+            .Concat(config.Backends.Select(b => new BackendChoice(b.Id, b.Name))).ToArray();
+        ImageRoutePicker.ItemsSource = new[] { new BackendChoice("", "跟随默认连接") }
+            .Concat(config.Backends.Select(b => new BackendChoice(b.Id, b.SupportsImages ? b.Name : b.Name + "（不支持图像）"))).ToArray();
+        TextRoutePicker.SelectedValue = config.Routing.TextBackendId ?? "";
+        ImageRoutePicker.SelectedValue = config.Routing.ImageBackendId ?? "";
         PopulateScenesAndKeys();
         ExclusiveReaderKeys.IsChecked = config.ExclusiveHotkeysEnabled;
         AutoCopy.IsChecked = config.AutoCopy;
@@ -188,7 +205,6 @@ public partial class MainWindow : Window
         QuickSetup.IsExpanded = config.Backends.IsDefaultOrEmpty;
         BackendSettings.IsExpanded = !config.Backends.IsDefaultOrEmpty;
         TargetLabel.Text = config.Capture?.Label ?? "未配置采集目标";
-        BackendIds.Text = string.Join("\n", config.Backends.Select(x => $"{x.Name} → {x.Id}"));
         var selected = BackendPicker.SelectedItem as Backend;
         ModelSummary.Text = selected is null ? "先连接一个模型，即可开始提问。" : $"{selected.Name} · {selected.Model}";
         if (config.Routing.TextBackendId is not null || config.Routing.ImageBackendId is not null)
@@ -636,13 +652,14 @@ public partial class MainWindow : Window
     {
         CancelProbe();
         var b = EditBackendPicker.SelectedItem as Backend;
+        DeleteModelButton.IsEnabled = b is not null;
         ModelName.ItemsSource = null;
         BackendName.Text = b?.Name ?? ""; ModelName.Text = b?.Model ?? ""; Endpoint.Text = b?.Endpoint ?? "";
         ApiKey.Clear(); Vision.IsChecked = b?.SupportsImages ?? false; Streaming.IsChecked = b?.Stream ?? true;
         Loopback.IsChecked = b?.AllowLoopbackHttp ?? false; TimeoutSeconds.Text = (b?.TimeoutSeconds ?? 120).ToString();
         InputLimit.Text = ((b?.MaxInputBytes ?? 8_388_608) / 1_048_576).ToString();
         Temperature.Text = (b?.Temperature ?? 0.2).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        MaxTokens.Text = (b?.MaxTokens ?? 4096).ToString(); MaxOutput.Text = (b?.MaxOutputChars ?? 200000).ToString();
+        MaxTokens.Text = (b?.MaxTokens ?? Policy.DefaultOutputTokens).ToString(); MaxOutput.Text = (b?.MaxOutputChars ?? 1_000_000).ToString();
         ProxyModePicker.SelectedIndex = (int)(b?.ProxyMode ?? ProxyMode.Direct);
         ProxyAddressBox.Text = b?.ProxyAddress ?? "";
         SendTemperature.IsChecked = b?.SendTemperature ?? true;
@@ -727,13 +744,21 @@ public partial class MainWindow : Window
         if (EditBackendPicker.SelectedItem is not Backend b) return;
         if (config.Scenes.Any(s => s.BackendId == b.Id)) { Status("该后端仍被场景引用，请先调整场景后端"); return; }
         StopSync();
-        Mutate(() =>
+        CancelProbe();
+        try
         {
-            var remaining = config.Backends.Where(x => x.Id != b.Id).ToImmutableArray();
-            config = config with { Backends = remaining, SelectedBackendId = remaining.FirstOrDefault()?.Id ?? "",
-                Routing = new(config.Routing.TextBackendId == b.Id ? null : config.Routing.TextBackendId, config.Routing.ImageBackendId == b.Id ? null : config.Routing.ImageBackendId) };
-            config.Save(); credentials.Delete(b.CredentialRef);
-        });
+            var candidate = config.WithoutBackend(b.Id);
+            candidate.Save();
+            config = candidate;
+            Populate(); Status($"已删除模型配置：{b.Name}");
+            // Shared credentials must remain available to other saved connections.
+            if (!config.Backends.Any(other => other.CredentialRef == b.CredentialRef))
+            {
+                try { credentials.Delete(b.CredentialRef); }
+                catch { Status("模型配置已删除，但凭据文件清理失败"); }
+            }
+        }
+        catch (Exception ex) { Report(ex); }
     }
     private void RefreshTargets_Click(object sender, RoutedEventArgs e)
     {
@@ -756,14 +781,26 @@ public partial class MainWindow : Window
     });
     private void SavePipeline_Click(object sender, RoutedEventArgs e)
     {
-        StopSync(); // Routing changes require a new explicit live authorization.
+        StopSync();
         Mutate(() =>
     {
         var steps = JsonSerializer.Deserialize<ImmutableArray<ProcessStep>>(PipelineBox.Text, Configuration.Json);
-        var routing = JsonSerializer.Deserialize<Routing>(RoutingBox.Text, Configuration.Json) ?? throw new SafeFailure("routing_invalid");
-        var candidate = config with { Pipeline = new(Guid.NewGuid().ToString("N"), steps), Routing = routing };
+        var candidate = config with { Pipeline = new(Guid.NewGuid().ToString("N"), steps) };
         candidate.Validate(); config = candidate;
         });
+    }
+    internal Configuration BuildRoutingSettings()
+    {
+        string? SelectedRoute(ComboBox picker) => picker.SelectedValue is string id && id.Length > 0 ? id : null;
+        var routing = new Routing(SelectedRoute(TextRoutePicker), SelectedRoute(ImageRoutePicker));
+        if (routing.ImageBackendId is { } imageId && !config.Backends.Any(b => b.Id == imageId && b.SupportsImages))
+            throw new SafeFailure("backend_has_no_vision");
+        return config with { Routing = routing };
+    }
+    private void SaveRouting_Click(object sender, RoutedEventArgs e)
+    {
+        StopSync(); // Routing changes require a new explicit live authorization.
+        Mutate(() => { var candidate = BuildRoutingSettings(); candidate.Validate(); config = candidate; });
     }
     // Each page saves only its own settings, never pending edits from another page.
     internal Configuration BuildHotkeySettings()

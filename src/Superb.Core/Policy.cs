@@ -7,8 +7,10 @@ public static class Policy
     public const int AbsoluteInputLimit = 16 * 1024 * 1024;
     public const int MaximumPixels = 32_000_000;
     public const int MaximumImages = 5;
+    public const int DefaultOutputTokens = 200_000;
+    public const int MaximumOutputTokens = 200_000;
     public const int MaximumDeepSeekOutputTokens = 393216;
-    public static int OutputTokenLimit(string endpoint) => DeepSeekSetup.IsOfficialEndpoint(endpoint) ? MaximumDeepSeekOutputTokens : 32768;
+    public static int OutputTokenLimit(string endpoint) => DeepSeekSetup.IsOfficialEndpoint(endpoint) ? MaximumDeepSeekOutputTokens : MaximumOutputTokens;
     public static Uri ValidateBackend(Backend b)
     {
         if (b.Adapter != "chat-completions") throw new SafeFailure("adapter_unsupported");

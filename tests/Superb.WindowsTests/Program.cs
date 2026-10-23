@@ -21,14 +21,23 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        if (args.Contains("--focus-host")) return FocusHost.Run(args.Contains("--exclusive-reader"));
-        if (args.Contains("--capture-host")) return CaptureSelectionHost.Run();
+        if (args.Contains("--window-audit")) return WindowAudit.Run(args);
+        if (args.Contains("--popup-audit")) return PopupAudit.Run(args);
+        if (args.Contains("--capture-timeline")) return CaptureTimeline.Run(args);
+        if (args.Contains("--focus-host"))
+        {
+            var journalIndex = Array.IndexOf(args, "--journal");
+            if (journalIndex >= 0 && journalIndex + 1 >= args.Length) throw new ArgumentException("--journal requires a file path");
+            return FocusHost.Run(args.Contains("--exclusive-reader"), journalIndex >= 0 ? args[journalIndex + 1] : null);
+        }
+        if (args.Contains("--capture-host")) return CaptureSelectionHost.Run(args);
         if (args.Contains("--diagnose-public-algorithm")) return AlgorithmDiagnostic.Run(args);
-        if (args.Contains("--native-pointer-only") || args.Contains("--appearance-edit-only"))
+        if (args.Contains("--native-pointer-only") || args.Contains("--appearance-edit-only") || args.Contains("--pause-resume-only"))
         {
             var app = new App(isolatedTestHost: true); app.InitializeComponent();
             var pointerTests = new List<(string, Action)>();
             if (args.Contains("--appearance-edit-only")) PointerFocusTests.AddAppearanceEditing(pointerTests);
+            else if (args.Contains("--pause-resume-only")) PointerFocusTests.AddPauseResume(pointerTests);
             else PointerFocusTests.Add(pointerTests);
             return RunTests(pointerTests);
         }
@@ -153,7 +162,7 @@ internal static class Program
             var window = new MainWindow();
             var tabs = (TabControl)window.FindName("MainTabs");
             Assert(tabs.Items.Count == 4);
-            Assert(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] { "模型", "场景", "快捷键", "更多" }));
+            Assert(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] { "模型", "场景", "快捷键", "通用与自动化" }));
             Assert(window.FindName("QuestionBox") is null && window.FindName("AnswerText") is null);
             Assert(((Expander)window.FindName("QuickSetup")).IsExpanded);
             Assert(((ComboBox)window.FindName("ScenePicker")).Items.Count == 3);

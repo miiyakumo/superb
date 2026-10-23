@@ -2,7 +2,7 @@
   <Grid Margin="24">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <DockPanel Margin="0,0,0,16">
-      <WrapPanel DockPanel.Dock="Right"><Button Content="返回悬浮工作区" ToolTip="收起设置并显示浮窗；若设置当前有焦点，Windows 会转移焦点。" Style="{StaticResource Primary}" Click="ShowPanel_Click"/><Button x:Name="ResumeButton" Content="恢复使用" Click="Resume_Click" Visibility="Collapsed"/><Button Content="暂停" Click="Pause_Click"/></WrapPanel>
+      <WrapPanel DockPanel.Dock="Right"><Button Content="返回悬浮工作区" ToolTip="收起设置并显示浮窗；若设置当前有焦点，Windows 会转移焦点。" Style="{StaticResource Primary}" Click="ShowPanel_Click"/><Button x:Name="ResumeButton" Content="恢复使用" Focusable="False" ToolTip="检查会话和保护后恢复使用，保持当前焦点；不会恢复已清空的内容或续接请求。" Click="Resume_Click" Visibility="Collapsed"/><Button x:Name="SettingsPauseButton" Content="暂停" Focusable="False" ToolTip="取消任务、停止同步并清空草稿、队列与回答；保持当前焦点。" Click="Pause_Click"/></WrapPanel>
       <StackPanel><TextBlock Text="Superb 设置" FontSize="24" FontWeight="SemiBold"/><TextBlock Text="点击设置进行配置会使原窗口失焦" Style="{StaticResource Hint}" Margin="0,4,0,0"/></StackPanel>
     </DockPanel>
     <Border Grid.Row="1" Background="{StaticResource Surface}" CornerRadius="8" Padding="14,10" Margin="0,0,0,16">
@@ -29,10 +29,11 @@
 </StackPanel></Expander>
         <Expander x:Name="BackendSettings" Header="编辑模型与连接" Margin="0,12,0,16"><StackPanel Margin="8,16,8,0">
   <TextBlock Text="选择要编辑的连接"/><ComboBox x:Name="EditBackendPicker" DisplayMemberPath="Name" SelectionChanged="EditBackendPicker_SelectionChanged"/>
+  <WrapPanel><Button x:Name="NewModelButton" Content="新建模型配置" Click="NewBackend_Click"/><Button x:Name="DeleteModelButton" Content="删除模型配置与凭据" Click="DeleteBackend_Click" IsEnabled="False"/></WrapPanel>
   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="名称"/><TextBox x:Name="BackendName"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="模型 ID"/><ComboBox x:Name="ModelName" IsEditable="True"/></StackPanel></Grid>
   <TextBlock Text="DeepSeek 思考模式"/><ComboBox x:Name="ThinkingModePicker" SelectedIndex="0"><ComboBoxItem Content="沿用模型默认"/><ComboBoxItem Content="直接回答（关闭深度思考）"/><ComboBoxItem Content="深度思考"/></ComboBox>
-  <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="最大生成 tokens"/><TextBox x:Name="MaxTokens" Text="4096"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="超时（秒，1–600）"/><TextBox x:Name="TimeoutSeconds" Text="120"/></StackPanel></Grid>
-  <Expander Header="生成预算说明" Margin="0,0,0,12"><TextBlock Text="生成 tokens 是思考与正文的输出预算，与 1M 上下文容量不同。DeepSeek 官方上限 393216，其他后端本地上限 32768。深度思考可按需设置 65536 tokens、300 秒，可能增加耗时与用量。思考开关仅用于 DeepSeek 官方端点。保存后重新发送生效；重新回答仍沿用旧请求参数。" Style="{StaticResource Hint}" Margin="8,8,8,0"/></Expander>
+  <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="最大生成 tokens（默认 200000）"/><TextBox x:Name="MaxTokens" Text="200000"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="超时（秒，1–600）"/><TextBox x:Name="TimeoutSeconds" Text="120"/></StackPanel></Grid>
+  <Expander Header="生成预算说明" Margin="0,0,0,12"><TextBlock Text="默认输出预算为 200000 tokens，包含思考与正文；实际可用上限由模型服务决定，超出时需调低。DeepSeek 官方端点的本地校验上限为 393216，其他端点为 200000。生成预算与模型上下文容量分别计算；长回答可调高超时，最多 600 秒。思考开关仅用于 DeepSeek 官方端点。保存后重新发送生效；重新回答仍沿用旧请求参数。" Style="{StaticResource Hint}" Margin="8,8,8,0"/></Expander>
   <Expander Header="端点与密钥" Margin="0,0,0,12"><StackPanel Margin="8,12,8,0">  <TextBlock Text="完整端点 URL"/><TextBox x:Name="Endpoint" ToolTip="完整地址，例如 https://你的服务/v1/chat/completions"/>
   <TextBlock Text="API 密钥（留空保留已有凭据）"/><PasswordBox x:Name="ApiKey"/>
 </StackPanel></Expander>
@@ -41,13 +42,13 @@
     <TextBlock Text="自定义代理地址（仅自定义模式使用）"/><TextBox x:Name="ProxyAddressBox"/>
     <TextBlock Text="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891。选择系统或自定义代理即允许它参与连接；失败不自动切换。" Style="{StaticResource Hint}"/>
     <WrapPanel><CheckBox x:Name="Vision" Content="支持图像输入" Margin="0,6,24,10"/><CheckBox x:Name="Streaming" Content="流式输出" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="Loopback" Content="允许本机 IP 回环 HTTP"/></WrapPanel>
-    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="最大输入（MiB，1–16）"/><TextBox x:Name="InputLimit" Text="8"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="最大响应字符"/><TextBox x:Name="MaxOutput" Text="200000"/></StackPanel></Grid>
+    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="最大输入（MiB，1–16）"/><TextBox x:Name="InputLimit" Text="8"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="最大响应字符"/><TextBox x:Name="MaxOutput" Text="1000000"/></StackPanel></Grid>
     <TextBlock Text="温度（0–2）"/><TextBox x:Name="Temperature" Text="0.2"/>
     <CheckBox x:Name="SendTemperature" Content="发送 temperature 参数" IsChecked="True"/>
     <CheckBox x:Name="UseCompletionTokens" Content="使用 max_completion_tokens（替代 max_tokens）"/>
     <TextBlock Text="若生成参数返回 400/422，请按模型文档选择；部分推理模型需关闭 temperature，并使用 max_completion_tokens。" Style="{StaticResource Hint}"/>
   </StackPanel></Expander>
-  <Expander Header="连接管理与测试说明" Margin="0,0,0,12"><StackPanel Margin="8,12,8,0"><WrapPanel><Button Content="新建连接" Click="NewBackend_Click"/><Button Content="删除连接与凭据" Click="DeleteBackend_Click"/></WrapPanel>
+  <Expander Header="连接测试说明" Margin="0,0,0,12"><StackPanel Margin="8,12,8,0">
     <TextBlock Text="测试发送固定文本 Reply with OK.，沿用已保存参数，可能计费；不读取剪贴板或截图。编辑后请先保存。密钥由 DPAPI 加密保存在当前 Windows 用户下。" Style="{StaticResource Hint}"/>
   </StackPanel></Expander>
 </StackPanel></Expander>
@@ -97,14 +98,15 @@
 </ScrollViewer>
         <WrapPanel Grid.Row="2" Margin="0,12,0,0"><Button x:Name="SaveHotkeysButton" Content="保存快捷键" Style="{StaticResource Primary}" Click="SaveHotkeys_Click"/><Button Content="填入默认绑定" Click="ResetHotkeys_Click"/></WrapPanel>
       </Grid></TabItem>
-      <TabItem x:Name="AdvancedTab" Header="更多"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,18,8,0">
-        <TextBlock Text="按需设置" Style="{StaticResource Heading}"/>
+      <TabItem x:Name="AdvancedTab" Header="通用与自动化"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,18,8,0">
+        <TextBlock Text="通用与自动化" Style="{StaticResource Heading}"/>
         <TextBlock Text="窗口大小、透明度和回答字号：在浮窗的“外观”中调整。" Style="{StaticResource Hint}"/>
-        <Expander Header="剪贴板偏好" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">        <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
+        <Expander x:Name="ClipboardPreferences" Header="剪贴板偏好" IsExpanded="True" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">        <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
         <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
         <TextBlock Text="同步授权期限（分钟，1–60）"/><TextBox x:Name="SyncDuration" Text="10"/>
 <Button Content="保存剪贴板偏好" Style="{StaticResource Primary}" HorizontalAlignment="Left" Click="SavePreferences_Click"/></StackPanel></Expander>
-        <Expander Header="自动同步剪贴板" Margin="0,0,0,16"><StackPanel><Border Background="{StaticResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
+        <TextBlock Text="以下功能按需开启：自动接收剪贴板变化、为文字与图片分别选择模型，以及设置一键场景的固定截图范围。" Style="{StaticResource Hint}"/>
+        <Expander Header="自动同步剪贴板 · 监听变化并准备或发送" Margin="0,0,0,16"><StackPanel><Border Background="{StaticResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
           <TextBlock Text="Live Clipboard（可选）" FontSize="17" FontWeight="SemiBold"/>
           <TextBlock Text="监听仅在本次运行有效。停止监听只阻止新的自动输入；已提交请求仍可单独取消，紧急暂停会立即遮蔽并停止本地输出。" Style="{StaticResource Hint}"/>
           <WrapPanel><CheckBox x:Name="SyncText" Content="Unicode 文本" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="SyncImage" Content="静态位图"/></WrapPanel>
@@ -120,12 +122,16 @@
         <TextBox x:Name="RegionBox" Text="0,0,800,600"/>
         <TextBlock x:Name="TargetLabel" Text="未配置采集目标" Style="{StaticResource Hint}"/>
         </StackPanel></Expander>
-        <Expander Header="内容处理与固定路由" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0"><TextBlock Text="预处理步骤（按数组顺序执行，坐标相对上一步图像）"/>
+        <Expander x:Name="RoutingSettings" Header="模型路由 · 为文字与图片分别选择连接" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">
+        <TextBlock Text="文字输入使用"/><ComboBox x:Name="TextRoutePicker" DisplayMemberPath="Label" SelectedValuePath="Id"/>
+        <TextBlock Text="图像输入使用"/><ComboBox x:Name="ImageRoutePicker" DisplayMemberPath="Label" SelectedValuePath="Id"/>
+        <TextBlock Text="默认跟随“模型”页的默认连接；包含图片时使用图像路由。场景指定的连接优先，图像路由需选择支持图像的连接。" Style="{StaticResource Hint}"/>
+        <Button x:Name="SaveRoutingButton" Content="保存模型路由" HorizontalAlignment="Left" Click="SaveRouting_Click"/>
+        </StackPanel></Expander>
+        <Expander Header="高级内容预处理 · JSON 规则" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0"><TextBlock Text="预处理步骤（按数组顺序执行，坐标相对上一步图像）"/>
         <TextBox x:Name="PipelineBox" AcceptsReturn="True" Height="180" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
         <TextBlock Text="支持 NormalizeText、Template、Crop、Mask、Resize；Required=true 的失败会阻止发送。模板使用 {input}。配置会保存这些规则，请勿在模板中粘贴敏感正文。" Style="{StaticResource Hint}"/>
-        <TextBlock Text="固定路由（后端 ID；null 表示使用手动选择）"/><TextBox x:Name="RoutingBox" AcceptsReturn="True" Height="74" FontFamily="Consolas"/>
-        <TextBlock x:Name="BackendIds" Style="{StaticResource Hint}"/>
-        <Button Content="保存处理与路由策略" HorizontalAlignment="Left" Click="SavePipeline_Click"/>
+        <Button Content="保存预处理规则" HorizontalAlignment="Left" Click="SavePipeline_Click"/>
       </StackPanel></Expander>
         <Expander Header="保护状态" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
         <TextBlock Text="保护状态" FontSize="17" FontWeight="SemiBold"/>

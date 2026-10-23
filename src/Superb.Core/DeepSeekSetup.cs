@@ -14,7 +14,7 @@ public static class DeepSeekSetup
     public const string Endpoint = "https://api.deepseek.com/chat/completions";
     public static bool IsOfficialEndpoint(string endpoint) => endpoint is Endpoint or "https://api.deepseek.com/v1/chat/completions";
     public static Backend Preset(string id, string credentialRef, ProxyMode proxy = ProxyMode.Direct, string proxyAddress = "") =>
-        new(id, "DeepSeek", Endpoint, "deepseek-flash", credentialRef, TimeoutSeconds: 300, MaxTokens: 65536,
+        new(id, "DeepSeek", Endpoint, "deepseek-flash", credentialRef, TimeoutSeconds: 300,
             ProxyMode: proxy, ProxyAddress: proxy == ProxyMode.Custom ? proxyAddress : "");
 
     public static IReadOnlyList<ModelOption> ParseModels(byte[] json)

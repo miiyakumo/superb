@@ -32,7 +32,7 @@ internal sealed class Protection(Window window, bool noActivate)
         (!floating || ((Native.GetWindowLongPtr(Handle, -20).ToInt64() & 0x08000080L) == (blocksActivation ? 0x08000080L : 0x80L) &&
             (!through || (Native.GetWindowLongPtr(Handle, -20).ToInt64() & 0x80020L) == 0x80020L))) &&
         Native.DwmIsCompositionEnabled(out var enabled) == 0 && enabled &&
-        Native.GetWindowDisplayAffinity(Handle, out var affinity) && affinity == 0x11;
+        Native.GetWindowDisplayAffinity(Handle, out var affinity) && affinity == 0x11 && TransientSurfaceProtection.Check();
     public bool SetInteraction(bool interactive, bool clickThrough = false)
     {
         if (!floating || Handle == 0 || !Check() || (interactive && clickThrough)) return false;
@@ -61,7 +61,7 @@ internal sealed class Protection(Window window, bool noActivate)
             {
                 var deliberateClick = click || mouseMessage is 0x204 or 0x206 or 0x207 or 0x209 or 0x20b or 0x20d
                     or 0xa1 or 0xa3 or 0xa4 or 0xa6 or 0xa7 or 0xa9 or 0xab or 0xad;
-                return deliberateClick ? 1 : 3;
+                return deliberateClick && (AllowMouseActivation?.Invoke() ?? true) ? 1 : 3;
             }
             // A deliberate draft click may enable editing before Windows decides whether
             // to activate. Evaluate that target first so the first click can accept input.

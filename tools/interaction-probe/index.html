@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Superb · 交互痕迹实验台</title>
+  <link rel="stylesheet" href="probe.css">
+  <script src="core.js" defer></script>
+  <script src="audit.js" defer></script>
+  <script src="probe.js" defer></script>
+</head>
+<body>
+<header class="masthead">
+  <div><p class="eyebrow">SUPERB / LOCAL INTERACTION LAB</p><h1>交互痕迹实验台</h1><p class="muted">把网页实际收到的事件留下证据，逐项核对浮窗与快捷键的行为。</p></div>
+  <div class="session-state"><span id="recording-dot" class="dot"></span><strong id="recording-state">等待开始</strong><span id="elapsed">00:00</span></div>
+</header>
+<main>
+  <section class="notice" aria-label="隐私与观测边界">
+    <strong>仅在本机内存记录，手动导出。</strong> 请使用下面的合成测试文本。键盘日志包含 key / code，可还原输入；备注和导出也可能含敏感信息。
+    <details><summary>能观察什么，以及不能据此得出什么</summary><p>网页自身只能观察当前页面收到的浏览器事件，不能枚举操作系统窗口或进程。可手动导入独立本机审计工具生成的 JSON；导入数据属于另一证据来源，不是网页直接检测结果。无法检测全局钩子、桌面截图内容或剪贴板在其他应用中的读取。失焦、缺失按键与事件为零均不能单独证明 Superb 的行为或不可检测性。每轮须同时确认原生动作实际发生；截图保护须独立检查采集结果。不会请求剪贴板读取、屏幕共享、摄像头或麦克风权限。</p></details>
+  </section>
+  <section class="toolbar panel" aria-label="记录控制">
+    <button id="toggle-recording" class="primary">开始记录</button><button id="clear-log">清空本轮日志</button><button id="export-log">导出 JSON</button><button id="preview-json">查看 JSON</button>
+    <label class="inline-check"><input id="auto-scroll" type="checkbox" checked> 跟随最新</label>
+    <span class="muted small">上限 5,000 条 · 页面显示最近 200 条</span>
+  </section>
+  <section class="stats" aria-label="实时统计">
+    <div class="stat"><span>观察事件</span><strong id="stat-observed">0</strong><small>包含被节流的事件</small></div>
+    <div class="stat"><span>内存日志</span><strong id="stat-retained">0</strong><small id="stat-evicted">覆盖 0 条旧记录</small></div>
+    <div class="stat"><span>高频合并</span><strong id="stat-throttled">0</strong><small>移动 / 滚动 / 选择等</small></div>
+    <div class="stat"><span>页面失焦</span><strong id="stat-blur">0</strong><small>只表明窗口焦点变化</small></div>
+    <div class="stat"><span>按键周期</span><strong id="stat-pairs">0</strong><small id="stat-pending">尚未观察到按下</small></div>
+  </section>
+  <div class="work-grid">
+    <section class="panel testing-area" aria-labelledby="testing-title">
+      <div class="section-title"><h2 id="testing-title">交互靶场</h2><span class="tag">使用合成数据</span></div>
+      <label for="test-input">单行输入 · 检查焦点、修饰键与误输入</label><input id="test-input" autocomplete="off" spellcheck="false" value="Superb 测试 123 — 不含真实题目或密钥">
+      <label for="test-autocomplete">自动补全 · 输入 AL，选择 ALPHA-TEST-ONE</label><input id="test-autocomplete" list="synthetic-suggestions" autocomplete="off" spellcheck="false" placeholder="仅使用合成选项">
+      <datalist id="synthetic-suggestions"><option value="ALPHA-TEST-ONE"></option><option value="ALPHA-TEST-TWO"></option><option value="BETA-TEST-THREE"></option></datalist>
+      <p class="muted small">此项测试 Chrome 的 datalist 建议弹窗，不代表地址栏建议或个人资料自动填充。</p>
+      <label for="test-textarea">多行输入 · 手动选择、复制、剪切、粘贴</label><textarea id="test-textarea" rows="4" spellcheck="false">合成文本 ALPHA 123
+第二行 BETA 456
+选择这一段进行复制与粘贴测试。</textarea>
+      <div class="target-actions"><button id="click-target">点击靶标 <span id="click-count">0</span></button><button id="reset-input">还原测试文本</button><button id="fullscreen-toggle">切换网页全屏</button></div>
+      <div id="selection-target" class="selection-target" tabindex="0">可选择文本区域：按住鼠标拖选这里，随后切换浮窗、复制或按快捷键。选区日志只保存字符长度，不保存正文。</div>
+      <div id="drop-target" class="drop-target" tabindex="0">拖放测试区 · 只记类型和文件数量，禁止默认打开文件</div>
+      <div class="key-monitor"><span class="eyebrow">当前可见按键周期</span><p id="key-state">开始记录后，在测试输入框按键。</p><p id="cycle-warning" class="muted small">长按、切换窗口及操作系统保留键可能造成周期不完整，提示仅供人工核对。</p></div>
+    </section>
+    <section class="panel cases-panel" aria-labelledby="cases-title">
+      <div class="section-title"><h2 id="cases-title">精选对抗测试</h2><span id="case-progress" class="tag">0 / 0 已记录</span></div>
+      <p class="muted small">先点“开始本项”留时间标记，再操作 Superb；选择结果记录本项结束时间。“已核对”表示人工声明，证据完整性另行提示，网页不会自动判断通过。</p>
+      <div id="test-cases"></div>
+    </section>
+  </div>
+  <section class="panel audit-panel" aria-labelledby="audit-title">
+    <div class="section-title"><h2 id="audit-title">本机窗口审计 · 外部证据</h2><span id="audit-state" class="tag">尚未导入</span></div>
+    <p class="muted small">本页不能直接枚举桌面窗口。选择本机审计 JSON 后仅在内存解析，不上传、不执行内容。窗口标题可能含敏感信息；仅使用专用测试会话。</p>
+    <div class="audit-controls"><label for="audit-file">导入 superb-window-audit/v1（最多 4 MiB）<input id="audit-file" type="file" accept="application/json,.json"></label><button id="audit-clear">移除导入</button><label class="inline-check"><input id="audit-target-only" type="checkbox" checked> 目标进程 / 归属未知</label><label for="audit-snapshot">快照<select id="audit-snapshot" disabled><option>尚未导入</option></select></label></div>
+    <p id="audit-message" class="audit-message small" role="status">导入后将显示时间范围、窗口特征和读取限制。零窗口不等于没有窗口或不可检测。</p>
+    <div class="evidence-columns">
+      <div><h3>窗口快照中的复核线索</h3><p id="audit-summary" class="muted small">未导入本机窗口证据。</p><p class="muted small">置顶、工具窗口、透明等样式是普通 Win32 属性；不能单独证明异常。显示亲和性是设置值，不能代替截图结果验证。</p></div>
+      <div><h3>网页直接观察到的事件</h3><p id="browser-evidence-summary" class="muted small">尚未记录。</p><p class="muted small">下方浏览器日志保持独立。桌面审计结果不会计入网页事件或 isTrusted 计数。</p></div>
+    </div>
+    <div id="audit-viewport" class="table-viewport audit-viewport" tabindex="0" aria-label="本机窗口快照，可滚动"><table><thead><tr><th>窗口 / 进程</th><th>标题 / 类名</th><th>复核线索</th><th>内容保护 / 范围</th></tr></thead><tbody id="audit-windows"><tr><td colspan="4" class="empty">手动导入本机审计 JSON 后查看。</td></tr></tbody></table></div>
+    <details class="counts-details"><summary>来源声明与读取限制</summary><pre id="audit-source">未导入</pre></details>
+  </section>
+  <section class="panel correlation-panel" aria-labelledby="correlation-title">
+    <div class="section-title"><h2 id="correlation-title">逐项证据核对</h2><span class="tag">不自动判定通过</span></div>
+    <p class="muted small">只按 ISO 时间并列同一时间区间的记录。请使用同一台机器并核对时钟；时间接近不能证明因果。计数是保留的日志行，捕获 / 冒泡可能重复；控制按钮和标记不作为靶场事件。</p>
+    <div id="correlation-viewport" class="table-viewport correlation-viewport" tabindex="0" aria-label="逐项证据核对，可滚动"><table><thead><tr><th>测试 / 人工结果</th><th>网页记录</th><th>本机快照</th><th>证据状态</th></tr></thead><tbody id="correlation-rows"></tbody></table></div>
+  </section>
+  <section class="panel timeline-panel" aria-labelledby="timeline-title">
+    <div class="section-title"><h2 id="timeline-title">时间线标记</h2><span class="muted small">手工说明原生动作是否发生、网页是否受影响</span></div>
+    <div class="mark-form"><input id="marker-note" maxlength="500" placeholder="例：已确认两点截图进入选区，网页未收到选点点击" aria-label="本轮标记备注"><button id="add-marker">添加标记</button></div>
+    <ol id="markers"><li class="muted">暂无标记</li></ol>
+  </section>
+  <section class="panel log-panel" aria-labelledby="log-title">
+    <div class="section-title"><h2 id="log-title">浏览器事件记录</h2><span id="filter-summary" class="tag">0 条匹配</span></div>
+    <div class="filters">
+      <label>筛选 <input id="search-filter" type="search" placeholder="事件、按键、目标或标记"></label>
+      <label>传播阶段 <select id="phase-filter"><option value="all">全部阶段</option><option value="capture">捕获</option><option value="bubble">冒泡</option><option value="observe">其他观测</option></select></label>
+      <label>可信来源 <select id="trust-filter"><option value="all">全部</option><option value="true">isTrusted = true</option><option value="false">isTrusted = false</option></select></label>
+      <fieldset id="category-filters"><legend>事件类别</legend></fieldset>
+    </div>
+    <div id="log-viewport" class="table-viewport" tabindex="0" aria-label="事件日志，可滚动"><table><thead><tr><th>时间</th><th>事件 / 阶段</th><th>目标</th><th>详情</th></tr></thead><tbody id="event-log"><tr><td colspan="4" class="empty">点击“开始记录”，再在靶场进行操作。</td></tr></tbody></table></div>
+    <details id="json-details" class="counts-details"><summary>本轮 JSON 只读预览（手动刷新）</summary><p class="muted small">点击顶部“查看 JSON”更新；此处不自动刷新或保存。</p><textarea id="json-preview" readonly rows="12" spellcheck="false" aria-label="本轮 JSON 只读预览"></textarea></details>
+    <details class="counts-details"><summary>全部事件计数与浏览器环境</summary><pre id="environment"></pre><div id="event-counts" class="event-counts"></div></details>
+  </section>
+</main>
+<footer>本地诊断工具 · 不联网 · 不写 localStorage / IndexedDB / Cookie · 刷新关闭即丢失内存记录</footer>
+</body>
+</html>

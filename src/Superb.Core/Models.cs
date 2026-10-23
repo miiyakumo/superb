@@ -36,8 +36,8 @@ public sealed record Pipeline(string Version, ImmutableArray<ProcessStep> Steps)
 }
 public sealed record Backend(string Id, string Name, string Endpoint, string Model, string CredentialRef,
     bool SupportsImages = false, bool AllowLoopbackHttp = false, bool Stream = true,
-    int TimeoutSeconds = 120, int MaxInputBytes = 8_388_608, int MaxOutputChars = 200_000,
-    double Temperature = 0.2, int MaxTokens = 4096, string Adapter = "chat-completions",
+    int TimeoutSeconds = 120, int MaxInputBytes = 8_388_608, int MaxOutputChars = 1_000_000,
+    double Temperature = 0.2, int MaxTokens = Policy.DefaultOutputTokens, string Adapter = "chat-completions",
     ProxyMode ProxyMode = ProxyMode.Direct, string ProxyAddress = "",
     bool SendTemperature = true, TokenLimitParameter TokenLimitParameter = TokenLimitParameter.MaxTokens,
     ThinkingMode ThinkingMode = ThinkingMode.Default);
