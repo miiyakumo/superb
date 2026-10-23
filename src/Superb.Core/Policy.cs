@@ -57,35 +57,3 @@ public static class Policy
             images.Sum(i => (long)i.Width * i.Height) > MaximumPixels) throw new SafeFailure("image_dimensions_invalid");
     }
 }
-
-public interface IImageProcessor { Payload Apply(Payload input, ProcessStep step); }
-public static class Preprocessor
-{
-    public static Payload Process(Payload input, Pipeline pipeline, IImageProcessor images, Action<string>? status = null)
-    {
-        var current = input;
-        foreach (var step in pipeline.Steps)
-        {
-            try
-            {
-                var candidate = step.Kind switch
-                {
-                    StepKind.NormalizeText => current with { Text = current.Text?.Replace("\r\n", "\n").Replace('\r', '\n').Trim() },
-                    StepKind.Template when step.Template.Contains("{input}", StringComparison.Ordinal) =>
-                        current with { Text = step.Template.Replace("{input}", current.Text ?? "", StringComparison.Ordinal) },
-                    StepKind.Template => throw new SafeFailure("template_missing_placeholder"),
-                    StepKind.Crop or StepKind.Mask or StepKind.Resize => images.Apply(current, step),
-                    _ => throw new SafeFailure("processing_step_unknown")
-                };
-                if (candidate.Size > Policy.AbsoluteInputLimit) throw new SafeFailure("processed_input_too_large");
-                current = candidate;
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                if (step.Required || !step.SkipOnFailure) throw new SafeFailure("processing_required_failed");
-                status?.Invoke("optional_step_skipped:" + step.Kind);
-            }
-        }
-        return current;
-    }
-}

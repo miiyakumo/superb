@@ -47,8 +47,8 @@ public static class ConnectionDiagnostics
         "model_list_empty" => "此账户没有可用模型；请检查模型权限。",
         "model_list_invalid" => "模型列表格式不正确；请在高级连接设置中手动配置。",
         "probe_empty_response" => "连接成功但未收到文本；请在高级连接设置中检查模型与生成参数。",
-        "config_too_large" => "配置文件超过 1 MiB，请缩短提示词、模板或减少场景后再保存。",
-        "scene_invalid" => "场景配置无效；检查名称、模板中的 {input}、温度和 token 上限。",
+        "config_too_large" => "配置文件超过 1 MiB，请缩短提示词或减少场景后再保存。",
+        "scene_invalid" => "场景配置无效；检查名称、系统提示词和模型连接。",
         "scene_backend_missing" => "场景指定的后端不存在，请重新选择并保存。",
         "scene_missing" => "场景已不存在，请重新选择。",
         "hotkey_duplicate" or "hotkey_action_duplicate" => "快捷键重复；请为每个已启用动作选择不同绑定。",
@@ -60,7 +60,6 @@ public static class ConnectionDiagnostics
         "system_prompt_invalid" => "系统提示词过长或无效。",
         "input_empty" => "请先输入问题。",
         "backend_missing" => "请先到“连接模型”完成配置。",
-        "capture_target_missing" => "请先到高级设置选择截图范围。",
         "capture_selection_unavailable" => "无法启动两点选择，请取消后重试。",
         "capture_cross_monitor" => "两个角需要位于同一显示器，请重新选择。",
         "capture_region_too_small" => "截图区域太小，请重新选择两个角。",
@@ -82,14 +81,14 @@ public static class ConnectionDiagnostics
         "response_format_invalid" or "response_encoding_invalid" => "响应不符合 Chat Completions 格式；检查是否误填网页、Responses 或其他协议端点。",
         "tool_calls_not_supported" => "后端返回了工具调用；当前只支持文本或图像问答。",
         "response_not_complete" => "后端未正常完成回答；检查输出 token 上限或内容过滤。",
-        "response_token_limit" => "本次输出 token 已用尽（思考也可能占用额度）；在场景或模型设置提高上限后重新发送。",
+        "response_token_limit" => "本次输出 token 已用尽（思考也可能占用额度）；在模型连接设置提高上限后重新发送。",
         "response_content_filtered" => "后端内容过滤中止了回答；未将部分内容标为完成。",
         "response_interrupted" => "后端中断了生成；可手动重新回答，不会自动重试。",
         "response_empty" => "后端结束了请求，但没有返回回答正文；未标为成功，可检查模型设置后重新发送。",
         "thinking_mode_unsupported" => "思考模式开关仅适用于 DeepSeek 官方端点；其他后端请选择“沿用模型默认”。",
         "proxy_address_invalid" => "代理地址无效；使用 http://主机:端口、https://主机:端口 或 socks5://主机:端口，不附带密码。",
         "endpoint_invalid" or "encrypted_transport_required" => "检查完整 HTTPS 端点；仅显式授权的 IP 回环端点可使用 HTTP。",
-        "backend_has_no_vision" => "当前后端未启用图像能力。",
+        "backend_has_no_vision" => "当前模型连接不支持图片，请更换支持图像的模型连接后发送。",
         _ => "请检查已保存的后端、协议和网络配置；错误详情不会包含正文或密钥。"
     };
     public static string Describe(string? code) => $"{code ?? "backend_request_failed"} · {Explain(code)}";
@@ -110,7 +109,7 @@ public static class BackendProbe
             timeout.CancelAfter(TimeSpan.FromSeconds(backend.TimeoutSeconds));
             var payload = Payload.FromText(TestPrompt);
             var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ClipboardText, payload, 0, DateTimeOffset.UtcNow);
-            var request = new PreparedRequest(snapshot, payload, Pipeline.Direct, backend);
+            var request = new PreparedRequest(snapshot, payload, backend);
             var length = 0L;
             await foreach (var item in client.SendAsync(request, timeout.Token))
             {

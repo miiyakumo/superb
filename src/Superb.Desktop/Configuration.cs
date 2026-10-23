@@ -10,18 +10,13 @@ namespace Superb.Desktop;
 internal sealed record PanelLayout(double Left = 80, double Top = 80, double Width = 600, double Height = 740, double FontSize = 18, bool Visible = false, double BackgroundOpacity = 1, string Theme = Theme.InkId, string Accent = "", string CustomBase = "", string CustomInk = "");
 internal sealed record Configuration
 {
-    public int SchemaVersion { get; init; } = 2;
+    public int SchemaVersion { get; init; } = 4;
     public ImmutableArray<Backend> Backends { get; init; } = [];
     public string SelectedBackendId { get; init; } = "";
-    public Routing Routing { get; init; } = new();
-    public Pipeline Pipeline { get; init; } = Pipeline.Direct;
-    public CaptureTarget? Capture { get; init; }
     public bool AutoCopy { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExclusiveReaderKeys { get; init; }
-    public bool CombineCaptureAndSend { get; init; }
     public bool ClearOwnedClipboardOnPause { get; init; } = true;
-    public int SyncMinutes { get; init; } = 10;
     public PanelLayout Panel { get; init; } = new();
     public bool ExclusiveHotkeysEnabled { get; init; }
     public ImmutableArray<ScenePreset> Scenes { get; init; } = SceneDefaults.All;
@@ -35,17 +30,27 @@ internal sealed record Configuration
         return this with
         {
             Backends = remaining,
-            SelectedBackendId = SelectedBackendId == id ? remaining.FirstOrDefault()?.Id ?? "" : SelectedBackendId,
-            Routing = new(Routing.TextBackendId == id ? null : Routing.TextBackendId,
-                Routing.ImageBackendId == id ? null : Routing.ImageBackendId)
+            SelectedBackendId = SelectedBackendId == id ? remaining.FirstOrDefault()?.Id ?? "" : SelectedBackendId
         };
     }
     public Configuration Migrate()
     {
-        if (SchemaVersion is not (1 or 2)) throw new SafeFailure("config_invalid");
-        if (Hotkeys.IsDefault || Scenes.IsDefault) throw new SafeFailure("config_invalid");
+        if (SchemaVersion is not (1 or 2 or 3 or 4)) throw new SafeFailure("config_invalid");
+        if (Hotkeys.IsDefault || Scenes.IsDefault || Backends.IsDefault || Scenes.Any(s => s is null)) throw new SafeFailure("config_invalid");
         var legacy = SchemaVersion == 1;
         var keys = Hotkeys;
+        if (keys.Any(k => k is null)) throw new SafeFailure("hotkey_invalid");
+        if (keys.Count(k => k.Action == "ask") > 1 || keys.Count(k => k.Action == "send") > 1)
+            throw new SafeFailure("hotkey_action_duplicate");
+        // Keep a customized send binding (including its disabled state). Otherwise prefer
+        // the enabled former workspace shortcut. The backup retains the discarded alias.
+        var send = keys.FirstOrDefault(k => k.Action == "send");
+        var ask = keys.FirstOrDefault(k => k.Action == "ask");
+        if (ask is not null)
+        {
+            var binding = send is null || (send == new Hotkey("send", "Ctrl+Alt+7") && ask.Enabled) ? ask : send;
+            keys = keys.Where(k => k.Action is not ("ask" or "send")).Append(binding with { Action = "send" }).ToImmutableArray();
+        }
         var used = new HashSet<(System.Windows.Input.Key, System.Windows.Input.ModifierKeys)>();
         Hotkey Reserve(Hotkey key)
         {
@@ -72,29 +77,74 @@ internal sealed record Configuration
             if (scene.Trigger.Enabled) { var gesture = HotkeyDefaults.Parse(scene.Trigger); used.Add((gesture.Key, gesture.Modifiers)); }
         foreach (var key in HotkeyDefaults.All)
             if (!keys.Any(k => k.Action == key.Action)) keys = keys.Add(Reserve(key));
-        // Upgrade only the untouched stock prompt; retain user prompts, routes and generation limits.
+        // Upgrade only the untouched stock prompt; retain user prompts and generation limits.
         if (scenes.Any(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt))
             scenes = scenes.Select(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt
                 ? scene with { SystemPrompt = SceneDefaults.AlgorithmPrompt } : scene).ToImmutableArray();
-        return this with { SchemaVersion = 2, Hotkeys = keys, Scenes = scenes, ExclusiveHotkeysEnabled = ExclusiveHotkeysEnabled || ExclusiveReaderKeys, ExclusiveReaderKeys = false };
+        var connections = Backends.ToList();
+        if (scenes.Any(scene => scene.LegacySettings is not null))
+            scenes = scenes.Select(scene => MigrateScene(scene, connections)).ToImmutableArray();
+        return this with { SchemaVersion = 4, Backends = connections.Count == Backends.Length ? Backends : connections.ToImmutableArray(), Hotkeys = keys, Scenes = scenes,
+            ExclusiveHotkeysEnabled = ExclusiveHotkeysEnabled || ExclusiveReaderKeys, ExclusiveReaderKeys = false };
     }
+    private ScenePreset MigrateScene(ScenePreset scene, List<Backend> connections)
+    {
+        if (scene.LegacySettings is not { } old) return scene;
+        string? Text(string key) => old.TryGetValue(key, out var value) && value.ValueKind != JsonValueKind.Null ? value.GetString() : null;
+        var model = Text("Model");
+        var temperature = old.TryGetValue("Temperature", out var temp) && temp.ValueKind != JsonValueKind.Null ? temp.GetDouble() : (double?)null;
+        var tokens = old.TryGetValue("MaxTokens", out var limit) && limit.ValueKind != JsonValueKind.Null ? limit.GetInt32() : (int?)null;
+        var result = scene with { LegacySettings = null };
+        if (!string.IsNullOrWhiteSpace(model) || temperature is not null || tokens is not null)
+        {
+            var original = connections.FirstOrDefault(b => b.Id == (scene.BackendId ?? SelectedBackendId))
+                ?? throw new SafeFailure("scene_backend_missing");
+            var configured = original with { Model = string.IsNullOrWhiteSpace(model) ? original.Model : model,
+                Temperature = temperature ?? original.Temperature, MaxTokens = tokens ?? original.MaxTokens };
+            Policy.ValidateBackend(configured);
+            if (configured != original)
+            {
+                var id = "scene-" + scene.Id;
+                for (var suffix = 1; connections.Any(b => b.Id == id); suffix++) id = "scene-" + scene.Id + "-" + suffix;
+                connections.Add(configured with { Id = id, Name = (scene.Name.Length > 70 ? scene.Name[..70] : scene.Name) + " · 模型配置" });
+                result = result with { BackendId = id };
+            }
+        }
+        // Custom template instructions move into the system prompt; input is always appended directly.
+        var template = Text("UserTemplate");
+        if (!string.IsNullOrWhiteSpace(template) && template != "{input}" &&
+            template != "请协助处理以下开发任务：\n\n{input}" && template != "请分析并解答以下算法题：\n\n{input}")
+        {
+            var instruction = template.Replace("{input}", "", StringComparison.Ordinal).Trim();
+            if (instruction.Length > 0) result = result with { SystemPrompt = result.SystemPrompt + "\n\n" + instruction };
+        }
+        return result;
+    }
+
     public static JsonSerializerOptions Json { get; } = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
     public static string FilePath { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Superb", "settings.json");
-    public static Configuration Load()
+    public static Configuration Load() => Load(FilePath);
+    internal static Configuration Load(string path)
     {
-        if (!File.Exists(FilePath)) return new();
-        if (new FileInfo(FilePath).Length > 1_048_576) throw new SafeFailure("config_too_large");
-        var config = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(FilePath), Json) ?? throw new SafeFailure("config_invalid");
+        if (!File.Exists(path)) return new();
+        if (new FileInfo(path).Length > 1_048_576) throw new SafeFailure("config_too_large");
+        var config = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(path), Json) ?? throw new SafeFailure("config_invalid");
+        var upgrade = config.SchemaVersion < 4 || (!config.Scenes.IsDefault && config.Scenes.Any(s => s?.LegacySettings is { Count: > 0 })) || (!config.Hotkeys.IsDefault && config.Hotkeys.Any(k => k?.Action == "ask"));
         config = config.Migrate();
         config.Validate();
-        // HWNDs are session scoped and must never be reused across process launches.
-        return config.Capture?.Kind == CaptureKind.Window ? config with { Capture = null } : config;
+        if (upgrade)
+        {
+            // Preserve the exact old settings before removed fields are dropped on disk.
+            File.Copy(path, path + ".upgrade-" + Guid.NewGuid().ToString("N") + ".bak", false);
+            config.Save(path);
+        }
+        return config;
     }
     public void Validate()
     {
-        if (SchemaVersion != 2 || Scenes.IsDefault || Scenes.Length > 24 || Backends.IsDefault || Hotkeys.IsDefault || Pipeline is null || Pipeline.Steps.IsDefault ||
-            Routing is null || Panel is null || SyncMinutes is < 1 or > 60 || Backends.Length > 32 || Hotkeys.Length > 32 ||
-            Pipeline.Steps.Length > 32 || string.IsNullOrWhiteSpace(Pipeline.Version)) throw new SafeFailure("config_invalid");
+        if (SchemaVersion != 4 || Scenes.IsDefault || Scenes.Length > 24 || Backends.IsDefault || Hotkeys.IsDefault ||
+            // Leave room for up to 24 migrated scene connections alongside the previous 32.
+            Panel is null || Backends.Length > 64 || Hotkeys.Length > 32) throw new SafeFailure("config_invalid");
         foreach (var b in Backends) Policy.ValidateBackend(b);
         if (Hotkeys.Any(k => k is null || !HotkeyDefaults.All.Any(d => d.Action == k.Action))) throw new SafeFailure("hotkey_invalid");
         if (HotkeyDefaults.All.Any(d => !Hotkeys.Any(k => k.Action == d.Action))) throw new SafeFailure("hotkey_required_action_missing");
@@ -103,31 +153,29 @@ internal sealed record Configuration
         {
             if (string.IsNullOrWhiteSpace(scene.Id) || scene.Id.Length > 64 || scene.Id.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-') ||
                 string.IsNullOrWhiteSpace(scene.Name) || scene.Name.Length > 80 || scene.SystemPrompt is null || scene.SystemPrompt.Length > 16000 ||
-                scene.UserTemplate is null || scene.UserTemplate.Length > 16000 || !scene.UserTemplate.Contains("{input}", StringComparison.Ordinal) ||
-                !Enum.IsDefined(scene.Input) || scene.Trigger is null || scene.Trigger.Action != scene.Action || scene.Model is null || scene.Model.Length > 256 ||
-                (scene.Temperature is { } temp && (!double.IsFinite(temp) || temp is < 0 or > 2)) ||
-                (scene.MaxTokens is { } tokens && tokens is < 1 or > Policy.MaximumDeepSeekOutputTokens))
+                scene.Trigger is null || scene.Trigger.Action != scene.Action)
                 throw new SafeFailure("scene_invalid");
             if (scene.BackendId is not null && !Backends.Any(b => b.Id == scene.BackendId)) throw new SafeFailure("scene_backend_missing");
         }
         HotkeyDefaults.Validate(AllHotkeys());
         if (Backends.Select(x => x.Id).Distinct().Count() != Backends.Length) throw new SafeFailure("backend_id_duplicate");
-        foreach (var id in new[] { SelectedBackendId, Routing.TextBackendId, Routing.ImageBackendId }.Where(x => !string.IsNullOrEmpty(x)))
-            if (!Backends.Any(x => x.Id == id)) throw new SafeFailure("route_backend_missing");
+        if (!string.IsNullOrEmpty(SelectedBackendId) && !Backends.Any(x => x.Id == SelectedBackendId))
+            throw new SafeFailure("backend_missing");
         if (!double.IsFinite(Panel.Left) || !double.IsFinite(Panel.Top) || !double.IsFinite(Panel.Width) || !double.IsFinite(Panel.Height) ||
             Panel.Width is < 360 or > 1800 || Panel.Height is < 240 or > 1600 || Panel.FontSize is < 11 or > 36 || !double.IsFinite(Panel.FontSize) ||
             !double.IsFinite(Panel.BackgroundOpacity) || Panel.BackgroundOpacity is < 0.25 or > 1 ||
             !Theme.TryResolve(Panel.Theme, Panel.Accent, Panel.CustomBase, Panel.CustomInk, out _, out _))
             throw new SafeFailure("panel_layout_invalid");
     }
-    public void Save()
+    public void Save() => Save(FilePath);
+    internal void Save(string path)
     {
         Validate();
         var json = JsonSerializer.Serialize(this, Json);
         if (System.Text.Encoding.UTF8.GetByteCount(json) > 1_048_576) throw new SafeFailure("config_too_large");
-        Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-        var temp = FilePath + ".new";
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + ".new";
         File.WriteAllText(temp, json);
-        File.Move(temp, FilePath, true);
+        File.Move(temp, path, true);
     }
 }

@@ -25,7 +25,8 @@ internal static class AlgorithmDiagnostic
             {
                 var limit = int.Parse(args[tokenIndex + 1], CultureInfo.InvariantCulture);
                 if (limit is not (4096 or 16384 or 65536)) throw new SafeFailure("diagnostic_limit_invalid");
-                scene = scene with { MaxTokens = limit };
+                var selected = SceneRequestFactory.SelectBackend(config, scene);
+                config = config with { Backends = config.Backends.Replace(selected, selected with { MaxTokens = limit }) };
             }
             const string problem = "3863. Minimum Operations to Sort a String\n\n" +
                 "Given a string s consisting of lowercase English letters.\n" +
@@ -47,7 +48,7 @@ internal static class AlgorithmDiagnostic
             }
             var bitmap = new RenderTargetBitmap(1120, 800, 96, 96, PixelFormats.Pbgra32); bitmap.Render(visual);
             var payload = ImageProcessor.Encode(bitmap);
-            var request = SceneRequestFactory.Prepare(config, scene, new(Guid.NewGuid(), InputKind.Screen, payload, 0, DateTimeOffset.UtcNow), new ImageProcessor());
+            var request = SceneRequestFactory.Prepare(config, scene, new(Guid.NewGuid(), InputKind.Screen, payload, 0, DateTimeOffset.UtcNow));
             if (args.Contains("--direct-answer")) request = request with { Backend = request.Backend with { ThinkingMode = ThinkingMode.Disabled } };
             if (args.Contains("--timeout-300")) request = request with { Backend = request.Backend with { TimeoutSeconds = 300 } };
             if (request.Backend.Endpoint != DeepSeekSetup.Endpoint || request.Backend.Model != "deepseek-flash")

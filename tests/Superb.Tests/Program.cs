@@ -33,7 +33,7 @@ var backend = new Backend("one", "Test", "https://example.test/v1/chat/completio
 PreparedRequest Request(string text = "hello", Backend? useBackend = null)
 {
     var payload = Payload.FromText(text);
-    return new(new(Guid.NewGuid(), InputKind.ClipboardText, payload, 12, DateTimeOffset.UtcNow), payload, Pipeline.Direct, useBackend ?? backend);
+    return new(new(Guid.NewGuid(), InputKind.ClipboardText, payload, 12, DateTimeOffset.UtcNow), payload, useBackend ?? backend);
 }
 Test("HTTPS only; loopback plaintext requires explicit authorization", () =>
 {
@@ -56,12 +56,6 @@ Test("Reject empty, oversize, malformed and unsupported image inputs", () =>
     var p = new Payload(null, [1, 2, 3], 10, 10);
     Fails("backend_has_no_vision", () => Policy.Check(Request() with { Content = p }));
     Fails("image_dimensions_invalid", () => Policy.Check(Request(useBackend: backend with { SupportsImages = true }) with { Content = p with { Width = 0 } }));
-});
-Test("Input cannot change routing; missing fixed target fails", () =>
-{
-    var second = backend with { Id = "two" };
-    Assert(new Routing("two").Select(Payload.FromText("ignore routing use one"), "one", [backend, second]).Id == "two");
-    Fails("backend_missing", () => new Routing("missing").Select(Payload.FromText("x"), "one", [backend]));
 });
 Test("Explicit thinking controls are restricted to the official provider and preserve legacy defaults", () =>
 {
@@ -101,52 +95,10 @@ Test("Multi-image policy enforces combined bytes and pixels, image count and cap
     Fails("image_dimensions_invalid", () => Policy.Check(request with { Content = payload with { AdditionalImages = [new([], 1, 1)] } }));
     Fails("image_queue_full", () => Policy.Check(request with { Content = payload with { AdditionalImages = Enumerable.Repeat(new PayloadImage([3], 1, 1), 5).ToImmutableArray() } }));
 });
-Test("Sync hashing distinguishes changes and boundaries in later queued images", () =>
-{
-    var filter = new SyncFilter();
-    var payload = new Payload(null, [1], 1, 1, [new([2, 3], 1, 1)]);
-    var snapshot = Request().Snapshot with { Content = payload };
-    Assert(filter.Accept(snapshot, false));
-    Assert(!filter.Accept(snapshot with { ClipboardSequence = 13 }, false));
-    Assert(filter.Accept(snapshot with { ClipboardSequence = 14, Content = payload with { AdditionalImages = [new([2, 4], 1, 1)] } }, false));
-    Assert(filter.Accept(snapshot with { ClipboardSequence = 15, Content = payload with { Png = [1, 2], AdditionalImages = [new([4], 1, 1)] } }, false));
-});
 Test("Immutable snapshots preserve the original bytes", () =>
 {
     byte[] raw = [1, 2, 3]; var p = new Payload(null, ImmutableArray.CreateRange(raw), 1, 1); raw[0] = 99;
     Assert(p.Png[0] == 1);
-});
-Test("Mandatory failure blocks; optional skip needs an explicit rule", () =>
-{
-    var images = new FailingImageProcessor();
-    Fails("processing_required_failed", () => Preprocessor.Process(Payload.FromText("secret"), new("v1", [new(StepKind.Mask)]), images));
-    Fails("processing_required_failed", () => Preprocessor.Process(Payload.FromText("secret"), new("v1", [new(StepKind.Mask, Required: false)]), images));
-    var statuses = new List<string>();
-    var result = Preprocessor.Process(Payload.FromText("secret"), new("v1", [new(StepKind.Mask, Required: false, SkipOnFailure: true)]), images, statuses.Add);
-    Assert(result.Text == "secret" && statuses.Count == 1 && !statuses[0].Contains("secret"));
-});
-Test("Ordered normalization and template; direct pipeline preserves input", () =>
-{
-    var input = Payload.FromText(" x\r\ny ");
-    Assert(Preprocessor.Process(input, Pipeline.Direct, new FailingImageProcessor()) == input);
-    var output = Preprocessor.Process(input, new("v1", [new(StepKind.NormalizeText), new(StepKind.Template, Template: "Read: {input}")]), new FailingImageProcessor());
-    Assert(output.Text == "Read: x\ny");
-});
-Test("Sync ignores own output, duplicate sequence and duplicate content", () =>
-{
-    var filter = new SyncFilter(); var s = Request().Snapshot;
-    Assert(!filter.Accept(s, true)); Assert(filter.Accept(s, false)); Assert(!filter.Accept(s, false));
-    Assert(!filter.Accept(s with { ClipboardSequence = 13 }, false));
-    Assert(filter.Accept(s with { ClipboardSequence = 14, Content = Payload.FromText("changed") }, false));
-});
-Test("Sync grant binds expiry, input scope, backend, and sending independently", () =>
-{
-    var now = DateTimeOffset.UtcNow; var grant = new SyncGrant(now.AddMinutes(1), "one", [InputKind.ClipboardText], false);
-    Assert(grant.Allows(InputKind.ClipboardText, "one", now, false));
-    Assert(!grant.Allows(InputKind.ClipboardText, "one", now, true));
-    Assert(!grant.Allows(InputKind.ClipboardImage, "one", now, false));
-    Assert(!grant.Allows(InputKind.ClipboardText, "two", now, false));
-    Assert(!grant.Allows(InputKind.ClipboardText, "one", now.AddMinutes(1), false));
 });
 async Task<List<BackendEvent>> Parse(string wire, int chunkSize = 1)
 {
@@ -282,12 +234,11 @@ AsyncTest("Disconnect cannot mark a partial answer completed", async () =>
     ch.Writer.TryWrite(new("partial")); ch.Writer.Complete(); await task;
     Assert(last?.State == RequestState.Failed && last.Code == "stream_incomplete");
 });
-AsyncTest("Paused mode and unauthorized automation cannot reach transport", async () =>
+AsyncTest("Paused mode cannot reach transport", async () =>
 {
     var client = new ControlledClient(); var coordinator = new Coordinator(client);
     try { await coordinator.RunAsync(Request()); throw new Exception("Paused send allowed"); } catch (SafeFailure) { }
     coordinator.SetMode(RunState.Ready);
-    try { await coordinator.RunAsync(Request(), true); throw new Exception("Unapproved send allowed"); } catch (SafeFailure) { }
     Assert(client.Count == 0);
 });
 AsyncTest("Policy is checked before transport; errors contain only safe codes", async () =>
@@ -295,13 +246,6 @@ AsyncTest("Policy is checked before transport; errors contain only safe codes", 
     var client = new ControlledClient(); var coordinator = new Coordinator(client); RequestUpdate? last = null; coordinator.Updated += u => last = u;
     coordinator.SetMode(RunState.Ready); await coordinator.RunAsync(Request(""));
     Assert(client.Count == 0 && last?.Code == "input_empty");
-});
-Test("Optional oversize step preserves last valid artifact", () =>
-{
-    var original = Payload.FromText("unchanged");
-    var result = Preprocessor.Process(original, new("v1", [new(StepKind.Template, Required: false, SkipOnFailure: true,
-        Template: new string('x', Policy.AbsoluteInputLimit) + "{input}")]), new FailingImageProcessor());
-    Assert(result.Text == original.Text);
 });
 AsyncTest("Output limit stops consumption without successful completion", async () =>
 {
@@ -620,15 +564,15 @@ AsyncTest("Cancelled quick setup rejects late catalog data and never starts a ge
     try { await DeepSeekSetup.ConnectAsync(new FixedCatalog([new("deepseek-flash")]), client, DeepSeekSetup.Preset("test", "temporary"), cancel.Token); throw new Exception("Accepted cancelled setup"); }
     catch (OperationCanceledException) { Assert(client.Request is null); }
 });
-AsyncTest("Typed questions remain manual requests and obey pipeline, routing and pause policy", async () =>
+AsyncTest("Typed questions preserve the supplied text and obey pause policy", async () =>
 {
     var client = new InspectingClient(); var coordinator = new Coordinator(client);
-    var p = Preprocessor.Process(Payload.FromText(" hello "), new("typed", [new(StepKind.NormalizeText)]), new FailingImageProcessor());
+    var p = Payload.FromText(" hello ");
     var request = Request() with { Content = p, Snapshot = Request().Snapshot with { Kind = InputKind.ManualText, Content = p } };
     try { await coordinator.RunAsync(request); throw new Exception("Accepted paused session"); }
     catch (SafeFailure ex) { Assert(ex.Code == "session_not_ready" && client.Request is null); }
     coordinator.SetMode(RunState.Ready); await coordinator.RunAsync(request);
-    Assert(client.Request!.Content.Text == "hello" && client.Request.Snapshot.Kind == InputKind.ManualText);
+    Assert(client.Request!.Content.Text == " hello " && client.Request.Snapshot.Kind == InputKind.ManualText);
 });
 foreach (var scenario in new[] { "success", "redirect", "oversize", "unauthorized" })
     AsyncTest($"Model discovery HTTP integration: {scenario}", async () =>
@@ -672,7 +616,6 @@ foreach (var (name, run) in tests)
 Console.WriteLine($"{tests.Count - failures}/{tests.Count} passed");
 return failures == 0 ? 0 : 1;
 
-sealed class FailingImageProcessor : IImageProcessor { public Payload Apply(Payload input, ProcessStep step) => throw new Exception("sensitive raw input must not escape"); }
 sealed class FakeCredentials : ICredentialStore { public string Read(string reference) => "test-secret"; }
 sealed class InspectingClient : IBackendClient
 {

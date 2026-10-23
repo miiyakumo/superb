@@ -3,9 +3,8 @@ using System.Collections.Immutable;
 namespace Superb.Core;
 
 public enum InputKind { ClipboardText, ClipboardImage, Screen, ManualText }
-public enum RequestState { Idle, Capturing, Processing, AwaitingApproval, PolicyCheck, Connecting, Waiting, Streaming, Completed, Failed, Cancelled, Thinking }
+public enum RequestState { Idle, PolicyCheck, Connecting, Waiting, Streaming, Completed, Failed, Cancelled, Thinking }
 public enum RunState { Ready, Paused, Locked, ProtectionUnavailable }
-public enum StepKind { NormalizeText, Template, Crop, Mask, Resize }
 public enum ProxyMode { Direct, System, Custom }
 public enum TokenLimitParameter { MaxTokens, MaxCompletionTokens }
 public enum ThinkingMode { Default, Disabled, Enabled }
@@ -28,12 +27,6 @@ public sealed record Payload(string? Text, ImmutableArray<byte> Png, int Width =
     public static Payload FromText(string text) => new(text, []);
 }
 public sealed record InputSnapshot(Guid Id, InputKind Kind, Payload Content, uint ClipboardSequence, DateTimeOffset CapturedAt);
-public sealed record ProcessStep(StepKind Kind, bool Required = true, bool SkipOnFailure = false,
-    string Template = "{input}", PixelRect? Rectangle = null, int MaxDimension = 1600);
-public sealed record Pipeline(string Version, ImmutableArray<ProcessStep> Steps)
-{
-    public static Pipeline Direct { get; } = new("direct-v1", []);
-}
 public sealed record Backend(string Id, string Name, string Endpoint, string Model, string CredentialRef,
     bool SupportsImages = false, bool AllowLoopbackHttp = false, bool Stream = true,
     int TimeoutSeconds = 120, int MaxInputBytes = 8_388_608, int MaxOutputChars = 1_000_000,
@@ -41,21 +34,8 @@ public sealed record Backend(string Id, string Name, string Endpoint, string Mod
     ProxyMode ProxyMode = ProxyMode.Direct, string ProxyAddress = "",
     bool SendTemperature = true, TokenLimitParameter TokenLimitParameter = TokenLimitParameter.MaxTokens,
     ThinkingMode ThinkingMode = ThinkingMode.Default);
-public sealed record PreparedRequest(InputSnapshot Snapshot, Payload Content, Pipeline Pipeline, Backend Backend,
-    ImmutableArray<string> ProcessingNotices = default, string SystemPrompt = "", string? SceneId = null);
+public sealed record PreparedRequest(InputSnapshot Snapshot, Payload Content, Backend Backend,
+    string SystemPrompt = "", string? SceneId = null);
 public sealed record Attempt(Guid Id, long Generation, PreparedRequest Request);
 public sealed record RequestUpdate(Attempt Attempt, RequestState State, string Text = "", string? Code = null);
 public sealed record BackendEvent(string? Delta = null, bool Completed = false, bool Waiting = false, bool Thinking = false);
-public sealed record SyncGrant(DateTimeOffset ExpiresAt, string BackendId, ImmutableHashSet<InputKind> Inputs, bool AllowSend)
-{
-    public bool Allows(InputKind kind, string backend, DateTimeOffset now, bool sending) =>
-        now < ExpiresAt && backend == BackendId && Inputs.Contains(kind) && (!sending || AllowSend);
-}
-public sealed record Routing(string? TextBackendId = null, string? ImageBackendId = null)
-{
-    public Backend Select(Payload content, string selectedId, IEnumerable<Backend> backends)
-    {
-        var id = (content.HasImage ? ImageBackendId : TextBackendId) ?? selectedId;
-        return backends.FirstOrDefault(x => x.Id == id) ?? throw new SafeFailure("backend_missing");
-    }
-}

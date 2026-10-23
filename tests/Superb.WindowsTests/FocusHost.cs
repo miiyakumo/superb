@@ -47,7 +47,7 @@ internal static class FocusHost
             if (!exclusive) return settings;
             return settings with { ExclusiveHotkeysEnabled = true,
                 Hotkeys = settings.Hotkeys.Select(k => k.Action is "toggle" or "pageDown" or "pageUp" ? k with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(k.Action) } : k).ToImmutableArray(),
-                Scenes = settings.Scenes.Select(s => s with { Model = "model-" + s.Id, Trigger = s.Trigger with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(s.Action) } }).ToImmutableArray() };
+                Scenes = settings.Scenes.Select(s => s with { Trigger = s.Trigger with { Mode = HotkeyMode.Exclusive, Gesture = HotkeyDefaults.Exclusive(s.Action) } }).ToImmutableArray() };
         }
         var configuration = Settings(exclusiveReaderKeys);
         reader.Configure(configuration.Scenes, "algorithm", "Synthetic only", "Ctrl+Alt+E");
@@ -86,7 +86,7 @@ internal static class FocusHost
             try
             {
                 var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ManualText, Payload.FromText("Synthetic scene input " + scene.Id), 0, DateTimeOffset.UtcNow);
-                var request = SceneRequestFactory.Prepare(configuration, scene, snapshot, new ImageProcessor());
+                var request = SceneRequestFactory.Prepare(configuration, scene, snapshot);
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await foreach (var update in client.SendAsync(request, timeout.Token)) { }
                 sceneCompletions++;

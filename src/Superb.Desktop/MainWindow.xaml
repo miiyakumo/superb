@@ -37,12 +37,11 @@
   <Expander Header="端点与密钥" Margin="0,0,0,12"><StackPanel Margin="8,12,8,0">  <TextBlock Text="完整端点 URL"/><TextBox x:Name="Endpoint" ToolTip="完整地址，例如 https://你的服务/v1/chat/completions"/>
   <TextBlock Text="API 密钥（留空保留已有凭据）"/><PasswordBox x:Name="ApiKey"/>
 </StackPanel></Expander>
-  <Expander x:Name="BackendAdvancedSettings" Header="代理、能力与兼容参数" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">
+  <Expander x:Name="BackendAdvancedSettings" Header="高级连接设置" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">
     <TextBlock Text="连接方式"/><ComboBox x:Name="ProxyModePicker" SelectedIndex="0"><ComboBoxItem Content="直连（不使用代理）"/><ComboBoxItem Content="系统代理（环境变量 / Windows 用户代理）"/><ComboBoxItem Content="自定义代理"/></ComboBox>
     <TextBlock Text="自定义代理地址（仅自定义模式使用）"/><TextBox x:Name="ProxyAddressBox"/>
     <TextBlock Text="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891。选择系统或自定义代理即允许它参与连接；失败不自动切换。" Style="{StaticResource Hint}"/>
     <WrapPanel><CheckBox x:Name="Vision" Content="支持图像输入" Margin="0,6,24,10"/><CheckBox x:Name="Streaming" Content="流式输出" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="Loopback" Content="允许本机 IP 回环 HTTP"/></WrapPanel>
-    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="最大输入（MiB，1–16）"/><TextBox x:Name="InputLimit" Text="8"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="最大响应字符"/><TextBox x:Name="MaxOutput" Text="1000000"/></StackPanel></Grid>
     <TextBlock Text="温度（0–2）"/><TextBox x:Name="Temperature" Text="0.2"/>
     <CheckBox x:Name="SendTemperature" Content="发送 temperature 参数" IsChecked="True"/>
     <CheckBox x:Name="UseCompletionTokens" Content="使用 max_completion_tokens（替代 max_tokens）"/>
@@ -66,17 +65,11 @@
           <TextBlock Text="名称"/><TextBox x:Name="SceneName"/>
           <TextBlock Text="系统提示词"/><TextBox x:Name="SceneSystemPrompt" AcceptsReturn="True" Height="120" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
 
-          <Expander Header="恢复内置预设" Margin="0,0,0,16"><WrapPanel Margin="8,12,8,0"><Button Content="恢复当前预设内容" Click="RestoreScene_Click"/><Button Content="补回缺失的内置场景" Click="RestoreMissingScenes_Click"/></WrapPanel></Expander>
-          <Expander Header="消息模板、模型覆盖与一键输入来源" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">          <TextBlock Text="一键快捷键的输入来源"/><ComboBox x:Name="SceneInputPicker" SelectedIndex="0"><ComboBoxItem Content="剪贴板"/><ComboBoxItem Content="浮窗输入框"/><ComboBoxItem Content="已配置的截图范围"/></ComboBox>
-          <TextBlock Text="用户消息模板（保留 {input}）"/><TextBox x:Name="SceneUserTemplate" AcceptsReturn="True" Height="90" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
-          <TextBlock Text="场景后端"/><ComboBox x:Name="SceneBackendPicker" DisplayMemberPath="Label" SelectedValuePath="Id"/>
-          <TextBlock Text="继承时遵循当前后端与固定路由；指定场景后端时，以该后端为准，不自动切换。" Style="{StaticResource Hint}"/>
-          <TextBlock Text="模型覆盖（留空继承后端）"/><TextBox x:Name="SceneModel"/>
-          <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="温度覆盖（留空继承）"/><TextBox x:Name="SceneTemperature"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="生成 tokens 覆盖（留空继承）"/><TextBox x:Name="SceneTokens"/></StackPanel></Grid>
-          <TextBlock Text="后端禁用 temperature 时仍不发送该参数。发起键在“快捷键”页配置。" Style="{StaticResource Hint}"/>
-</StackPanel></Expander>
-          <TextBlock Text="每次请求独立；所有场景仍先执行全局预处理。输入正文不会保存，提示词与模板会保存。" Style="{StaticResource Hint}"/>
+          <TextBlock Text="模型连接（可选）"/><ComboBox x:Name="SceneBackendPicker" DisplayMemberPath="Label" SelectedValuePath="Id"/>
+          <TextBlock Text="未指定时使用当前默认连接。模型和生成参数在“模型”页配置；需要不同参数时，新建模型配置。" Style="{StaticResource Hint}"/>
+          <TextBlock Text="输入正文直接附加，任务说明放在系统提示词中。一键快捷键切换场景，使用当前工作区输入与截图队列；发起键在“快捷键”页配置。输入正文不会保存。" Style="{StaticResource Hint}"/>
           <TextBlock x:Name="SceneTriggerSummary" Style="{StaticResource Hint}"/>
+          <Expander Header="恢复内置预设" Margin="0,0,0,16"><WrapPanel Margin="8,12,8,0"><Button Content="恢复当前预设内容" Click="RestoreScene_Click"/><Button Content="补回缺失的内置场景" Click="RestoreMissingScenes_Click"/></WrapPanel></Expander>
         </StackPanel></ScrollViewer>
         <WrapPanel Grid.Row="2" Margin="0,12,0,0"><Button x:Name="SaveSceneButton" Content="保存场景" Style="{StaticResource Primary}" Click="SaveScene_Click"/><Button x:Name="OpenHotkeysButton" Content="配置发起键" Click="OpenHotkeys_Click"/></WrapPanel>
       </Grid></TabItem>
@@ -98,47 +91,17 @@
 </ScrollViewer>
         <WrapPanel Grid.Row="2" Margin="0,12,0,0"><Button x:Name="SaveHotkeysButton" Content="保存快捷键" Style="{StaticResource Primary}" Click="SaveHotkeys_Click"/><Button Content="填入默认绑定" Click="ResetHotkeys_Click"/></WrapPanel>
       </Grid></TabItem>
-      <TabItem x:Name="AdvancedTab" Header="通用与自动化"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}"><StackPanel Margin="8,18,8,0">
-        <TextBlock Text="通用与自动化" Style="{StaticResource Heading}"/>
+      <TabItem x:Name="AdvancedTab" Header="通用"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}"><StackPanel Margin="8,18,8,0">
+        <TextBlock Text="通用" Style="{StaticResource Heading}"/>
         <TextBlock Text="窗口大小、透明度、回答字号和配色：在浮窗的“外观”中调整。" Style="{StaticResource Hint}"/>
         <Expander x:Name="ClipboardPreferences" Header="剪贴板偏好" IsExpanded="True" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">        <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
         <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
-        <TextBlock Text="同步授权期限（分钟，1–60）"/><TextBox x:Name="SyncDuration" Text="10"/>
 <Button Content="保存剪贴板偏好" Style="{StaticResource Primary}" HorizontalAlignment="Left" Click="SavePreferences_Click"/></StackPanel></Expander>
-        <TextBlock Text="以下功能按需开启：自动接收剪贴板变化、为文字与图片分别选择模型，以及设置一键场景的固定截图范围。" Style="{StaticResource Hint}"/>
-        <Expander Header="自动同步剪贴板 · 监听变化并准备或发送" Margin="0,0,0,16"><StackPanel><Border Background="{DynamicResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
-          <TextBlock Text="Live Clipboard（可选）" FontSize="17" FontWeight="SemiBold"/>
-          <TextBlock Text="监听仅在本次运行有效。停止监听只阻止新的自动输入；已提交请求仍可单独取消，紧急暂停会立即遮蔽并停止本地输出。" Style="{StaticResource Hint}"/>
-          <WrapPanel><CheckBox x:Name="SyncText" Content="Unicode 文本" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="SyncImage" Content="静态位图"/></WrapPanel>
-          <CheckBox x:Name="SyncSend" Content="变化后自动提问（关闭时只准备，等待手动发送）"/>
-          <TextBlock x:Name="SyncSummary" Text="当前无授权" Style="{StaticResource Hint}"/>
-          <WrapPanel><Button Content="开始 Live Clipboard" Click="StartSync_Click"/><Button Content="停止 Live Clipboard" Click="StopSync_Click"/></WrapPanel>
-        </StackPanel></Border><Button Content="发送已准备内容" HorizontalAlignment="Left" Click="Send_Click"/></StackPanel></Expander>
-        <Expander x:Name="CaptureSettings" Header="预设截图范围 · 供一键场景使用" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
-        <TextBlock Text="固定范围，失败即停止" Style="{StaticResource Heading}"/>
-        <WrapPanel><Button Content="刷新可选窗口 / 显示器" Click="RefreshTargets_Click"/><Button Content="应用采集目标" Click="SaveTarget_Click"/></WrapPanel>
-        <ComboBox x:Name="TargetPicker"/>
-        <CheckBox x:Name="UseRegion" Content="使用所选显示器内的矩形区域（物理像素，相对显示器左上角）"/>
-        <TextBox x:Name="RegionBox" Text="0,0,800,600"/>
-        <TextBlock x:Name="TargetLabel" Text="未配置采集目标" Style="{StaticResource Hint}"/>
-        </StackPanel></Expander>
-        <Expander x:Name="RoutingSettings" Header="模型路由 · 为文字与图片分别选择连接" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">
-        <TextBlock Text="文字输入使用"/><ComboBox x:Name="TextRoutePicker" DisplayMemberPath="Label" SelectedValuePath="Id"/>
-        <TextBlock Text="图像输入使用"/><ComboBox x:Name="ImageRoutePicker" DisplayMemberPath="Label" SelectedValuePath="Id"/>
-        <TextBlock Text="默认跟随“模型”页的默认连接；包含图片时使用图像路由。场景指定的连接优先，图像路由需选择支持图像的连接。" Style="{StaticResource Hint}"/>
-        <Button x:Name="SaveRoutingButton" Content="保存模型路由" HorizontalAlignment="Left" Click="SaveRouting_Click"/>
-        </StackPanel></Expander>
-        <Expander Header="高级内容预处理 · JSON 规则" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0"><TextBlock Text="预处理步骤（按数组顺序执行，坐标相对上一步图像）"/>
-        <TextBox x:Name="PipelineBox" AcceptsReturn="True" Height="180" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
-        <TextBlock Text="支持 NormalizeText、Template、Crop、Mask、Resize；Required=true 的失败会阻止发送。模板使用 {input}。配置会保存这些规则，请勿在模板中粘贴敏感正文。" Style="{StaticResource Hint}"/>
-        <Button Content="保存预处理规则" HorizontalAlignment="Left" Click="SavePipeline_Click"/>
-      </StackPanel></Expander>
         <Expander Header="保护状态" Margin="0,0,0,16"><StackPanel Margin="8,16,8,0">
         <TextBlock Text="保护状态" FontSize="17" FontWeight="SemiBold"/>
         <TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/>
         <TextBlock Text="不会保存截图、正文或回答；无自动重试、后台遥测或崩溃上传。远端后端会接收已发送的内容。" Style="{StaticResource Hint}"/>
       </StackPanel></Expander>
-        <Button Content="导出无凭据配置" ToolTip="将打开系统保存对话框，需要切换焦点；关闭后由 Windows 决定焦点。" HorizontalAlignment="Left" Click="Export_Click"/>
       </StackPanel></ScrollViewer></TabItem>
     </TabControl>
     <DockPanel Grid.Row="3" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起设置" ToolTip="隐藏当前活动设置窗口会由 Windows 转移焦点。" Click="HideControl_Click"/><Button Content="退出 Superb" ToolTip="关闭 Superb；若其窗口当前有焦点，Windows 会转移焦点。" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.2.0 · 开发版本" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></DockPanel>

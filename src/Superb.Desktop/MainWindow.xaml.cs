@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.IO;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -20,22 +19,17 @@ public partial class MainWindow : Window
     private readonly Coordinator coordinator;
     private readonly ReaderWindow reader = new();
     private readonly Protection protection;
-    private readonly SyncFilter syncFilter = new();
-    private readonly DispatcherTimer clipboardTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly DispatcherTimer guardTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly DispatcherTimer layoutSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private ClipboardService? clipboard;
     private HotkeyManager? hotkeys;
-    private SyncGrant? grant;
-    private PreparedRequest? prepared;
     private RequestUpdate? latestUpdate;
     private RequestUpdate? completed;
     private Task<Payload>? captureTask;
     private CancellationTokenSource? probeCancellation;
-    private long operation, syncGeneration;
+    private long operation;
     private bool preparing, exiting, loading, pausedForProtection, sessionLocked, configLoadFailed;
-    private bool clipboardListenerReady, sessionListenerReady;
-    private DateTimeOffset lastAutoCapture = DateTimeOffset.MinValue;
+    private bool sessionListenerReady;
     private nint handle;
     private readonly bool isolatedWorkspaceTest;
     internal ReaderWindow WorkspaceWindow => reader;
@@ -66,21 +60,12 @@ public partial class MainWindow : Window
             layoutSaveTimer.Stop();
             try { config.Save(); } catch { Status("外观已调整，但设置保存失败；本次会话仍可使用"); }
         };
-        reader.DraftChanged += () => { if (grant is not null) StopSync(); prepared = null; RefreshWorkspace(); };
+        reader.DraftChanged += RefreshWorkspace;
         reader.ProtectionLost += () => ProtectionFailed();
         SourceInitialized += InitializePlatform;
-        clipboardTimer.Tick += async (_, _) =>
-        {
-            clipboardTimer.Stop();
-            if (grant is null || DateTimeOffset.UtcNow >= grant.ExpiresAt) { StopSync(); return; }
-            if (preparing || coordinator.State is RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming or RequestState.PolicyCheck ||
-                DateTimeOffset.UtcNow - lastAutoCapture < TimeSpan.FromSeconds(2)) { clipboardTimer.Start(); return; }
-            await CaptureInput(false, true);
-        };
         guardTimer.Tick += (_, _) =>
         {
             if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
-            if (grant is not null && DateTimeOffset.UtcNow >= grant.ExpiresAt) { StopSync(); Status("同步授权已到期"); }
             if (latestUpdate is { } update)
             {
                 latestUpdate = null;
@@ -132,7 +117,6 @@ public partial class MainWindow : Window
         }
         hotkeys = new(handle);
         HwndSource.FromHwnd(handle)?.AddHook(WindowMessage);
-        clipboardListenerReady = Native.AddClipboardFormatListener(handle);
         sessionListenerReady = Native.WTSRegisterSessionNotification(handle, 0);
         try { config = Configuration.Load(); }
         catch { configLoadFailed = true; Status("配置无法读取；已使用安全默认值，未覆盖原文件"); }
@@ -165,7 +149,6 @@ public partial class MainWindow : Window
     private nint WindowMessage(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
         if (msg == 0x312) { handled = true; if (hotkeys?.GetAction((int)wParam) is { } action) _ = RunCommand(action); }
-        if (msg == 0x31D && grant is not null) { clipboardTimer.Stop(); clipboardTimer.Start(); }
         if (msg == 0x2B1)
         {
             if ((int)wParam is 7 or 6 or 4 or 2) // lock, logoff, remote/console disconnect
@@ -178,7 +161,7 @@ public partial class MainWindow : Window
             }
         }
         if (msg == 0x218 && (int)wParam == 4) EmergencyPause("系统挂起；需要手动恢复");
-        if (msg == 0x7E) EmergencyPause("显示配置变化；请重新确认采集目标");
+        if (msg == 0x7E) EmergencyPause("显示配置变化；已暂停，请恢复后重新截图");
         if (msg == 0x31E && !protection.Check()) ProtectionFailed();
         return 0;
     }
@@ -189,29 +172,15 @@ public partial class MainWindow : Window
         BackendPicker.SelectedItem = config.Backends.FirstOrDefault(x => x.Id == config.SelectedBackendId);
         EditBackendPicker.ItemsSource = config.Backends;
         EditBackendPicker.SelectedItem = BackendPicker.SelectedItem;
-        PipelineBox.Text = JsonSerializer.Serialize(config.Pipeline.Steps, Configuration.Json);
-        TextRoutePicker.ItemsSource = new[] { new BackendChoice("", "跟随默认连接") }
-            .Concat(config.Backends.Select(b => new BackendChoice(b.Id, b.Name))).ToArray();
-        ImageRoutePicker.ItemsSource = new[] { new BackendChoice("", "跟随默认连接") }
-            .Concat(config.Backends.Select(b => new BackendChoice(b.Id, b.SupportsImages ? b.Name : b.Name + "（不支持图像）"))).ToArray();
-        TextRoutePicker.SelectedValue = config.Routing.TextBackendId ?? "";
-        ImageRoutePicker.SelectedValue = config.Routing.ImageBackendId ?? "";
         PopulateScenesAndKeys();
         ExclusiveReaderKeys.IsChecked = config.ExclusiveHotkeysEnabled;
         AutoCopy.IsChecked = config.AutoCopy;
         ClearClipboard.IsChecked = config.ClearOwnedClipboardOnPause;
-        SyncDuration.Text = config.SyncMinutes.ToString();
         DefaultConnection.Visibility = config.Backends.IsDefaultOrEmpty ? Visibility.Collapsed : Visibility.Visible;
         QuickSetup.IsExpanded = config.Backends.IsDefaultOrEmpty;
         BackendSettings.IsExpanded = !config.Backends.IsDefaultOrEmpty;
-        TargetLabel.Text = config.Capture?.Label ?? "未配置采集目标";
         var selected = BackendPicker.SelectedItem as Backend;
         ModelSummary.Text = selected is null ? "先连接一个模型，即可开始提问。" : $"{selected.Name} · {selected.Model}";
-        if (config.Routing.TextBackendId is not null || config.Routing.ImageBackendId is not null)
-        {
-            string RouteName(string? id) => config.Backends.FirstOrDefault(x => x.Id == (id ?? config.SelectedBackendId))?.Name ?? "未选择";
-            ModelSummary.Text += $" · 固定路由：文字 → {RouteName(config.Routing.TextBackendId)}，图像 → {RouteName(config.Routing.ImageBackendId)}";
-        }
         var deepSeek = config.Backends.FirstOrDefault(x => x.Endpoint == DeepSeekSetup.Endpoint);
         QuickStatus.Text = deepSeek is null ? "不需要填写接口地址或模型名称。" : $"已保存 {deepSeek.Name} / {deepSeek.Model}。可直接开始提问，或填入新密钥重新配置。";
         loading = false;
@@ -235,7 +204,7 @@ public partial class MainWindow : Window
         RequestState.Thinking => "模型正在思考 · 尚未返回回答，可停止",
         RequestState.Streaming => "生成中", RequestState.Completed => "已完成", RequestState.Cancelled => "已停止 · 部分回答，未完成",
         RequestState.Failed => ConnectionDiagnostics.Explain(update.Code), _ => update.State.ToString()
-    }) + (update.Attempt.Request.ProcessingNotices.IsDefaultOrEmpty ? "" : $" · 已按规则跳过 {update.Attempt.Request.ProcessingNotices.Length} 个可选步骤");
+    });
     private void OnUpdate(RequestUpdate update)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => OnUpdate(update)); return; }
@@ -261,21 +230,9 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Report(ex); }
     }
-    private void StopSync()
-    {
-        // Revoke the live input lease without conflating it with request cancellation.
-        // A preparation that has not reached transport observes syncGeneration and is dropped;
-        // a request already submitted remains a normal request and can be cancelled separately.
-        syncGeneration++;
-        grant = null;
-        clipboardTimer.Stop();
-        syncFilter.Reset();
-        SyncSummary.Text = "当前无授权";
-        UpdateMode();
-    }
     private void UpdateMode()
     {
-        ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }}{(grant is null ? "" : " · 剪贴板同步中")}";
+        ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }}";
         ResumeButton.Visibility = coordinator.Mode == RunState.Ready ? Visibility.Collapsed : Visibility.Visible;
         RefreshWorkspace();
     }
@@ -283,8 +240,8 @@ public partial class MainWindow : Window
     {
         captureSelectionCancellation?.Cancel();
         CancelProbe();
-        operation++; preparing = false; coordinator.SetMode(mode); prepared = null; completed = null; latestUpdate = null;
-        workspace.Clear(); reader.Clear(); ClearOutput(); StopSync(); ApiKey.Clear(); QuickApiKey.Clear();
+        operation++; preparing = false; coordinator.SetMode(mode); completed = null; latestUpdate = null;
+        workspace.Clear(); reader.Clear(); ClearOutput(); ApiKey.Clear(); QuickApiKey.Clear();
         if (reader.Check()) reader.SetMode(false);
         if (config.ClearOwnedClipboardOnPause) { try { clipboard?.ClearOwned(); } catch { /* Clear best effort only our own data. */ } }
         UpdateMode(); Status(reason);
@@ -302,99 +259,6 @@ public partial class MainWindow : Window
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return false; }
         return true;
     }
-    private async Task CaptureInput(bool screen, bool automatic = false, ScenePreset? scene = null)
-    {
-        if (!Ready()) return;
-        if (Working) { if (!automatic) Status("正在处理；请先停止生成"); return; }
-        if (!automatic && config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
-        if (screen && config.Capture is null)
-        {
-            OpenCaptureSettings(); return;
-        }
-        if (!automatic && !IsVisible && !reader.IsVisible) reader.Show();
-        var activeGrant = grant;
-        var activeSyncGeneration = syncGeneration;
-        if (automatic && (activeGrant is null || activeGrant.ExpiresAt <= DateTimeOffset.UtcNow)) { StopSync(); return; }
-        var version = ++operation;
-        preparing = true;
-        RefreshWorkspace();
-        try
-        {
-            var settings = config; // Freeze processing and routing before the asynchronous capture.
-            InputSnapshot snapshot;
-            if (screen)
-            {
-                if (captureTask is { IsCompleted: false }) throw new SafeFailure("capture_worker_busy");
-                var target = settings.Capture ?? throw new SafeFailure("capture_target_missing");
-                var sequence = clipboard!.Sequence;
-                Status("采集中");
-                var worker = Task.Run(() => CaptureService.Capture(target)); captureTask = worker;
-                snapshot = new(Guid.NewGuid(), InputKind.Screen, await worker.WaitAsync(TimeSpan.FromSeconds(5)), sequence, DateTimeOffset.UtcNow);
-                if (ReferenceEquals(captureTask, worker)) captureTask = null;
-            }
-            else
-            {
-                if (automatic) lastAutoCapture = DateTimeOffset.UtcNow;
-                var (captured, own) = clipboard!.Read();
-                if (own) { Status("已忽略本应用的剪贴板输出"); return; }
-                snapshot = captured;
-                if (automatic && (!activeGrant!.Allows(snapshot.Kind, settings.SelectedBackendId, DateTimeOffset.UtcNow, false) ||
-                    !syncFilter.Accept(snapshot, own))) return;
-            }
-            if (version != operation || !Ready()) return;
-            reader.SetDraft("");
-            workspace.Set(snapshot, screen ? "预设截图范围" : "剪贴板");
-            reader.SetInputs(workspace.Items);
-            coordinator.Invalidate(); completed = null; prepared = null; latestUpdate = null; ClearOutput();
-            Status("本地处理中");
-            PreparedRequest request;
-            if (scene is not null)
-                request = await Task.Run(() => SceneRequestFactory.Prepare(settings, scene, snapshot, new ImageProcessor()));
-            else
-            {
-                var localNotices = new List<string>();
-                var content = await Task.Run(() => Preprocessor.Process(snapshot.Content, settings.Pipeline, new ImageProcessor(), localNotices.Add));
-                var selected = settings.Routing.Select(content, settings.SelectedBackendId, settings.Backends);
-                request = new(snapshot with { Content = content }, content, settings.Pipeline, selected, localNotices.ToImmutableArray());
-            }
-            if (version != operation || !Ready()) return;
-            if (automatic && (activeSyncGeneration != syncGeneration || grant is null)) return;
-            var route = request.Backend; var processed = request.Content;
-            var notices = request.ProcessingNotices;
-            if (automatic && !activeGrant!.Allows(snapshot.Kind, route.Id, DateTimeOffset.UtcNow, false)) throw new SafeFailure("sync_route_not_authorized");
-            prepared = request;
-            Policy.Check(prepared);
-            reader.SetInputs(workspace.Items);
-            StatusLabel.Text = $"已准备 · {route.Name} / {route.Model} · 等待发送" + (notices.Length > 0 ? $" · {notices.Length} 个可选步骤已按规则跳过" : "");
-            if (automatic) lastAutoCapture = DateTimeOffset.UtcNow;
-            var send = automatic ? activeGrant!.AllowSend : true;
-            if (send) await SendPrepared(automatic, activeGrant);
-        }
-        catch (Exception ex) { if (version == operation) { prepared = null; Report(ex); } }
-        finally
-        {
-            if (version == operation) { preparing = false; RefreshWorkspace(); }
-            if (captureTask is { } outstanding)
-            {
-                // PrintWindow cannot be forcibly cancelled. Keep at most one worker, then drop its result.
-                _ = outstanding.ContinueWith(finishedTask => Dispatcher.BeginInvoke(() =>
-                {
-                    _ = finishedTask.Exception;
-                    if (ReferenceEquals(captureTask, outstanding)) captureTask = null;
-                }), TaskScheduler.Default);
-            }
-        }
-    }
-    private async Task SendPrepared(bool automatic = false, SyncGrant? authorization = null)
-    {
-        if (!Ready()) return;
-        if (prepared is null) { Status("尚无已准备输入"); return; }
-        var request = prepared;
-        prepared = null; completed = null; latestUpdate = null; ClearOutput();
-        RefreshWorkspace();
-        await coordinator.RunAsync(request, automatic, authorization);
-        RefreshWorkspace();
-    }
     internal async Task RunCommand(string action)
     {
         try
@@ -406,21 +270,20 @@ public partial class MainWindow : Window
             }
             if (action.StartsWith("removeInput:", StringComparison.Ordinal) && Guid.TryParse(action[12..], out var itemId))
             {
-                if (!Working) { workspace.Remove(itemId); prepared = null; reader.SetInputs(workspace.Items); Status("已从队列移除"); }
+                if (!Working) { workspace.Remove(itemId); reader.SetInputs(workspace.Items); Status("已从队列移除"); }
                 return;
             }
             switch (action)
             {
-                case "workspaceSend": await SendWorkspace(); break;
                 case "stageClipboard": await StageClipboard(); break;
                 case "stageCapture": await StageScreenshot(true); break;
                 case "captureScreen": await StageScreenshot(false); break;
                 case "deleteCapture":
-                    if (!Working && workspace.Items.LastOrDefault() is { } last) { workspace.Remove(last.Snapshot.Id); prepared = null; reader.SetInputs(workspace.Items); Status("已移除队列最后一项"); }
+                    if (!Working && workspace.Items.LastOrDefault() is { } last) { workspace.Remove(last.Snapshot.Id); reader.SetInputs(workspace.Items); Status("已移除队列最后一项"); }
                     break;
                 case "selectScene": SelectWorkspaceScene(reader.SelectedSceneId); break;
                 case "removeInput":
-                    if (!Working) { workspace.Clear(); prepared = null; reader.ClearInput(); Status("已移除输入"); RefreshWorkspace(); }
+                    if (!Working) { workspace.Clear(); reader.ClearInput(); Status("已移除输入"); RefreshWorkspace(); }
                     break;
                 case "workspaceCopy": CopyWorkspaceAnswer(); break;
                 case "newTask": NewWorkspaceTask(); break;
@@ -434,7 +297,6 @@ public partial class MainWindow : Window
                     if (Ready() && hotkeys?.HasAction("interact") == true && CanHideControl()) reader.SetMode(false, true);
                     else Status("穿透未开启：请先修复编辑、设置、暂停和退出快捷键");
                     break;
-                case "ask": await SendWorkspace(); break;
                 case "resume": Resume_Click(this, new RoutedEventArgs()); break;
                 case "clipboard": await StageClipboard(); break;
                 case "capture": await StageScreenshot(true); break;
@@ -443,8 +305,7 @@ public partial class MainWindow : Window
                 case "retry":
                     if (Ready() && !Working && coordinator.Current is { } prior && coordinator.State is RequestState.Failed or RequestState.Completed or RequestState.Cancelled)
                     {
-                        prepared = prior.Request;
-                        await SendPrepared(); // Explicit retry; new attempt ID, frozen target and processed body.
+                        await SendPrepared(prior.Request); // Explicit retry; new attempt ID, frozen target and body.
                     }
                     else Status("没有可重试的已结束请求");
                     break;
@@ -506,44 +367,6 @@ public partial class MainWindow : Window
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
         pausedForProtection = false; coordinator.SetMode(RunState.Ready); UpdateMode(); Status("已恢复");
     }
-    private async Task AskQuestion(ScenePreset? scene = null)
-    {
-        if (!Ready()) return;
-        if (Working) { Status("正在处理；请先停止生成"); return; }
-        if (config.Backends.IsDefaultOrEmpty) { MainTabs.SelectedItem = ConnectionTab; Status("请先连接一个模型"); return; }
-        var draft = reader.Draft;
-        if (string.IsNullOrWhiteSpace(draft)) { Status("请先在浮窗输入问题"); return; }
-        var version = ++operation;
-        preparing = true;
-        try
-        {
-            var settings = config;
-            workspace.Clear(); reader.ClearInput(); RefreshWorkspace();
-            var content = Payload.FromText(draft);
-            var sequence = clipboard!.Sequence;
-            if (content.Size > Policy.AbsoluteInputLimit) throw new SafeFailure("input_too_large");
-            coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; ClearOutput();
-            var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ManualText, content, sequence, DateTimeOffset.UtcNow);
-            PreparedRequest request;
-            if (scene is not null)
-                request = await Task.Run(() => SceneRequestFactory.Prepare(settings, scene, snapshot, new ImageProcessor()));
-            else
-            {
-                var notices = new List<string>();
-                var processed = await Task.Run(() => Preprocessor.Process(content, settings.Pipeline, new ImageProcessor(), notices.Add));
-                var selected = settings.Routing.Select(processed, settings.SelectedBackendId, settings.Backends);
-                request = new(snapshot with { Content = processed }, processed, settings.Pipeline, selected, notices.ToImmutableArray());
-            }
-            if (version != operation || !Ready()) return;
-            if (!IsVisible && !reader.IsVisible) reader.Show();
-            prepared = request;
-            Policy.Check(prepared);
-            await SendPrepared();
-        }
-        catch (Exception ex) { if (version == operation) { prepared = null; Report(ex); } }
-        finally { if (version == operation) { preparing = false; RefreshWorkspace(); } }
-    }
-
     private sealed class TemporaryCredential(string secret) : ICredentialStore, IDisposable
     {
         private string value = secret;
@@ -575,7 +398,8 @@ public partial class MainWindow : Window
         var existing = config.Backends.FirstOrDefault(x => x.Id == config.SelectedBackendId && x.Endpoint == DeepSeekSetup.Endpoint) ??
             config.Backends.FirstOrDefault(x => x.Endpoint == DeepSeekSetup.Endpoint);
         var draft = DeepSeekSetup.Preset(existing?.Id ?? Guid.NewGuid().ToString("N"), "temporary",
-            (ProxyMode)QuickProxyMode.SelectedIndex, QuickProxyAddress.Text.Trim());
+            (ProxyMode)QuickProxyMode.SelectedIndex, QuickProxyAddress.Text.Trim()) with
+            { MaxInputBytes = existing?.MaxInputBytes ?? 8_388_608, MaxOutputChars = existing?.MaxOutputChars ?? 1_000_000 };
         try
         {
             using var temporary = new TemporaryCredential(secret);
@@ -589,7 +413,6 @@ public partial class MainWindow : Window
                 configLoadFailed = false;
             }
             config = QuickSetupPersistence.Commit(config, result.Backend, secret, credentials, next => next.Save());
-            StopSync();
             // Populate cancels probes; detach this successful operation before refreshing controls.
             probeCancellation = null;
             Populate();
@@ -613,7 +436,6 @@ public partial class MainWindow : Window
             if (probeCancellation is null) SetProbeBusy(false);
         }
     }
-    private async void Send_Click(object sender, RoutedEventArgs e) => await RunCommand("send");
     private void Pause_Click(object sender, RoutedEventArgs e) => EmergencyPause("紧急暂停已生效");
     private void ShowPanel_Click(object sender, RoutedEventArgs e) => OpenWorkspace(explicitHide: true);
     private bool CanHideControl() => hotkeys is not null && new[] { "settings", "pause", "exit" }.All(hotkeys.HasAction);
@@ -623,27 +445,10 @@ public partial class MainWindow : Window
         reader.Show(); Hide();
     }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    private void StopSync_Click(object sender, RoutedEventArgs e) { StopSync(); Status("Live Clipboard 已停止；当前请求与回答保留"); }
-    private void StartSync_Click(object sender, RoutedEventArgs e)
-    {
-        if (!Ready()) return;
-        if (!clipboardListenerReady) { Status("剪贴板监听注册失败"); return; }
-        var selected = config.Backends.FirstOrDefault(x => x.Id == config.SelectedBackendId);
-        if (selected is null) { Status("先选择接收后端"); return; }
-        var kinds = ImmutableHashSet.CreateBuilder<InputKind>();
-        if (SyncText.IsChecked == true) kinds.Add(InputKind.ClipboardText);
-        if (SyncImage.IsChecked == true) kinds.Add(InputKind.ClipboardImage);
-        if (kinds.Count == 0) { Status("先选择授权输入范围"); return; }
-        StopSync();
-        grant = new(DateTimeOffset.UtcNow.AddMinutes(config.SyncMinutes), selected.Id, kinds.ToImmutable(), SyncSend.IsChecked == true);
-        SyncSummary.Text = $"{selected.Name} · 截止 {grant.ExpiresAt.ToLocalTime():HH:mm:ss} · {(grant.AllowSend ? "允许自动发送" : "仅采集，不自动发送")}";
-        UpdateMode(); Status("同步授权已生效；从下一次剪贴板变更开始");
-    }
     private void BackendPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!loading && BackendPicker.SelectedItem is Backend b && b.Id != config.SelectedBackendId)
         {
-            StopSync(); // A live grant is bound to the backend selected when it was created.
             Mutate(() => config = config with { SelectedBackendId = b.Id });
         }
     }
@@ -657,9 +462,8 @@ public partial class MainWindow : Window
         BackendName.Text = b?.Name ?? ""; ModelName.Text = b?.Model ?? ""; Endpoint.Text = b?.Endpoint ?? "";
         ApiKey.Clear(); Vision.IsChecked = b?.SupportsImages ?? false; Streaming.IsChecked = b?.Stream ?? true;
         Loopback.IsChecked = b?.AllowLoopbackHttp ?? false; TimeoutSeconds.Text = (b?.TimeoutSeconds ?? 120).ToString();
-        InputLimit.Text = ((b?.MaxInputBytes ?? 8_388_608) / 1_048_576).ToString();
         Temperature.Text = (b?.Temperature ?? 0.2).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        MaxTokens.Text = (b?.MaxTokens ?? Policy.DefaultOutputTokens).ToString(); MaxOutput.Text = (b?.MaxOutputChars ?? 1_000_000).ToString();
+        MaxTokens.Text = (b?.MaxTokens ?? Policy.DefaultOutputTokens).ToString();
         ProxyModePicker.SelectedIndex = (int)(b?.ProxyMode ?? ProxyMode.Direct);
         ProxyAddressBox.Text = b?.ProxyAddress ?? "";
         SendTemperature.IsChecked = b?.SendTemperature ?? true;
@@ -671,31 +475,32 @@ public partial class MainWindow : Window
     private void SaveBackend_Click(object sender, RoutedEventArgs e)
     {
         var secret = ApiKey.Password;
-        StopSync(); // Endpoint/model/credential changes cross the live grant trust boundary.
         var old = EditBackendPicker.SelectedItem as Backend;
-        var name = BackendName.Text.Trim(); var model = ModelName.Text.Trim(); var endpoint = Endpoint.Text.Trim();
-        var vision = Vision.IsChecked == true; var loopback = Loopback.IsChecked == true; var streaming = Streaming.IsChecked == true;
-        var timeout = TimeoutSeconds.Text; var limit = InputLimit.Text;
-        var temperature = Temperature.Text; var tokens = MaxTokens.Text; var outputLimit = MaxOutput.Text;
-        var proxyMode = (ProxyMode)ProxyModePicker.SelectedIndex;
-        var proxyAddress = ProxyAddressBox.Text.Trim();
-        var sendTemperature = SendTemperature.IsChecked == true;
-        var tokenParameter = UseCompletionTokens.IsChecked == true ? TokenLimitParameter.MaxCompletionTokens : TokenLimitParameter.MaxTokens;
-        var thinkingMode = (ThinkingMode)ThinkingModePicker.SelectedIndex;
         Mutate(() =>
         {
-            var b = new Backend(old?.Id ?? Guid.NewGuid().ToString("N"), name, endpoint, model, old?.CredentialRef ?? "",
-                vision, loopback, streaming, int.Parse(timeout), checked(int.Parse(limit) * 1_048_576), int.Parse(outputLimit),
-                double.Parse(temperature, System.Globalization.CultureInfo.InvariantCulture), int.Parse(tokens),
-                ProxyMode: proxyMode, ProxyAddress: proxyMode == ProxyMode.Custom ? proxyAddress : "",
-                SendTemperature: sendTemperature, TokenLimitParameter: tokenParameter, ThinkingMode: thinkingMode);
-            Policy.ValidateBackend(b);
-            if (name.Length is < 1 or > 80) throw new SafeFailure("backend_name_invalid");
+            var b = BuildBackendSettings();
             if (secret.Length > 0) b = b with { CredentialRef = credentials.Save(secret) };
             config = config with { Backends = config.Backends.Where(x => x.Id != b.Id).Append(b).ToImmutableArray(), SelectedBackendId = b.Id };
             config.Save();
-            if (secret.Length > 0 && old is not null && old.CredentialRef.Length > 0) credentials.Delete(old.CredentialRef);
+            if (secret.Length > 0 && old is not null && old.CredentialRef.Length > 0 &&
+                !config.Backends.Any(other => other.CredentialRef == old.CredentialRef)) credentials.Delete(old.CredentialRef);
         });
+    }
+    internal Backend BuildBackendSettings()
+    {
+        var old = EditBackendPicker.SelectedItem as Backend;
+        var proxyMode = (ProxyMode)ProxyModePicker.SelectedIndex;
+        var b = new Backend(old?.Id ?? Guid.NewGuid().ToString("N"), BackendName.Text.Trim(), Endpoint.Text.Trim(),
+            ModelName.Text.Trim(), old?.CredentialRef ?? "", Vision.IsChecked == true, Loopback.IsChecked == true,
+            Streaming.IsChecked == true, int.Parse(TimeoutSeconds.Text), old?.MaxInputBytes ?? 8_388_608,
+            old?.MaxOutputChars ?? 1_000_000, double.Parse(Temperature.Text, System.Globalization.CultureInfo.InvariantCulture),
+            int.Parse(MaxTokens.Text), ProxyMode: proxyMode, ProxyAddress: proxyMode == ProxyMode.Custom ? ProxyAddressBox.Text.Trim() : "",
+            SendTemperature: SendTemperature.IsChecked == true,
+            TokenLimitParameter: UseCompletionTokens.IsChecked == true ? TokenLimitParameter.MaxCompletionTokens : TokenLimitParameter.MaxTokens,
+            ThinkingMode: (ThinkingMode)ThinkingModePicker.SelectedIndex);
+        Policy.ValidateBackend(b);
+        if (b.Name.Length is < 1 or > 80) throw new SafeFailure("backend_name_invalid");
+        return b;
     }
     private void CancelProbe()
     {
@@ -743,7 +548,6 @@ public partial class MainWindow : Window
     {
         if (EditBackendPicker.SelectedItem is not Backend b) return;
         if (config.Scenes.Any(s => s.BackendId == b.Id)) { Status("该后端仍被场景引用，请先调整场景后端"); return; }
-        StopSync();
         CancelProbe();
         try
         {
@@ -760,48 +564,6 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Report(ex); }
     }
-    private void RefreshTargets_Click(object sender, RoutedEventArgs e)
-    {
-        try { TargetPicker.ItemsSource = CaptureService.Enumerate(); }
-        catch (Exception ex) { Report(ex); }
-    }
-    private void SaveTarget_Click(object sender, RoutedEventArgs e) => Mutate(() =>
-    {
-        var target = TargetPicker.SelectedItem as CaptureTarget ?? throw new SafeFailure("capture_target_missing");
-        if (UseRegion.IsChecked == true)
-        {
-            if (target.Kind != CaptureKind.Monitor) throw new SafeFailure("region_requires_monitor");
-            var parts = RegionBox.Text.Split(',').Select(int.Parse).ToArray();
-            if (parts.Length != 4 || parts[0] < 0 || parts[1] < 0 || parts[2] <= 0 || parts[3] <= 0 ||
-                (long)parts[0] + parts[2] > target.Bounds.Width || (long)parts[1] + parts[3] > target.Bounds.Height) throw new SafeFailure("region_invalid");
-            var bounds = new PixelRect(checked(target.Bounds.X + parts[0]), checked(target.Bounds.Y + parts[1]), parts[2], parts[3]);
-            target = target with { Kind = CaptureKind.Region, Bounds = bounds, MonitorBounds = target.Bounds, Label = $"矩形 · {target.Device} · {RegionBox.Text}" };
-        }
-        config = config with { Capture = target };
-    });
-    private void SavePipeline_Click(object sender, RoutedEventArgs e)
-    {
-        StopSync();
-        Mutate(() =>
-    {
-        var steps = JsonSerializer.Deserialize<ImmutableArray<ProcessStep>>(PipelineBox.Text, Configuration.Json);
-        var candidate = config with { Pipeline = new(Guid.NewGuid().ToString("N"), steps) };
-        candidate.Validate(); config = candidate;
-        });
-    }
-    internal Configuration BuildRoutingSettings()
-    {
-        string? SelectedRoute(ComboBox picker) => picker.SelectedValue is string id && id.Length > 0 ? id : null;
-        var routing = new Routing(SelectedRoute(TextRoutePicker), SelectedRoute(ImageRoutePicker));
-        if (routing.ImageBackendId is { } imageId && !config.Backends.Any(b => b.Id == imageId && b.SupportsImages))
-            throw new SafeFailure("backend_has_no_vision");
-        return config with { Routing = routing };
-    }
-    private void SaveRouting_Click(object sender, RoutedEventArgs e)
-    {
-        StopSync(); // Routing changes require a new explicit live authorization.
-        Mutate(() => { var candidate = BuildRoutingSettings(); candidate.Validate(); config = candidate; });
-    }
     // Each page saves only its own settings, never pending edits from another page.
     internal Configuration BuildHotkeySettings()
     {
@@ -812,30 +574,18 @@ public partial class MainWindow : Window
     }
     internal Configuration BuildClipboardPreferences() => config with
     {
-        AutoCopy = AutoCopy.IsChecked == true, ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true,
-        SyncMinutes = int.Parse(SyncDuration.Text)
+        AutoCopy = AutoCopy.IsChecked == true, ClearOwnedClipboardOnPause = ClearClipboard.IsChecked == true
     };
     private void SaveHotkeys_Click(object sender, RoutedEventArgs e) => SaveScenarioSettings(BuildHotkeySettings);
     private void SavePreferences_Click(object sender, RoutedEventArgs e) => SaveScenarioSettings(BuildClipboardPreferences);
-    private void Export_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var dialog = new SaveFileDialog { FileName = "superb-config.json", Filter = "JSON|*.json" };
-            if (dialog.ShowDialog(this) == true)
-                File.WriteAllText(dialog.FileName, JsonSerializer.Serialize(config with { Backends = config.Backends.Select(x => x with { CredentialRef = "" }).ToImmutableArray(), Capture = null }, Configuration.Json));
-        }
-        catch (Exception ex) { Report(ex); }
-    }
     private void Shutdown()
     {
         if (exiting) return;
         exiting = true;
         var layout = reader.Layout();
-        EmergencyPause("已退出"); clipboardTimer.Stop(); guardTimer.Stop(); layoutSaveTimer.Stop();
+        EmergencyPause("已退出"); guardTimer.Stop(); layoutSaveTimer.Stop();
         if (isolatedWorkspaceTest) { reader.Finish(); backend.Dispose(); return; }
         hotkeys?.Dispose();
-        if (clipboardListenerReady) Native.RemoveClipboardFormatListener(handle);
         if (sessionListenerReady) Native.WTSUnRegisterSessionNotification(handle);
         try { if (!configLoadFailed) (config with { Panel = layout }).Save(); } catch { }
         reader.Finish(); backend.Dispose(); Application.Current.Shutdown();

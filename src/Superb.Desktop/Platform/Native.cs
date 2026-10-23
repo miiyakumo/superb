@@ -16,7 +16,6 @@ internal static class Native
     { public uint Size; public int Width, Height; public ushort Planes, BitCount; public uint Compression, SizeImage; public int XPels, YPels; public uint Used, Important; }
     [StructLayout(LayoutKind.Sequential)] internal struct Bitmap { public int Type, Width, Height, WidthBytes; public ushort Planes, BitsPixel; public nint Bits; }
     internal delegate bool MonitorCallback(nint monitor, nint dc, ref Rect rect, nint data);
-    internal delegate bool WindowCallback(nint window, nint data);
     internal delegate nint KeyboardHook(int code, nint message, nint data);
     [StructLayout(LayoutKind.Sequential)] internal struct KeyboardInput
     { public uint Key, ScanCode, Flags, Time; public nuint ExtraInfo; }
@@ -39,8 +38,6 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool ShowWindow(nint hwnd, int command);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
     [DllImport("user32.dll")] internal static extern bool UnregisterHotKey(nint hwnd, int id);
-    [DllImport("user32.dll")] internal static extern bool AddClipboardFormatListener(nint hwnd);
-    [DllImport("user32.dll")] internal static extern bool RemoveClipboardFormatListener(nint hwnd);
     [DllImport("user32.dll")] internal static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] internal static extern bool OpenClipboard(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool CloseClipboard();
@@ -57,7 +54,6 @@ internal static class Native
     [DllImport("kernel32.dll")] internal static extern nuint GlobalSize(nint handle);
     [DllImport("user32.dll")] internal static extern bool EnumDisplayMonitors(nint dc, nint clip, MonitorCallback callback, nint data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
-    [DllImport("user32.dll")] internal static extern bool EnumWindows(WindowCallback callback, nint data);
     [DllImport("user32.dll")] internal static extern bool IsWindowVisible(nint window);
     [DllImport("user32.dll")] internal static extern bool IsWindow(nint window);
     [DllImport("user32.dll")] internal static extern bool IsIconic(nint window);
@@ -72,7 +68,6 @@ internal static class Native
     [DllImport("gdi32.dll")] internal static extern bool DeleteDC(nint dc);
     [DllImport("gdi32.dll")] internal static extern int GetObjectW(nint obj, int size, out Bitmap bitmap);
     [DllImport("gdi32.dll")] internal static extern bool BitBlt(nint target, int x, int y, int width, int height, nint source, int sx, int sy, uint op);
-    [DllImport("user32.dll")] internal static extern bool PrintWindow(nint hwnd, nint dc, uint flags);
     [DllImport("wtsapi32.dll")] internal static extern bool WTSRegisterSessionNotification(nint hwnd, uint flags);
     [DllImport("wtsapi32.dll")] internal static extern bool WTSUnRegisterSessionNotification(nint hwnd);
 }

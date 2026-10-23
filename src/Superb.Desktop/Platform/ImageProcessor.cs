@@ -1,60 +1,13 @@
 using System.Collections.Immutable;
 using System.IO;
-using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Superb.Core;
 
 namespace Superb.Desktop.Platform;
 
-internal sealed class ImageProcessor : IImageProcessor
+internal static class ImageProcessor
 {
-    public Payload Apply(Payload input, ProcessStep step)
-    {
-        if (!input.HasImage) throw new SafeFailure("image_required_for_step");
-        if (!input.AdditionalImages.IsDefaultOrEmpty)
-        {
-            // Apply every crop/mask/resize to every image, atomically. A required failure on any
-            // image blocks the batch; originals are never appended alongside processed images.
-            var images = input.Images.Select(i => Apply(new Payload(null, i.Png, i.Width, i.Height), step)).ToArray();
-            return images[0] with { Text = input.Text,
-                AdditionalImages = images.Skip(1).Select(i => new PayloadImage(i.Png, i.Width, i.Height)).ToImmutableArray() };
-        }
-        BitmapSource bitmap = Decode(input.Png);
-        if (step.Kind == StepKind.Resize)
-        {
-            if (step.MaxDimension is < 64 or > 8192) throw new SafeFailure("resize_invalid");
-            var scale = Math.Min(1, (double)step.MaxDimension / Math.Max(bitmap.PixelWidth, bitmap.PixelHeight));
-            bitmap = new TransformedBitmap(bitmap, new ScaleTransform(scale, scale));
-        }
-        else
-        {
-            var r = step.Rectangle ?? throw new SafeFailure("rectangle_missing");
-            if (r.X < 0 || r.Y < 0 || r.Width <= 0 || r.Height <= 0 ||
-                (long)r.X + r.Width > bitmap.PixelWidth || (long)r.Y + r.Height > bitmap.PixelHeight)
-                throw new SafeFailure("rectangle_out_of_bounds");
-            if (step.Kind == StepKind.Crop) bitmap = new CroppedBitmap(bitmap, new Int32Rect(r.X, r.Y, r.Width, r.Height));
-            else
-            {
-                // Rewrite opaque pixels, rather than drawing an overlay over recoverable source pixels.
-                bitmap = new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
-                var pixels = new byte[checked(bitmap.PixelWidth * bitmap.PixelHeight * 4)];
-                bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
-                try
-                {
-                    for (var y = r.Y; y < r.Y + r.Height; y++)
-                    for (var x = r.X; x < r.X + r.Width; x++)
-                    {
-                        var i = (y * bitmap.PixelWidth + x) * 4;
-                        pixels[i] = pixels[i + 1] = pixels[i + 2] = 0; pixels[i + 3] = 255;
-                    }
-                    bitmap = BitmapSource.Create(bitmap.PixelWidth, bitmap.PixelHeight, 96, 96, PixelFormats.Bgra32, null, pixels, bitmap.PixelWidth * 4);
-                }
-                finally { Array.Clear(pixels); }
-            }
-        }
-        return Encode(bitmap, input.Text);
-    }
     public static BitmapSource Decode(ImmutableArray<byte> bytes)
     {
         using var stream = new MemoryStream(bytes.ToArray());

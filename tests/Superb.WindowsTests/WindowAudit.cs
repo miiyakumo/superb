@@ -10,6 +10,8 @@ namespace Superb.WindowsTests;
 // Read-only observer. No hooks, activation, input injection, pixels, UIA text or clipboard access.
 internal static class WindowAudit
 {
+    private delegate bool WindowCallback(nint window, nint data);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(WindowCallback callback, nint data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(nint window, StringBuilder text, int count);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(nint window, StringBuilder text, int count);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint window, uint command);
@@ -19,7 +21,7 @@ internal static class WindowAudit
     internal static object Snapshot(int targetPid, bool allWindows = false)
     {
         var windows = new List<object>();
-        Native.EnumWindows((window, _) =>
+        EnumWindows((window, _) =>
         {
             Native.GetWindowThreadProcessId(window, out var processId);
             var target = processId == targetPid;

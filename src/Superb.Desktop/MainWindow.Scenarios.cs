@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -28,28 +27,22 @@ public partial class MainWindow
     {
         var scene = ScenePicker.SelectedItem as ScenePreset;
         SceneName.Text = scene?.Name ?? "";
-        SceneInputPicker.SelectedIndex = (int)(scene?.Input ?? SceneInput.Clipboard);
         SceneSystemPrompt.Text = scene?.SystemPrompt ?? "";
-        SceneUserTemplate.Text = scene?.UserTemplate ?? "{input}";
-        SceneModel.Text = scene?.Model ?? "";
-        SceneTemperature.Text = scene?.Temperature?.ToString(CultureInfo.InvariantCulture) ?? "";
-        SceneTokens.Text = scene?.MaxTokens?.ToString(CultureInfo.InvariantCulture) ?? "";
-        SceneBackendPicker.ItemsSource = new[] { new BackendChoice("", "继承当前后端 / 固定路由") }
+        SceneBackendPicker.ItemsSource = new[] { new BackendChoice("", "使用当前默认连接") }
             .Concat(config.Backends.Select(b => new BackendChoice(b.Id, b.Name))).ToArray();
         SceneBackendPicker.SelectedValue = scene?.BackendId ?? "";
         SceneTriggerSummary.Text = scene is null ? "请先新建场景" : "发起键：" + TriggerLabel(scene.Trigger);
     }
     private void ScenePicker_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (!loading) PopulateSelectedScene(); }
     private void OpenHotkeys_Click(object sender, RoutedEventArgs e) { MainTabs.SelectedItem = ShortcutsTab; }
-    private async Task RunScene(ScenePreset scene)
+    private Task RunScene(ScenePreset scene)
     {
-        if (!Ready()) return;
-        if (Working) { Status("正在处理；请先停止生成"); return; }
+        if (!Ready()) return Task.CompletedTask;
+        if (Working) { Status("正在处理；请先停止生成"); return Task.CompletedTask; }
         workspaceSceneId = scene.Id;
-        RefreshWorkspace();
-        StopSync(); // A manual scene must not race an already authorized clipboard auto-send.
-        if (scene.Input == SceneInput.Question) await AskQuestion(scene);
-        else await CaptureInput(scene.Input == SceneInput.Screen, scene: scene);
+        if (!reader.IsVisible) reader.Show();
+        Status("场景已选择 · 使用当前输入与截图队列，准备好后发送");
+        return Task.CompletedTask;
     }
     private void SaveScenarioSettings(Func<Configuration> build)
     {
@@ -65,18 +58,13 @@ public partial class MainWindow
         }
         catch (Exception ex) { Report(ex); }
     }
-    private static double ParseSceneTemperature(string value) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : throw new SafeFailure("scene_invalid");
-    private static int ParseSceneTokens(string value) => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : throw new SafeFailure("scene_invalid");
     private void SaveScene_Click(object sender, RoutedEventArgs e)
     {
         if (ScenePicker.SelectedItem is not ScenePreset scene) return;
         SaveScenarioSettings(() =>
         {
-            var updated = scene with { Name = SceneName.Text.Trim(), Input = (SceneInput)SceneInputPicker.SelectedIndex,
-                SystemPrompt = SceneSystemPrompt.Text, UserTemplate = SceneUserTemplate.Text,
-                BackendId = SceneBackendPicker.SelectedValue is string id && id.Length > 0 ? id : null,
-                Model = SceneModel.Text.Trim(), Temperature = string.IsNullOrWhiteSpace(SceneTemperature.Text) ? null : ParseSceneTemperature(SceneTemperature.Text),
-                MaxTokens = string.IsNullOrWhiteSpace(SceneTokens.Text) ? null : ParseSceneTokens(SceneTokens.Text) };
+            var updated = scene with { Name = SceneName.Text.Trim(), SystemPrompt = SceneSystemPrompt.Text,
+                BackendId = SceneBackendPicker.SelectedValue is string id && id.Length > 0 ? id : null };
             var candidate = config with { Scenes = config.Scenes.Replace(scene, updated) };
             return candidate;
         });
@@ -104,9 +92,8 @@ public partial class MainWindow
         var original = SceneDefaults.All.FirstOrDefault(s => s.Id == scene.Id);
         if (original is null) { Status("自定义场景没有内置预设；可编辑后保存"); return; }
         // Fill the editor only; saving is explicit, and the user's binding remains unchanged.
-        SceneName.Text = original.Name; SceneSystemPrompt.Text = original.SystemPrompt; SceneUserTemplate.Text = original.UserTemplate;
-        SceneInputPicker.SelectedIndex = (int)original.Input; SceneBackendPicker.SelectedValue = "";
-        SceneModel.Text = SceneTemperature.Text = SceneTokens.Text = "";
+        SceneName.Text = original.Name; SceneSystemPrompt.Text = original.SystemPrompt;
+        SceneBackendPicker.SelectedValue = "";
         Status("已填入预设内容，保存场景后生效；发起键保持不变");
     }
     private void ResetHotkeys_Click(object sender, RoutedEventArgs e)

@@ -240,7 +240,7 @@ internal static class PointerFocusTests
                 Click(Named<Button>("InteractionButton")); Preserved("finish editing button");
                 Click(Child<ToggleButton>(Named<Expander>("ComposerExpander")));
                 reader.SetActions(true, false, true, true, false, true);
-                foreach (var (name, action) in new[] { ("SendButton", "workspaceSend"), ("ClipboardButton", "stageClipboard"),
+                foreach (var (name, action) in new[] { ("SendButton", "send"), ("ClipboardButton", "stageClipboard"),
                     ("CopyButton", "workspaceCopy"), ("RetryButton", "retry"), ("PauseButton", "pause") })
                 {
                     var before = commands.Count;

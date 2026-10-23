@@ -179,13 +179,11 @@ internal static class WorkspaceTests
                 var rows = (IEnumerable<HotkeyEditorRow>)((ItemsControl)window.FindName("HotkeyRows")).ItemsSource;
                 rows.Single(r => r.Action == "clipboard").Gesture = "Ctrl+Shift+B";
                 ((CheckBox)window.FindName("AutoCopy")).IsChecked = !config.AutoCopy;
-                ((TextBox)window.FindName("SyncDuration")).Text = "not a number";
                 var keys = window.BuildHotkeySettings(); keys.Validate();
                 Check(keys.Hotkeys.Single(k => k.Action == "clipboard").Gesture == "Ctrl+Shift+B");
-                Check(keys.AutoCopy == config.AutoCopy && keys.SyncMinutes == config.SyncMinutes && keys.Panel == config.Panel);
-                ((TextBox)window.FindName("SyncDuration")).Text = "15";
+                Check(keys.AutoCopy == config.AutoCopy && keys.Panel == config.Panel);
                 var preferences = window.BuildClipboardPreferences(); preferences.Validate();
-                Check(preferences.AutoCopy != config.AutoCopy && preferences.SyncMinutes == 15);
+                Check(preferences.AutoCopy != config.AutoCopy);
                 Check(preferences.Hotkeys == config.Hotkeys && preferences.Scenes == config.Scenes && preferences.Backends == config.Backends);
                 new WindowInteropHelper(window).EnsureHandle();
                 var reader = window.WorkspaceWindow; reader.Show(); Pump();
@@ -210,56 +208,66 @@ internal static class WorkspaceTests
                 Check(((Expander)window.FindName("ClipboardPreferences")).IsExpanded);
                 ((Button)window.FindName("NewModelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(((TextBox)window.FindName("MaxTokens")).Text == "200000");
-                Check(((TextBox)window.FindName("MaxOutput")).Text == "1000000");
+                Check(window.FindName("MaxOutput") is null && window.FindName("InputLimit") is null);
                 Check(!((Button)window.FindName("DeleteModelButton")).IsEnabled);
             }
             finally { window.Close(); }
         }));
-        tests.Add(("Deleting models preserves unrelated defaults, resets affected routes and protects scene references", () =>
+        tests.Add(("Connection editor preserves exact hidden limits and advanced compatibility while tokens timeout and thinking remain adjustable", () =>
+        {
+            var backend = new Backend("saved", "Saved", DeepSeekSetup.Endpoint, "model", "shared-key", SupportsImages: true,
+                Stream: false, MaxInputBytes: 1234567, MaxOutputChars: 234567, TimeoutSeconds: 321, MaxTokens: 8192,
+                SendTemperature: false, TokenLimitParameter: TokenLimitParameter.MaxCompletionTokens, ProxyMode: ProxyMode.System,
+                ThinkingMode: ThinkingMode.Disabled);
+            var window = new MainWindow(new Configuration { Backends = [backend], SelectedBackendId = backend.Id }, new WorkspaceBackend());
+            try
+            {
+                Check(window.BuildBackendSettings() == backend);
+                Check(window.FindName("InputLimit") is null && window.FindName("MaxOutput") is null && window.FindName("RoutingSettings") is null);
+                foreach (var removed in new[] { "SceneModel", "SceneTemperature", "SceneTokens", "SceneUserTemplate", "SceneInputPicker" })
+                    Check(window.FindName(removed) is null);
+                var advanced = (Expander)window.FindName("BackendAdvancedSettings");
+                Check(advanced.Header.ToString() == "高级连接设置" && !advanced.IsExpanded);
+                bool InsideAdvanced(DependencyObject control)
+                {
+                    for (var node = control; node is not null; node = LogicalTreeHelper.GetParent(node))
+                        if (node == advanced) return true;
+                    return false;
+                }
+                foreach (var name in new[] { "Vision", "Loopback", "Streaming", "ProxyModePicker", "SendTemperature", "UseCompletionTokens" })
+                    Check(InsideAdvanced((DependencyObject)window.FindName(name)));
+                foreach (var name in new[] { "MaxTokens", "TimeoutSeconds", "ThinkingModePicker" })
+                    Check(!InsideAdvanced((DependencyObject)window.FindName(name)));
+                ((TextBox)window.FindName("MaxTokens")).Text = "16384";
+                ((TextBox)window.FindName("TimeoutSeconds")).Text = "600";
+                ((ComboBox)window.FindName("ThinkingModePicker")).SelectedIndex = (int)ThinkingMode.Enabled;
+                var edited = window.BuildBackendSettings();
+                Check(edited == backend with { MaxTokens = 16384, TimeoutSeconds = 600, ThinkingMode = ThinkingMode.Enabled });
+                var saved = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(new Configuration { Backends = [edited], SelectedBackendId = edited.Id }, Configuration.Json), Configuration.Json)!;
+                saved.Validate(); Check(saved.Backends.Single() == edited);
+            }
+            finally { window.Close(); }
+        }));
+        tests.Add(("Deleting models preserves unrelated defaults and protects scene references", () =>
         {
             var first = new Backend("first", "First", "https://example.test/v1/chat/completions", "model", "");
             var second = first with { Id = "second", Name = "Second", SupportsImages = true };
-            var config = new Configuration { Backends = [first, second], SelectedBackendId = second.Id, Routing = new(first.Id, second.Id) };
+            var config = new Configuration { Backends = [first, second], SelectedBackendId = second.Id };
             var removed = config.WithoutBackend(first.Id); removed.Validate();
             Check(removed.Backends.SequenceEqual([second]) && removed.SelectedBackendId == second.Id);
-            Check(removed.Routing == new Routing(null, second.Id) && removed.Scenes == config.Scenes);
+            Check(removed.Scenes == config.Scenes);
             var selectedRemoved = config.WithoutBackend(second.Id); selectedRemoved.Validate();
-            Check(selectedRemoved.SelectedBackendId == first.Id && selectedRemoved.Routing == new Routing(first.Id));
+            Check(selectedRemoved.SelectedBackendId == first.Id);
             var empty = removed.WithoutBackend(second.Id); empty.Validate();
-            Check(empty.Backends.IsEmpty && empty.SelectedBackendId == "" && empty.Routing == new Routing());
+            Check(empty.Backends.IsEmpty && empty.SelectedBackendId == "");
             Reject("scene_backend_in_use", () => (config with { Scenes = [config.Scenes[0] with { BackendId = first.Id }] }).WithoutBackend(first.Id));
             Reject("backend_missing", () => config.WithoutBackend("missing"));
             Check(config.Backends.Length == 2);
         }));
-        tests.Add(("Model route pickers inherit defaults, validate image capability and save independently of processing and clipboard edits", () =>
+        tests.Add(("Scene shortcuts select a scene without sending; explicit send freezes the floating draft and queue", () =>
         {
-            var text = new Backend("text", "Text model", "https://example.test/v1/chat/completions", "model", "");
-            var image = text with { Id = "image", Name = "Image model", SupportsImages = true };
-            var config = new Configuration { Backends = [text, image], SelectedBackendId = text.Id, Routing = new(text.Id, image.Id) };
-            var window = new MainWindow(config, new WorkspaceBackend());
-            try
-            {
-                var textPicker = (ComboBox)window.FindName("TextRoutePicker");
-                var imagePicker = (ComboBox)window.FindName("ImageRoutePicker");
-                Check((string)textPicker.SelectedValue == text.Id && (string)imagePicker.SelectedValue == image.Id);
-                ((TextBox)window.FindName("PipelineBox")).Text = "invalid JSON";
-                ((TextBox)window.FindName("SyncDuration")).Text = "invalid number";
-                textPicker.SelectedValue = "";
-                var updated = window.BuildRoutingSettings(); updated.Validate();
-                Check(updated.Routing == new Routing(null, image.Id) && updated.Pipeline == config.Pipeline && updated.SyncMinutes == config.SyncMinutes);
-                Check(updated.Routing.Select(Payload.FromText("text"), updated.SelectedBackendId, updated.Backends).Id == text.Id);
-                Check(updated.Routing.Select(new Payload(null, [1], 1, 1), updated.SelectedBackendId, updated.Backends).Id == image.Id);
-                imagePicker.SelectedValue = text.Id;
-                Reject("backend_has_no_vision", () => window.BuildRoutingSettings());
-                imagePicker.SelectedValue = "";
-                Check(window.BuildRoutingSettings().Routing == new Routing());
-            }
-            finally { window.Close(); }
-        }));
-        tests.Add(("One-key question scenes still freeze the floating draft after removing the duplicate control workspace", () =>
-        {
-            var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "");
-            var scene = SceneDefaults.All.Single(s => s.Id == "algorithm") with { Input = SceneInput.Question };
+            var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "", SupportsImages: true);
+            var scene = SceneDefaults.All.Single(s => s.Id == "algorithm");
             var client = new WorkspaceBackend();
             var window = new MainWindow(new Configuration { Backends = [backend], SelectedBackendId = backend.Id, Scenes = [scene] }, client);
             var context = SynchronizationContext.Current;
@@ -267,10 +275,14 @@ internal static class WorkspaceTests
             try
             {
                 new WindowInteropHelper(window).EnsureHandle(); var reader = window.WorkspaceWindow; reader.Show(); Pump();
+                var picture = ImageProcessor.Encode(BitmapSource.Create(2, 2, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 16).ToArray(), 8));
+                window.QueueSnapshot(new(Guid.NewGuid(), InputKind.Screen, picture, 1, DateTimeOffset.UtcNow), "queued screenshot");
                 reader.SetDraft("synthetic question from the floating input");
-                var pending = window.RunCommand(scene.Action); Until(() => client.Requests.Count == 1 || pending.IsCompleted);
+                window.RunCommand(scene.Action).GetAwaiter().GetResult();
+                Check(client.Requests.Count == 0 && reader.SelectedSceneId == scene.Id);
+                var pending = window.RunCommand("send"); Until(() => client.Requests.Count == 1 || pending.IsCompleted);
                 var request = client.Requests.Single();
-                Check(request.SceneId == scene.Id && request.Snapshot.Kind == InputKind.ManualText && request.Content.Text!.Contains(reader.Draft));
+                Check(request.SceneId == scene.Id && request.Snapshot.Kind == InputKind.Screen && request.Content.Png == picture.Png && request.Content.Text!.Contains(reader.Draft));
                 client.Events.Writer.TryWrite(new("synthetic result")); client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
                 Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
                 Check(window.WorkspaceCoordinator.Latest is { State: RequestState.Completed, Text: "synthetic result" });
@@ -449,7 +461,7 @@ internal static class WorkspaceTests
                 ((TextBox)reader.FindName("DraftText")).Text = "synthetic draft without a model";
                 Check(((Button)reader.FindName("SendButton")).IsEnabled && !window.IsVisible);
                 var shown = 0; window.IsVisibleChanged += (_, _) => { if (window.IsVisible) shown++; };
-                window.RunCommand("workspaceSend").GetAwaiter().GetResult(); Pump();
+                window.RunCommand("send").GetAwaiter().GetResult(); Pump();
                 Check(!window.IsVisible && shown == 0 && !reader.Interactive && reader.Check());
                 Check(reader.Draft == "synthetic draft without a model" && client.Requests.Count == 0);
                 var status = ((TextBlock)reader.FindName("StateText")).Text;
@@ -466,7 +478,7 @@ internal static class WorkspaceTests
             var migrated = config.Migrate(); migrated.Validate();
             Check(migrated.Scenes[0].Trigger.Enabled && !migrated.Hotkeys.Single(k => k.Action == "interact").Enabled);
         }));
-        tests.Add(("Workspace input freezes image and supplement before mandatory masks and scene routing", () =>
+        tests.Add(("Workspace input freezes encoded image and supplement before scene routing", () =>
         {
             var png = ImageProcessor.Encode(BitmapSource.Create(2, 2, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 16).ToArray(), 8));
             var draft = new WorkspaceDraft();
@@ -476,10 +488,10 @@ internal static class WorkspaceTests
             draft.Set(input with { Content = Payload.FromText("later clipboard") }, "changed"); draft.Clear();
             Check(frozen.Content.HasImage && frozen.Content.Text == "Use Python" && frozen.ClipboardSequence == 42 && draft.Input is null);
             var b = new Backend("v", "Vision", "https://example.test/v1/chat/completions", "v", "", SupportsImages: true);
-            var settings = new Configuration { Backends = [b], SelectedBackendId = b.Id, Pipeline = new("mask", [new(StepKind.Mask, Rectangle: new(0, 0, 1, 1))]) };
-            var request = SceneRequestFactory.Prepare(settings, settings.Scenes[1], frozen, new ImageProcessor());
+            var settings = new Configuration { Backends = [b], SelectedBackendId = b.Id };
+            var request = SceneRequestFactory.Prepare(settings, settings.Scenes[1], frozen);
             var pixels = new byte[16]; ImageProcessor.Decode(request.Content.Png).CopyPixels(pixels, 8, 0);
-            Check(pixels[0] == 0 && request.Content.Text!.Contains("Use Python") && request.SceneId == "algorithm");
+            Check(pixels[0] == 255 && request.Content.Text!.Contains("Use Python") && request.SceneId == "algorithm");
             var manual = draft.Freeze("manual only", 77);
             Check(manual.Kind == InputKind.ManualText && !manual.Content.HasImage && manual.Content.Text == "manual only");
         }));
@@ -518,18 +530,18 @@ internal static class WorkspaceTests
             Check(clicks.Process(false, new() { X = 20, Y = 20 }) && clicks.Complete);
             Check(!clicks.Process(true, new()));
         }));
-        tests.Add(("Every queued image is masked and all processed images reach the production HTTP adapter", () =>
+        tests.Add(("Every queued image reaches the production HTTP adapter unchanged", () =>
         {
             using var endpoint = new SyntheticEndpoint(); using var client = new ChatCompletionsClient(endpoint);
             var image = ImageProcessor.Encode(BitmapSource.Create(2, 2, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 16).ToArray(), 8));
             var b = new Backend("test", "Synthetic", endpoint.Url, "vision", "", SupportsImages: true, AllowLoopbackHttp: true, Stream: false);
-            var config = new Configuration { Backends = [b], SelectedBackendId = b.Id, Pipeline = new("mask", [new(StepKind.Mask, Rectangle: new(0, 0, 1, 1))]) };
+            var config = new Configuration { Backends = [b], SelectedBackendId = b.Id };
             var draft = new WorkspaceDraft();
             for (var i = 0; i < 2; i++) draft.Add(new(Guid.NewGuid(), InputKind.Screen, image, 1, DateTimeOffset.UtcNow), "screen");
-            var request = SceneRequestFactory.Prepare(config, config.Scenes[1], draft.Freeze("both pictures", 1), new ImageProcessor());
+            var request = SceneRequestFactory.Prepare(config, config.Scenes[1], draft.Freeze("both pictures", 1));
             foreach (var part in request.Content.Images)
             {
-                var pixels = new byte[16]; ImageProcessor.Decode(part.Png).CopyPixels(pixels, 8, 0); Check(pixels[0] == 0 && pixels[3] == 255);
+                var pixels = new byte[16]; ImageProcessor.Decode(part.Png).CopyPixels(pixels, 8, 0); Check(pixels[0] == 255 && pixels[3] == 255);
             }
             async Task Send() { await foreach (var item in client.SendAsync(request, CancellationToken.None)) { } }
             Send().GetAwaiter().GetResult();
@@ -540,12 +552,8 @@ internal static class WorkspaceTests
             {
                 var uri = part.GetProperty("image_url").GetProperty("url").GetString()!;
                 var bytes = Convert.FromBase64String(uri[(uri.IndexOf(',') + 1)..]).ToImmutableArray();
-                var pixels = new byte[16]; ImageProcessor.Decode(bytes).CopyPixels(pixels, 8, 0); Check(pixels[0] == 0);
+                var pixels = new byte[16]; ImageProcessor.Decode(bytes).CopyPixels(pixels, 8, 0); Check(pixels[0] == 255);
             }
-            var small = ImageProcessor.Encode(BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[] { 255, 255, 255, 255 }, 4));
-            var mismatched = image with { AdditionalImages = [new(small.Png, 1, 1)] };
-            Reject("processing_required_failed", () => Preprocessor.Process(mismatched,
-                new("mask", [new(StepKind.Mask, Rectangle: new(1, 1, 1, 1))]), new ImageProcessor()));
         }));
         tests.Add(("Streaming keeps document and committed paragraphs and preserves manual reading position", () =>
         {
@@ -592,7 +600,7 @@ internal static class WorkspaceTests
                 Check(!reader.Interactive && picker.IsEnabled && !picker.Focusable && !sceneClick.Handled && client.Requests.Count == 0);
                 ((ComboBox)reader.FindName("WorkspaceScene")).SelectedValue = "algorithm";
                 reader.SetDraft("only visible manual input");
-                var pending = window.RunCommand("workspaceSend");
+                var pending = window.RunCommand("send");
                 Until(() => client.Requests.Count == 1 || pending.IsCompleted);
                 if (client.Requests.Count != 1)
                 {
@@ -620,7 +628,7 @@ internal static class WorkspaceTests
                 Check(!((Button)reader.FindName("CopyButton")).IsEnabled && !((Button)reader.FindName("SendButton")).IsEnabled);
                 reader.SetDraft("must clear when protection is lost");
                 Check(Native.SetWindowDisplayAffinity(new WindowInteropHelper(reader).Handle, 0));
-                window.RunCommand("workspaceSend").GetAwaiter().GetResult();
+                window.RunCommand("send").GetAwaiter().GetResult();
                 Check(window.WorkspaceCoordinator.Mode == RunState.ProtectionUnavailable && client.Requests.Count == 1 && reader.Draft == "");
             }
             finally { window.Close(); SynchronizationContext.SetSynchronizationContext(context); }
@@ -629,8 +637,7 @@ internal static class WorkspaceTests
         {
             var client = new WorkspaceBackend();
             var b = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "vision", "", SupportsImages: true);
-            var config = new Configuration { Backends = [b], SelectedBackendId = b.Id,
-                Pipeline = new("mask", [new(StepKind.Mask, Rectangle: new(0, 0, 1, 1))]) };
+            var config = new Configuration { Backends = [b], SelectedBackendId = b.Id };
             var window = new MainWindow(config, client);
             var context = SynchronizationContext.Current;
             SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(window.Dispatcher));
@@ -653,7 +660,7 @@ internal static class WorkspaceTests
                 Check(request.Content.Images.Count() == 2);
                 foreach (var part in request.Content.Images)
                 {
-                    var pixels = new byte[16]; ImageProcessor.Decode(part.Png).CopyPixels(pixels, 8, 0); Check(pixels[0] == 0 && pixels[3] == 255);
+                    var pixels = new byte[16]; ImageProcessor.Decode(part.Png).CopyPixels(pixels, 8, 0); Check(pixels[0] == 255 && pixels[3] == 255);
                 }
                 client.Events.Writer.TryWrite(new("complete answer")); client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
                 Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
@@ -691,7 +698,7 @@ internal static class WorkspaceTests
                 var original = client.Requests.Single();
                 var recovery = window.RunCommand("retryDirect"); Until(() => client.Requests.Count == 2);
                 var recovered = client.Requests[1];
-                Check(recovered.Content == original.Content && recovered.Pipeline == original.Pipeline && recovered.Snapshot == original.Snapshot);
+                Check(recovered.Content == original.Content && recovered.Snapshot == original.Snapshot);
                 Check(recovered.Backend == original.Backend with { ThinkingMode = ThinkingMode.Disabled, MaxTokens = 16384 });
                 client.Events.Writer.TryWrite(new("synthetic complete answer")); client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
                 Until(() => recovery.IsCompleted); recovery.GetAwaiter().GetResult();
@@ -857,7 +864,7 @@ internal static class WorkspaceTests
                 window.RunCommand("interact").GetAwaiter().GetResult(); Pump();
                 Check(reader.Interactive && Native.GetForegroundWindow() == origin && activations == 0);
                 reader.SetDraft("Synthetic focus regression question");
-                var pending = window.RunCommand("workspaceSend");
+                var pending = window.RunCommand("send");
                 Until(() => client.Requests.Count == 1 || pending.IsCompleted);
                 Check(client.Requests.Count == 1 && Native.GetForegroundWindow() == origin && activations == 0);
                 client.Events.Writer.TryWrite(new("Synthetic answer"));
@@ -872,7 +879,7 @@ internal static class WorkspaceTests
                 var editor = new WindowInteropHelper(reader).Handle;
                 var chosenActivations = activations;
                 reader.SetDraft("Synthetic question from the active editor");
-                pending = window.RunCommand("workspaceSend");
+                pending = window.RunCommand("send");
                 Until(() => client.Requests.Count == 2 || pending.IsCompleted);
                 Check(client.Requests.Count == 2 && Native.GetForegroundWindow() == editor && activations == chosenActivations);
                 client.Events.Writer.TryWrite(new("Second synthetic answer"));

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -6,33 +5,13 @@ using Superb.Core;
 
 namespace Superb.Desktop.Platform;
 
-internal enum CaptureKind { Monitor, Window, Region }
-internal sealed record CaptureTarget(CaptureKind Kind, string Label, PixelRect Bounds, string Device = "", long Handle = 0,
-    uint ProcessId = 0, long ProcessStarted = 0, PixelRect? MonitorBounds = null)
+internal enum CaptureKind { Monitor, Region }
+internal sealed record CaptureTarget(CaptureKind Kind, string Label, PixelRect Bounds, string Device = "", PixelRect? MonitorBounds = null)
 {
     public override string ToString() => Label;
 }
 internal static class CaptureService
 {
-    public static List<CaptureTarget> Enumerate()
-    {
-        var targets = Monitors();
-        Native.EnumWindows((hwnd, _) =>
-        {
-            Native.GetWindowThreadProcessId(hwnd, out var pid);
-            if (pid == Environment.ProcessId || !Native.IsWindowVisible(hwnd) || Native.IsIconic(hwnd)) return true;
-            try
-            {
-                using var process = Process.GetProcessById((int)pid);
-                if (Native.GetWindowRect(hwnd, out var r) && r.Width > 0 && r.Height > 0)
-                    targets.Add(new(CaptureKind.Window, $"窗口 · {process.ProcessName} · 0x{hwnd:X}", ToRect(r),
-                        Handle: hwnd, ProcessId: pid, ProcessStarted: process.StartTime.ToUniversalTime().Ticks));
-            }
-            catch { /* Inaccessible or exited windows are not selectable. */ }
-            return true;
-        }, 0);
-        return targets;
-    }
     internal static List<CaptureTarget> Monitors()
     {
         var targets = new List<CaptureTarget>();
@@ -77,9 +56,7 @@ internal static class CaptureService
             bitmap = Native.CreateDIBSection(screen, ref info, 0, out bits, 0, 0);
             if (bitmap == 0 || bits == 0) throw new SafeFailure("capture_allocate_failed");
             previous = Native.SelectObject(memory, bitmap);
-            var success = target.Kind == CaptureKind.Window
-                ? Native.PrintWindow((nint)target.Handle, memory, 2)
-                : Native.BitBlt(memory, 0, 0, bounds.Width, bounds.Height, screen, bounds.X, bounds.Y, 0x40CC0020);
+            var success = Native.BitBlt(memory, 0, 0, bounds.Width, bounds.Height, screen, bounds.X, bounds.Y, 0x40CC0020);
             if (!success) throw new SafeFailure("capture_failed");
             if (Validate(target) != bounds) throw new SafeFailure("capture_target_changed");
             var pixels = new byte[checked(bounds.Width * bounds.Height * 4)];
@@ -116,18 +93,6 @@ internal static class CaptureService
     }
     private static PixelRect Validate(CaptureTarget target)
     {
-        if (target.Kind == CaptureKind.Window)
-        {
-            var hwnd = (nint)target.Handle;
-            if (!Native.IsWindow(hwnd) || Native.IsIconic(hwnd)) throw new SafeFailure("capture_target_lost");
-            Native.GetWindowThreadProcessId(hwnd, out var pid);
-            using var process = Process.GetProcessById((int)pid);
-            if (pid != target.ProcessId || process.StartTime.ToUniversalTime().Ticks != target.ProcessStarted ||
-                !Native.GetWindowRect(hwnd, out var rect)) throw new SafeFailure("capture_target_lost");
-            // Reconfiguration is required after moving/resizing. Never silently widen the target.
-            if (ToRect(rect) != target.Bounds) throw new SafeFailure("capture_geometry_changed");
-            return target.Bounds;
-        }
         var monitor = Monitors().FirstOrDefault(x => x.Device == target.Device)
             ?? throw new SafeFailure("capture_monitor_lost");
         var b = target.Bounds;

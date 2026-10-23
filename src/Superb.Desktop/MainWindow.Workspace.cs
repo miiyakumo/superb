@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Windows;
 using Superb.Core;
 using Superb.Desktop.Platform;
@@ -19,14 +18,12 @@ public partial class MainWindow
     {
         if (reader is null) return;
         var scene = WorkspaceScene;
-        var choices = config.Scenes.Prepend(new ScenePreset("", "直接提问", "", "{input}", SceneInput.Question, new("unused", "Ctrl+Alt+N", Enabled: false)));
+        var choices = config.Scenes.Prepend(new ScenePreset("", "直接提问", "", new("unused", "Ctrl+Alt+N", Enabled: false)));
         string receiver;
         try
         {
-            var content = workspace.Input?.Content ?? Payload.FromText(reader.Draft);
-            var target = scene?.BackendId is { } id ? config.Backends.First(b => b.Id == id)
-                : config.Routing.Select(content, config.SelectedBackendId, config.Backends);
-            receiver = $"下次：{target.Name} / {(string.IsNullOrWhiteSpace(scene?.Model) ? target.Model : scene.Model)}";
+            var target = SceneRequestFactory.SelectBackend(config, scene);
+            receiver = $"下次：{target.Name} / {target.Model}";
         }
         catch { receiver = "请先连接或选择模型"; }
         if (coordinator.Current is { } current)
@@ -40,7 +37,7 @@ public partial class MainWindow
         reader.Configure(choices, shownScene, receiver, editKey);
         var update = coordinator.Latest;
         var partial = update?.State is RequestState.Cancelled or RequestState.Failed;
-        reader.SetActions(coordinator.Mode == RunState.Ready, Working, prepared is not null || workspace.HasInput(reader.Draft),
+        reader.SetActions(coordinator.Mode == RunState.Ready, Working, workspace.HasInput(reader.Draft),
             !string.IsNullOrEmpty(update?.Text) && !Working, partial, coordinator.Current is not null && update?.State is RequestState.Completed or RequestState.Failed or RequestState.Cancelled);
         reader.SetSelecting(captureSelectionCancellation is not null);
         reader.SetDirectRetry(DirectRetryLimit);
@@ -69,15 +66,13 @@ public partial class MainWindow
     {
         if (Working) { Status("请先停止生成，再切换场景"); return; }
         workspaceSceneId = id;
-        // A staged automatic request was frozen for a different scene. It cannot be relabelled.
-        prepared = null;
+
         RefreshWorkspace();
     }
     private Task StageClipboard()
     {
         if (!Ready()) return Task.CompletedTask;
         if (Working) { Status("正在处理；请先停止生成"); return Task.CompletedTask; }
-        StopSync();
         var version = ++operation;
         preparing = true; RefreshWorkspace(); Status("读取剪贴板");
         try
@@ -102,7 +97,7 @@ public partial class MainWindow
         // acquisition leaves the previous answer and its input intact.
         if (coordinator.Latest is not null) { workspace.Set(snapshot, label); reader.SetDraft(""); }
         else workspace.Add(snapshot, label);
-        coordinator.Invalidate(); prepared = null; completed = null; latestUpdate = null; ClearOutput();
+        coordinator.Invalidate(); completed = null; latestUpdate = null; ClearOutput();
         reader.SetInputs(workspace.Items);
     }
     private async Task StageScreenshot(bool region)
@@ -111,7 +106,6 @@ public partial class MainWindow
         if (Working) { Status("正在处理；请先停止当前任务"); return; }
         if (coordinator.Latest is null && workspace.ImageCount >= Policy.MaximumImages) { Status("最多 5 张图片，请先移除或发送队列"); return; }
         if (captureTask is { IsCompleted: false }) { Status("上次采集尚未结束，请稍后重试"); return; }
-        StopSync();
         var version = ++operation; var wasVisible = reader.IsVisible; var controlVisible = IsVisible;
         var captured = false;
         using var selection = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -172,13 +166,6 @@ public partial class MainWindow
             ObserveCaptureWorker();
         }
     }
-    private void OpenCaptureSettings()
-    {
-        Show();
-        MainTabs.SelectedItem = AdvancedTab; CaptureSettings.IsExpanded = true;
-        RefreshTargets_Click(this, new RoutedEventArgs()); CaptureSettings.BringIntoView();
-        Status("请选择截图范围，再点击“应用采集目标”；随后返回悬浮工作区");
-    }
     private void ObserveCaptureWorker()
     {
         if (captureTask is not { } outstanding) return;
@@ -193,10 +180,6 @@ public partial class MainWindow
         if (!Ready()) return;
         if (Working) { Status("正在处理；请先停止生成"); return; }
         if (config.Backends.IsDefaultOrEmpty) { Status("尚未连接模型，请打开“设置”并点击设置窗口连接"); return; }
-        StopSync();
-        // Live Clipboard may have a policy-checked frozen request awaiting manual authorization.
-        // Editing the visible draft or scene invalidates it; otherwise preserve its recipient and content.
-        if (prepared is not null) { reader.SetMode(false); await SendPrepared(); return; }
         if (!workspace.HasInput(reader.Draft)) { Status("请先输入问题或收集输入"); return; }
         var version = ++operation;
         var settings = config; var scene = WorkspaceScene;
@@ -205,31 +188,29 @@ public partial class MainWindow
         {
             var snapshot = workspace.Freeze(reader.Draft, clipboard!.Sequence);
             if (snapshot.Content.Size > Policy.AbsoluteInputLimit) throw new SafeFailure("input_too_large");
-            coordinator.Invalidate(); completed = null; prepared = null; latestUpdate = null; ClearOutput();
-            Status("本地处理中");
-            var request = await Task.Run(() =>
-            {
-                if (scene is not null) return SceneRequestFactory.Prepare(settings, scene, snapshot, new ImageProcessor());
-                var notices = new List<string>();
-                var content = Preprocessor.Process(snapshot.Content, settings.Pipeline, new ImageProcessor(), notices.Add);
-                return new PreparedRequest(snapshot with { Content = content }, content, settings.Pipeline,
-                    settings.Routing.Select(content, settings.SelectedBackendId, settings.Backends), notices.ToImmutableArray());
-            });
+            coordinator.Invalidate(); completed = null; latestUpdate = null; ClearOutput();
             if (version != operation || !Ready()) return;
-            Policy.Check(request); prepared = request;
+            var request = SceneRequestFactory.Prepare(settings, scene, snapshot);
             reader.SetMode(false);
             if (!reader.IsVisible) reader.Show();
-            await SendPrepared();
+            await SendPrepared(request);
         }
-        catch (Exception ex) { if (version == operation) { prepared = null; Report(ex); } }
+        catch (Exception ex) { if (version == operation) { Report(ex); } }
         finally { if (version == operation) { preparing = false; RefreshWorkspace(); } }
+    }
+    private async Task SendPrepared(PreparedRequest request)
+    {
+        if (!Ready()) return;
+        completed = null; latestUpdate = null; ClearOutput();
+        await coordinator.RunAsync(request);
+        RefreshWorkspace();
     }
     private void StopGeneration()
     {
         if (!Working) { Status("当前没有正在生成的任务"); return; }
         captureSelectionCancellation?.Cancel();
         if (captureSelectionCancellation is not null && reader.Check()) reader.Show();
-        operation++; preparing = false; prepared = null; completed = null; latestUpdate = null;
+        operation++; preparing = false; completed = null; latestUpdate = null;
         coordinator.Stop();
         if (coordinator.Latest is { State: RequestState.Cancelled } stopped && protection.Check() && reader.Check())
         {
@@ -241,8 +222,8 @@ public partial class MainWindow
     {
         captureSelectionCancellation?.Cancel();
         if (captureSelectionCancellation is not null && reader.Check()) reader.Show();
-        operation++; preparing = false; StopSync(); coordinator.Invalidate();
-        prepared = null; completed = null; latestUpdate = null; workspace.Clear();
+        operation++; preparing = false; coordinator.Invalidate();
+        completed = null; latestUpdate = null; workspace.Clear();
         reader.Clear(); ClearOutput(); Status("等待输入 · 新任务"); RefreshWorkspace();
     }
     private void CopyWorkspaceAnswer()
@@ -254,10 +235,10 @@ public partial class MainWindow
     private async Task RetryDirectAnswer()
     {
         if (!Ready() || Working || DirectRetryLimit is not { } limit || coordinator.Current is not { } prior) return;
-        // Explicit one-attempt recovery: retain frozen processed images and show the new budget.
+        // Explicit one-attempt recovery: retain frozen input and show the new budget.
         // It neither changes saved defaults nor silently repeats the original paid request.
-        prepared = prior.Request with { Backend = prior.Request.Backend with { ThinkingMode = ThinkingMode.Disabled, MaxTokens = limit } };
+        var request = prior.Request with { Backend = prior.Request.Backend with { ThinkingMode = ThinkingMode.Disabled, MaxTokens = limit } };
         reader.SetMode(false);
-        await SendPrepared();
+        await SendPrepared(request);
     }
 }

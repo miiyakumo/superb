@@ -46,11 +46,9 @@ public sealed class Coordinator(IBackendClient client)
         Latest = new(Current, State, prior?.Text ?? "");
         Updated?.Invoke(Latest);
     }
-    public async Task RunAsync(PreparedRequest request, bool automatic = false, SyncGrant? grant = null)
+    public async Task RunAsync(PreparedRequest request)
     {
         if (Mode != RunState.Ready) throw new SafeFailure("session_not_ready");
-        if (automatic && (grant is null || !grant.Allows(request.Snapshot.Kind, request.Backend.Id, DateTimeOffset.UtcNow, true)))
-            throw new SafeFailure("sync_authorization_expired");
         Invalidate();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(request.Backend.TimeoutSeconds));
         currentCancellation = cts;

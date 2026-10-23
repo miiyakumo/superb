@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.IO;
 using System.Text.Json;
 using Superb.Core;
 using Superb.Desktop;
@@ -16,16 +17,70 @@ internal static class ScenarioTests
     }
     internal static void Add(List<(string, Action)> tests)
     {
+        tests.Add(("Old send aliases merge deterministically and preserve customized or disabled bindings", () =>
+        {
+            var baseline = new Configuration { SchemaVersion = 2 };
+            var oldSend = new Hotkey("send", "Ctrl+Alt+7");
+            var oldAsk = new Hotkey("ask", "Ctrl+Alt+Enter");
+            void CheckBinding(Hotkey? send, Hotkey? ask, Hotkey expected)
+            {
+                var old = baseline with { Hotkeys = baseline.Hotkeys.Where(k => k.Action != "send")
+                    .Concat(new[] { send, ask }.OfType<Hotkey>()).ToImmutableArray() };
+                var migrated = old.Migrate(); migrated.Validate();
+                Check(migrated.Hotkeys.Single(k => k.Action == "send") == expected);
+                Check(!migrated.Hotkeys.Any(k => k.Action == "ask") && migrated.Migrate() == migrated);
+            }
+            CheckBinding(oldSend, oldAsk, oldAsk with { Action = "send" });
+            var customSend = oldSend with { Gesture = "F23", Mode = HotkeyMode.Exclusive };
+            CheckBinding(customSend, oldAsk, customSend);
+            CheckBinding(oldSend with { Enabled = false }, oldAsk, oldSend with { Enabled = false });
+            CheckBinding(oldSend, oldAsk with { Enabled = false }, oldSend);
+            CheckBinding(null, oldAsk with { Gesture = "Ctrl+Shift+Enter", Enabled = false },
+                oldAsk with { Action = "send", Gesture = "Ctrl+Shift+Enter", Enabled = false });
+            CheckBinding(oldSend, null, oldSend);
+            CheckBinding(null, null, HotkeyDefaults.All.Single(k => k.Action == "send"));
+        }));
+        tests.Add(("Schema upgrade backs up exact old JSON, drops removed fields and retains saved product preferences", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "superb-upgrade-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var path = Path.Combine(directory, "settings.json");
+                var b = new Backend("saved", "Saved", "https://example.test/chat/completions", "custom-model", "synthetic-reference");
+                var old = new Configuration { SchemaVersion = 2, Backends = [b], SelectedBackendId = b.Id,
+                    AutoCopy = true, Panel = new(FontSize: 24),
+                    Scenes = [SceneDefaults.All[0] with { SystemPrompt = "custom prompt", BackendId = b.Id }] };
+                var json = JsonSerializer.Serialize(old, Configuration.Json);
+                json = json.Insert(json.LastIndexOf('}'), ",\"Pipeline\":{\"Steps\":[{\"Kind\":\"Mask\"}]},\"Capture\":{\"Kind\":\"Window\"},\"SyncMinutes\":15,\"CombineCaptureAndSend\":true,\"Routing\":{\"TextBackendId\":\"gone\",\"ImageBackendId\":\"gone\"}");
+                File.WriteAllText(path, json);
+                var upgraded = Configuration.Load(path); upgraded.Validate();
+                Check(upgraded.SchemaVersion == 4 && upgraded.AutoCopy && upgraded.Panel == old.Panel);
+                Check(upgraded.Backends.SequenceEqual(old.Backends) && upgraded.Scenes.SequenceEqual(old.Scenes));
+                var backups = Directory.GetFiles(directory, "*.bak");
+                Check(backups.Length == 1 && File.ReadAllText(backups[0]) == json);
+                using var saved = JsonDocument.Parse(File.ReadAllText(path));
+                foreach (var removed in new[] { "Pipeline", "Capture", "SyncMinutes", "CombineCaptureAndSend", "Routing" })
+                    Check(!saved.RootElement.TryGetProperty(removed, out _));
+                Configuration.Load(path);
+                Check(Directory.GetFiles(directory, "*.bak").Length == 1);
+                const string invalid = "{\"SchemaVersion\":99}";
+                File.WriteAllText(path, invalid);
+                Reject(() => Configuration.Load(path), "config_invalid");
+                Check(File.ReadAllText(path) == invalid && Directory.GetFiles(directory, "*.bak").Length == 1);
+            }
+            finally { Directory.Delete(directory, true); }
+        }));
         tests.Add(("Schema 1 migration preserves custom keys and converts legacy exclusive reader settings", () =>
         {
             var old = new Configuration { SchemaVersion = 1, ExclusiveReaderKeys = true,
                 Hotkeys = HotkeyDefaults.All.Where(k => k.Action is not ("ask" or "resume" or "retry")).Select(k => k.Action == "copy" ? k with { Gesture = "Ctrl+Alt+V" } : k).ToImmutableArray() };
             var migrated = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(old, Configuration.Json), Configuration.Json)!.Migrate();
             migrated.Validate();
-            Check(migrated.SchemaVersion == 2 && !migrated.ExclusiveReaderKeys && migrated.ExclusiveHotkeysEnabled);
+            Check(migrated.SchemaVersion == 4 && !migrated.ExclusiveReaderKeys && migrated.ExclusiveHotkeysEnabled);
             Check(migrated.Hotkeys.Single(k => k.Action == "toggle") is { Gesture: "F6", Mode: HotkeyMode.Exclusive });
             Check(migrated.Hotkeys.Single(k => k.Action == "copy").Gesture == "Ctrl+Alt+V");
-            Check(migrated.Hotkeys.Count(k => k.Action == "ask") == 1 && migrated.Scenes.Length == 3);
+            Check(!migrated.Hotkeys.Any(k => k.Action == "ask") && migrated.Scenes.Length == 3);
             Check(migrated.Migrate() == migrated);
         }));
         tests.Add(("Migration retains old bindings when new default actions or scenes would collide", () =>
@@ -34,7 +89,7 @@ internal static class ScenarioTests
                 .Select(k => k.Action == "copy" ? k with { Gesture = "Ctrl+Alt+C" } : k.Action == "send" ? k with { Gesture = "Ctrl+Alt+Enter" } : k).ToImmutableArray() };
             var next = old.Migrate(); next.Validate();
             Check(next.Hotkeys.Single(k => k.Action == "copy").Enabled && !next.Scenes.Single(s => s.Id == "coding").Trigger.Enabled);
-            Check(next.Hotkeys.Single(k => k.Action == "send").Enabled && !next.Hotkeys.Single(k => k.Action == "ask").Enabled);
+            Check(next.Hotkeys.Single(k => k.Action == "send").Enabled && !next.Hotkeys.Any(k => k.Action == "ask"));
             var oldSingle = old with { Hotkeys = old.Hotkeys.Select(k => k.Action == "copy" ? k with { Gesture = "F9" } : k).ToImmutableArray() };
             var migratedSingle = oldSingle.Migrate(); migratedSingle.Validate();
             Check(migratedSingle.Hotkeys.Single(k => k.Action == "copy") is { Enabled: false, Mode: HotkeyMode.Exclusive, Gesture: "F9" });
@@ -50,7 +105,7 @@ internal static class ScenarioTests
         }));
         tests.Add(("Only the stock algorithm prompt is upgraded; custom instructions and generation settings survive", () =>
         {
-            var scene = SceneDefaults.All[1] with { SystemPrompt = SceneDefaults.LegacyAlgorithmPrompt, Model = "custom-model", MaxTokens = 1234,
+            var scene = SceneDefaults.All[1] with { SystemPrompt = SceneDefaults.LegacyAlgorithmPrompt,
                 Trigger = new("scene:algorithm", "Ctrl+Alt+Z") };
             var config = new Configuration { Scenes = [scene] };
             var migrated = config.Migrate();
@@ -72,24 +127,63 @@ internal static class ScenarioTests
             Reject(() => HotkeyDefaults.Parse(new("test", "Ctrl+Alt+Delete")), "hotkey_combination_required");
             Check(HotkeyDefaults.Parse(new("test", "F24", HotkeyMode.Exclusive)).Key == System.Windows.Input.Key.F24);
         }));
-        tests.Add(("Scene validation rejects missing input placeholder and missing backend without rerouting", () =>
+        tests.Add(("Scene validation rejects missing backend without rerouting", () =>
         {
             var config = new Configuration(); var scene = config.Scenes[0];
-            Reject(() => (config with { Scenes = [scene with { UserTemplate = "fixed" }] }).Validate(), "scene_invalid");
             Reject(() => (config with { Scenes = [scene with { BackendId = "gone" }] }).Validate(), "scene_backend_missing");
-            Reject(() => (config with { Scenes = [scene with { Temperature = double.NaN }] }).Validate(), "scene_invalid");
         }));
-        tests.Add(("Scene preparation retains mandatory masks and checks image capability and total prompt size", () =>
+        tests.Add(("Scene preparation preserves encoded images and checks image capability and total prompt size", () =>
         {
             var b = new Backend("vision", "Vision", "https://example.test/v1/chat/completions", "v", "", SupportsImages: true);
-            var settings = new Configuration { Backends = [b], SelectedBackendId = b.Id, Pipeline = new("mask", [new(StepKind.Mask, Rectangle: new(0, 0, 1, 1))]) };
+            var settings = new Configuration { Backends = [b], SelectedBackendId = b.Id };
             var png = ImageProcessor.Encode(System.Windows.Media.Imaging.BitmapSource.Create(2, 2, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 16).ToArray(), 8));
             var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.Screen, png, 0, DateTimeOffset.UtcNow);
-            var request = SceneRequestFactory.Prepare(settings, settings.Scenes[0], snapshot, new ImageProcessor());
+            var request = SceneRequestFactory.Prepare(settings, settings.Scenes[0], snapshot);
             var pixels = new byte[16]; ImageProcessor.Decode(request.Content.Png).CopyPixels(pixels, 8, 0);
-            Check(pixels[0] == 0 && request.Content.HasImage && request.SystemPrompt == settings.Scenes[0].SystemPrompt);
-            Reject(() => SceneRequestFactory.Prepare(settings with { Backends = [b with { SupportsImages = false }] }, settings.Scenes[0], snapshot, new ImageProcessor()), "backend_has_no_vision");
+            Check(pixels[0] == 255 && request.Content.HasImage && request.SystemPrompt == settings.Scenes[0].SystemPrompt);
+            Reject(() => SceneRequestFactory.Prepare(settings with { Backends = [b with { SupportsImages = false }] }, settings.Scenes[0], snapshot), "backend_has_no_vision");
             Reject(() => Policy.Check(request with { Backend = b with { MaxInputBytes = 1 } }), "input_too_large");
+        }));
+        tests.Add(("Legacy scene overrides migrate once into independent connections and custom template instructions become system prompts", () =>
+        {
+            var backend = new Backend("base", "Base", "https://example.test/chat/completions", "base-model", "shared-key",
+                MaxInputBytes: 1234567, MaxOutputChars: 234567, Stream: false, SendTemperature: false,
+                TokenLimitParameter: TokenLimitParameter.MaxCompletionTokens, ProxyMode: ProxyMode.System);
+            var scene = JsonSerializer.Deserialize<ScenePreset>("""
+                {"Id":"custom","Name":"Custom","SystemPrompt":"System instructions","UserTemplate":"Solve carefully: {input}",
+                 "Input":"Screen","Model":"custom-model","Temperature":0.7,"MaxTokens":1234,
+                 "Trigger":{"Action":"scene:custom","Gesture":"Ctrl+Alt+Z","Enabled":false}}
+                """, Configuration.Json)!;
+            var old = new Configuration { SchemaVersion = 2, Backends = [backend], SelectedBackendId = backend.Id, Scenes = [scene] };
+            var migrated = old.Migrate(); migrated.Validate();
+            var next = migrated.Scenes.Single(); var connection = migrated.Backends.Single(b => b.Id == next.BackendId);
+            Check(connection == backend with { Id = connection.Id, Name = "Custom · 模型配置", Model = "custom-model", Temperature = 0.7, MaxTokens = 1234 });
+            Check(migrated.Backends[0] == backend && migrated.SelectedBackendId == backend.Id);
+            Check(next.SystemPrompt == "System instructions\n\nSolve carefully:" && next.Trigger == scene.Trigger && next.LegacySettings is null);
+            Check(migrated.Migrate() == migrated);
+            var restored = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(migrated, Configuration.Json), Configuration.Json)!.Migrate();
+            restored.Validate(); Check(restored.Backends.SequenceEqual(migrated.Backends) && restored.Scenes.Single() == next);
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(migrated, Configuration.Json));
+            var savedScene = json.RootElement.GetProperty("Scenes")[0];
+            foreach (var removed in new[] { "Model", "Temperature", "MaxTokens", "UserTemplate", "Input", "LegacySettings" })
+                Check(!savedScene.TryGetProperty(removed, out _));
+        }));
+        tests.Add(("Scene connections inherit the current default and never select by input type or fall back from a missing pin", () =>
+        {
+            var text = new Backend("text", "Text", "https://example.test/chat/completions", "text-model", "");
+            var vision = text with { Id = "vision", Name = "Vision", Model = "vision-model", SupportsImages = true };
+            var settings = new Configuration { Backends = [text, vision], SelectedBackendId = text.Id };
+            var scene = settings.Scenes[0];
+            var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.ManualText, Payload.FromText("  verbatim {input}\n"), 0, DateTimeOffset.UtcNow);
+            var request = SceneRequestFactory.Prepare(settings, scene, snapshot);
+            Check(request.Backend == text && request.Content == snapshot.Content && request.Snapshot == snapshot);
+            Check(SceneRequestFactory.Prepare(settings with { SelectedBackendId = vision.Id }, scene, snapshot).Backend == vision);
+            Check(SceneRequestFactory.Prepare(settings, scene with { BackendId = vision.Id }, snapshot).Backend == vision);
+            var image = snapshot with { Content = new Payload(null, [1], 1, 1) };
+            Reject(() => SceneRequestFactory.Prepare(settings, scene, image), "backend_has_no_vision");
+            Check(SceneRequestFactory.Prepare(settings, scene with { BackendId = vision.Id }, image).Backend == vision);
+            Reject(() => SceneRequestFactory.Prepare(settings, scene with { BackendId = "gone" }, snapshot), "scene_backend_missing");
+            Check(SceneRequestFactory.Prepare(settings, null, snapshot).Backend == text);
         }));
         tests.Add(("Independent scene prompts, model and backend selection reach the production HTTP adapter", () => TestHttp().GetAwaiter().GetResult()));
     }
@@ -97,14 +191,14 @@ internal static class ScenarioTests
     {
         using var first = new SyntheticEndpoint(); using var second = new SyntheticEndpoint(); using var client = new ChatCompletionsClient(first);
         var a = new Backend("a", "First", first.Url, "base-a", "", AllowLoopbackHttp: true, Stream: false);
-        var b = a with { Id = "b", Endpoint = second.Url, Model = "base-b" };
-        var config = new Configuration { Backends = [a, b], SelectedBackendId = "a", Routing = new("a"), Pipeline = new("normalize", [new(StepKind.NormalizeText)]) };
-        var coding = config.Scenes[0] with { BackendId = "b", Model = "coding-model", SystemPrompt = "Coding system", UserTemplate = "code:{input}", Temperature = 0.7, MaxTokens = 123 };
-        var algorithm = config.Scenes[1] with { SystemPrompt = "Algorithm system", UserTemplate = "solve:{input}" };
+        var b = a with { Id = "b", Endpoint = second.Url, Model = "coding-model", Temperature = 0.7, MaxTokens = 123 };
+        var config = new Configuration { Backends = [a, b], SelectedBackendId = "a" };
+        var coding = config.Scenes[0] with { BackendId = "b", SystemPrompt = "Coding system" };
+        var algorithm = config.Scenes[1] with { SystemPrompt = "Algorithm system" };
         PreparedRequest Prepare(ScenePreset scene, string input) => SceneRequestFactory.Prepare(config, scene,
-            new(Guid.NewGuid(), InputKind.ManualText, Payload.FromText(input), 0, DateTimeOffset.UtcNow), new ImageProcessor());
+            new(Guid.NewGuid(), InputKind.ManualText, Payload.FromText(input), 0, DateTimeOffset.UtcNow));
         var frozen = Prepare(coding, "  only coding  ");
-        coding = coding with { SystemPrompt = "Must not affect in-flight request", Model = "changed" };
+        coding = coding with { SystemPrompt = "Must not affect in-flight request" };
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await foreach (var item in client.SendAsync(frozen, timeout.Token)) { }
         await foreach (var item in client.SendAsync(Prepare(algorithm, "  only algorithm  "), timeout.Token)) { }
@@ -112,8 +206,8 @@ internal static class ScenarioTests
         var code = second.Requests.Single(); var algo = first.Requests.Single();
         Check(code.GetProperty("model").GetString() == "coding-model" && code.GetProperty("temperature").GetDouble() == 0.7 && code.GetProperty("max_tokens").GetInt32() == 123);
         Check(code.GetProperty("messages").GetArrayLength() == 2 && code.GetProperty("messages")[0].GetProperty("role").GetString() == "system");
-        Check(code.GetProperty("messages")[0].GetProperty("content").GetString() == "Coding system" && code.GetProperty("messages")[1].GetProperty("content").GetString() == "code:only coding");
+        Check(code.GetProperty("messages")[0].GetProperty("content").GetString() == "Coding system" && code.GetProperty("messages")[1].GetProperty("content").GetString() == "  only coding  ");
         Check(algo.GetProperty("messages").GetArrayLength() == 2 && algo.GetProperty("messages")[0].GetProperty("content").GetString() == "Algorithm system");
-        Check(algo.GetProperty("messages")[1].GetProperty("content").GetString() == "solve:only algorithm" && !algo.ToString().Contains("Coding system"));
+        Check(algo.GetProperty("messages")[1].GetProperty("content").GetString() == "  only algorithm  " && !algo.ToString().Contains("Coding system"));
     }
 }

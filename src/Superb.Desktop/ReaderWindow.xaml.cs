@@ -228,12 +228,12 @@ public partial class ReaderWindow : Window
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape && Interactive) { SetMode(false); e.Handled = true; }
-        else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control) { Command?.Invoke("workspaceSend"); e.Handled = true; }
+        else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control) { Command?.Invoke("send"); e.Handled = true; }
     }
     private void Interaction_Click(object sender, RoutedEventArgs e) => Command?.Invoke("interact");
     private void Through_Click(object sender, RoutedEventArgs e) => Command?.Invoke("through");
     private void Hide_Click(object sender, RoutedEventArgs e) => Command?.Invoke("toggle");
-    private void Send_Click(object sender, RoutedEventArgs e) => Command?.Invoke("workspaceSend");
+    private void Send_Click(object sender, RoutedEventArgs e) => Command?.Invoke("send");
     private void Clipboard_Click(object sender, RoutedEventArgs e) => Command?.Invoke("stageClipboard");
     private void Capture_Click(object sender, RoutedEventArgs e) => Command?.Invoke("stageCapture");
     private void Screen_Click(object sender, RoutedEventArgs e) => Command?.Invoke("captureScreen");

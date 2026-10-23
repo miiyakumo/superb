@@ -65,29 +65,19 @@ internal static class Program
             var restored = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(updated, Configuration.Json), Configuration.Json)!;
             Assert(restored.ExclusiveReaderKeys && restored.Hotkeys.SequenceEqual(legacy.Hotkeys));
         }));
-        var source = BitmapSource.Create(4, 4, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 64).ToArray(), 16);
-        var input = ImageProcessor.Encode(source);
-        var processor = new ImageProcessor();
-        tests.Add(("Mask rewrites exported PNG pixels with opaque black", () =>
+        tests.Add(("PNG encoding preserves dimensions and pixels and rejects invalid image dimensions", () =>
         {
-            var output = processor.Apply(input, new(StepKind.Mask, Rectangle: new(1, 1, 2, 2)));
-            var decoded = new FormatConvertedBitmap(ImageProcessor.Decode(output.Png), PixelFormats.Bgra32, null, 0);
-            var pixels = new byte[64]; decoded.CopyPixels(pixels, 16, 0);
-            for (var y = 0; y < 4; y++) for (var x = 0; x < 4; x++)
+            var pixels = new byte[] { 13, 23, 42, 255, 50, 60, 70, 255 };
+            var source = BitmapSource.Create(2, 1, 96, 96, PixelFormats.Bgra32, null, pixels, 8);
+            var input = ImageProcessor.Encode(source);
+            var decoded = ImageProcessor.Decode(input.Png);
+            var restored = new byte[8]; decoded.CopyPixels(restored, 8, 0);
+            Assert(input.Width == 2 && input.Height == 1 && restored.SequenceEqual(pixels));
+            foreach (var (width, height) in new[] { (0, 1), (1, -1), (8000, 8000) })
             {
-                var i = (y * 4 + x) * 4; var redacted = x is 1 or 2 && y is 1 or 2;
-                Assert(pixels[i] == (redacted ? 0 : 255) && pixels[i + 1] == pixels[i] && pixels[i + 2] == pixels[i] && pixels[i + 3] == 255);
+                try { ImageProcessor.ValidateSize(width, height); throw new Exception("Accepted invalid dimensions"); }
+                catch (SafeFailure ex) { Assert(ex.Code == "image_dimensions_invalid"); }
             }
-        }));
-        tests.Add(("Crop changes output dimensions without changing original snapshot", () =>
-        {
-            var output = processor.Apply(input, new(StepKind.Crop, Rectangle: new(1, 1, 2, 3)));
-            Assert(output.Width == 2 && output.Height == 3 && input.Width == 4 && input.Height == 4);
-        }));
-        tests.Add(("Out-of-range mandatory mask blocks processing", () =>
-        {
-            try { Preprocessor.Process(input, new("v1", [new(StepKind.Mask, Rectangle: new(3, 3, 2, 2))]), processor); throw new Exception("Accepted invalid mask"); }
-            catch (SafeFailure ex) { Assert(ex.Code == "processing_required_failed"); }
         }));
         tests.Add(("Current-user DPAPI credential round trip and path confinement", () =>
         {
@@ -110,7 +100,7 @@ internal static class Program
             try { TestSavedBackend(store, reference).GetAwaiter().GetResult(); }
             finally { store.Delete(reference); }
         }));
-        tests.Add(("Quick setup persists only encrypted credentials and preserves other backends and routing", () =>
+        tests.Add(("Quick setup persists only encrypted credentials and preserves other backends", () =>
         {
             var store = new CredentialStore();
             var old = store.Save("synthetic-old-key");
@@ -119,14 +109,14 @@ internal static class Program
             {
                 var first = DeepSeekSetup.Preset("deepseek", old);
                 var other = new Backend("other", "Other", "https://example.test/chat/completions", "test", "");
-                var current = new Configuration { Backends = [first, other], SelectedBackendId = other.Id, Routing = new(other.Id) };
+                var current = new Configuration { Backends = [first, other], SelectedBackendId = other.Id };
                 var updated = QuickSetupPersistence.Commit(current, first, "synthetic-new-key", store, saved =>
                 {
                     created = saved.Backends.Single(x => x.Id == first.Id).CredentialRef;
                     Assert(store.Read(created) == "synthetic-new-key");
                     Assert(!JsonSerializer.Serialize(saved, Configuration.Json).Contains("synthetic-new-key"));
                 });
-                Assert(updated.SelectedBackendId == first.Id && updated.Backends.Length == 2 && updated.Routing == current.Routing);
+                Assert(updated.SelectedBackendId == first.Id && updated.Backends.Length == 2);
                 Assert(updated.Backends.Contains(other) && current.Backends[0].CredentialRef == old);
                 try { store.Read(old); throw new Exception("Old credential retained"); }
                 catch (SafeFailure ex) { Assert(ex.Code == "credential_unavailable"); }
@@ -162,13 +152,14 @@ internal static class Program
             var window = new MainWindow();
             var tabs = (TabControl)window.FindName("MainTabs");
             Assert(tabs.Items.Count == 4);
-            Assert(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] { "模型", "场景", "快捷键", "通用与自动化" }));
+            Assert(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] { "模型", "场景", "快捷键", "通用" }));
             Assert(window.FindName("QuestionBox") is null && window.FindName("AnswerText") is null);
             Assert(((Expander)window.FindName("QuickSetup")).IsExpanded);
             Assert(((ComboBox)window.FindName("ScenePicker")).Items.Count == 3);
             Assert(((ItemsControl)window.FindName("HotkeyRows")).Items.Count == HotkeyDefaults.All.Length + 3);
             Assert(!((Expander)window.FindName("BackendSettings")).IsExpanded);
-            Assert(!((Expander)window.FindName("CaptureSettings")).IsExpanded);
+            foreach (var name in new[] { "CaptureSettings", "PipelineBox", "SyncDuration", "SyncSend", "SyncSummary", "TargetPicker" })
+                Assert(window.FindName(name) is null);
             Assert(window.Background == app.Resources["Base"] && window.Foreground == app.Resources["Ink"]);
             Assert(((Expander)window.FindName("BackendSettings")).Foreground == app.Resources["Ink"]);
             var root = (FrameworkElement)window.Content;
@@ -181,11 +172,18 @@ internal static class Program
             var renderIndex = Array.IndexOf(args, "--render-dir");
             for (var i = 0; i < 9; i++)
             {
-                tabs.SelectedIndex = i < 4 ? i : i == 4 ? 0 : i == 5 ? 3 : i - 6;
+                tabs.SelectedIndex = i < 4 ? i : i == 4 ? 0 : i == 5 ? 0 : i - 6;
                 if (i == 4) { ((Expander)window.FindName("QuickSetup")).IsExpanded = false; ((Expander)window.FindName("BackendSettings")).IsExpanded = true; }
-                if (i == 5) ((Expander)window.FindName("CaptureSettings")).IsExpanded = true;
+                if (i == 5) ((Expander)window.FindName("BackendAdvancedSettings")).IsExpanded = true;
+                if (i == 6) ((Expander)window.FindName("BackendAdvancedSettings")).IsExpanded = false;
                 var size = i < 6 ? new Size(904, 780) : new Size(784, 640);
                 surface.Measure(size); surface.Arrange(new Rect(new Point(), size)); surface.UpdateLayout();
+                if (i == 5)
+                {
+                    DependencyObject parent = (Expander)window.FindName("BackendAdvancedSettings");
+                    while (parent is not ScrollViewer) parent = VisualTreeHelper.GetParent(parent);
+                    ((ScrollViewer)parent).ScrollToBottom(); surface.UpdateLayout();
+                }
                 if (i == 2)
                 {
                     var rows = (ItemsControl)window.FindName("HotkeyRows");
