@@ -33,7 +33,7 @@ internal static class MarkdownTests
             var list = (System.Windows.Documents.List)blocks[2];
             Check(list.StartIndex == 3 && list.ListItems.Count == 2);
             Check(list.ListItems.LastListItem.Blocks.OfType<System.Windows.Documents.List>().Any());
-            Check(blocks[3] is Section { BorderThickness.Left: 3 });
+            Check(blocks[3] is Section { BorderThickness.Left: 2 });
             var table = (Table)blocks[5];
             Check(table.RowGroups[0].Rows.Count == 2 && table.RowGroups[0].Rows[0].Cells[0].FontWeight == FontWeights.Bold);
             Check(table.RowGroups[0].Rows[1].Cells[1].TextAlignment == TextAlignment.Right);

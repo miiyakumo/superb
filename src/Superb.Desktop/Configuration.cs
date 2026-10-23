@@ -7,7 +7,7 @@ using Superb.Desktop.Platform;
 
 namespace Superb.Desktop;
 
-internal sealed record PanelLayout(double Left = 80, double Top = 80, double Width = 600, double Height = 740, double FontSize = 18, bool Visible = false, double BackgroundOpacity = 1);
+internal sealed record PanelLayout(double Left = 80, double Top = 80, double Width = 600, double Height = 740, double FontSize = 18, bool Visible = false, double BackgroundOpacity = 1, string Theme = Theme.InkId, string Accent = "", string CustomBase = "", string CustomInk = "");
 internal sealed record Configuration
 {
     public int SchemaVersion { get; init; } = 2;
@@ -116,7 +116,8 @@ internal sealed record Configuration
             if (!Backends.Any(x => x.Id == id)) throw new SafeFailure("route_backend_missing");
         if (!double.IsFinite(Panel.Left) || !double.IsFinite(Panel.Top) || !double.IsFinite(Panel.Width) || !double.IsFinite(Panel.Height) ||
             Panel.Width is < 360 or > 1800 || Panel.Height is < 240 or > 1600 || Panel.FontSize is < 11 or > 36 || !double.IsFinite(Panel.FontSize) ||
-            !double.IsFinite(Panel.BackgroundOpacity) || Panel.BackgroundOpacity is < 0.25 or > 1)
+            !double.IsFinite(Panel.BackgroundOpacity) || Panel.BackgroundOpacity is < 0.25 or > 1 ||
+            !Theme.TryResolve(Panel.Theme, Panel.Accent, Panel.CustomBase, Panel.CustomInk, out _, out _))
             throw new SafeFailure("panel_layout_invalid");
     }
     public void Save()

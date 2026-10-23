@@ -194,7 +194,8 @@ internal static class Program
                     surface.UpdateLayout();
                     var row = ((IEnumerable<HotkeyEditorRow>)rows.ItemsSource).First();
                     var presenter = (ContentPresenter)rows.ItemContainerGenerator.ContainerFromIndex(0);
-                    var editor = FindControl<TextBox>(presenter)!; var mode = FindControl<ComboBox>(presenter)!;
+                    var editor = FindControl<TextBox>(presenter, box => box.GetBindingExpression(TextBox.TextProperty)?.ParentBinding.Path?.Path == "Gesture")!;
+                    var mode = FindControl<ComboBox>(presenter)!;
                     row.Mode = HotkeyMode.Exclusive; row.Gesture = "F2"; surface.UpdateLayout();
                     Assert(editor.Text == "F2" && Equals(mode.SelectedValue, HotkeyMode.Exclusive));
                     mode.SelectedValue = HotkeyMode.Combination; surface.UpdateLayout();
@@ -264,11 +265,11 @@ internal static class Program
         Console.WriteLine($"{tests.Count - failures}/{tests.Count} passed; capture-chain verification requires manual evidence.");
         return failures == 0 ? 0 : 1;
     }
-    private static T? FindControl<T>(DependencyObject root) where T : DependencyObject
+    private static T? FindControl<T>(DependencyObject root, Func<T, bool>? predicate = null) where T : DependencyObject
     {
-        if (root is T match) return match;
+        if (root is T match && (predicate is null || predicate(match))) return match;
         for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-            if (FindControl<T>(VisualTreeHelper.GetChild(root, i)) is { } found) return found;
+            if (FindControl<T>(VisualTreeHelper.GetChild(root, i), predicate) is { } found) return found;
         return null;
     }
     private static async Task TestSavedBackend(CredentialStore store, string reference)

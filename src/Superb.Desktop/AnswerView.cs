@@ -25,6 +25,7 @@ public sealed class AnswerView : UserControl
     private readonly List<(string Key, Block Block)> rendered = [];
     private int revision;
     private bool adjusting;
+    private double? restyleOffset;
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .DisableHtml().UsePipeTables().UseEmphasisExtras(Markdig.Extensions.EmphasisExtras.EmphasisExtraOptions.Strikethrough).Build();
     internal bool Following { get; private set; } = true;
@@ -57,11 +58,23 @@ public sealed class AnswerView : UserControl
         document.SetBinding(TextElement.FontFamilyProperty, new Binding(nameof(FontFamily)) { Source = this });
         Reader.Document = document;
     }
+    internal void Restyle()
+    {
+        var value = text;
+        var follow = Following;
+        restyleOffset = Scroll?.VerticalOffset ?? 0;
+        Clear();
+        SetFollow(follow);
+        if (value.Length > 0) Render(value);
+        else restyleOffset = null;
+    }
     internal void Render(string value)
     {
+        var restore = restyleOffset;
+        restyleOffset = null;
         if (value == text) return;
         if (!value.StartsWith(text, StringComparison.Ordinal)) Clear();
-        var offset = Scroll?.VerticalOffset ?? 0;
+        var offset = restore ?? Scroll?.VerticalOffset ?? 0;
         // Reparse the open tail as well: streamed delimiters can turn a paragraph into
         // a heading/table, or complete emphasis and fences. Reference links may also
         // acquire their destination later in the stream, so include it in the key.

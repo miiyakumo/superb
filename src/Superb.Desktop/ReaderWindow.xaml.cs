@@ -193,7 +193,7 @@ public partial class ReaderWindow : Window
         EmptyAnswer.Visibility = text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
     public void Page(bool down) => Answer.Page(down);
-    internal PanelLayout Layout() => new(Left, Top, Width, Height, Answer.FontSize, IsVisible, backgroundOpacity);
+    internal PanelLayout Layout() => new(Left, Top, Width, Height, Answer.FontSize, IsVisible, backgroundOpacity, themeId, accentHex, customBase, customInk);
     internal void ApplyLayout(PanelLayout layout)
     {
         applyingAppearance = true;
@@ -203,7 +203,12 @@ public partial class ReaderWindow : Window
             Top = Math.Clamp(layout.Top, SystemParameters.VirtualScreenTop, Math.Max(SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - MinHeight));
             ResizeTo(layout.Width, layout.Height);
             Answer.FontSize = Math.Clamp(layout.FontSize, 11, 36);
-            SetBackgroundOpacity(layout.BackgroundOpacity);
+            themeId = string.IsNullOrWhiteSpace(layout.Theme) ? Theme.InkId : layout.Theme;
+            accentHex = layout.Accent ?? "";
+            customBase = layout.CustomBase ?? "";
+            customInk = layout.CustomInk ?? "";
+            backgroundOpacity = layout.BackgroundOpacity;
+            ApplyPalette();
         }
         finally { applyingAppearance = false; }
         SyncAppearanceControls();

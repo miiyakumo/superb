@@ -88,7 +88,7 @@ internal static class WorkspaceTests
             }
             finally { window.Close(); }
         }));
-        tests.Add(("Only draft typing and answer selection opt into keyboard focus; scene and drag controls stay passive", () =>
+        tests.Add(("Only explicit text input and answer selection opt into keyboard focus; scene and drag controls stay passive", () =>
         {
             var reader = new ReaderWindow();
             try
@@ -112,6 +112,13 @@ internal static class WorkspaceTests
                 reader.SetActions(true, true, true, false, false, false);
                 Check(!reader.IsKeyboardTarget(draft));
                 Check(reader.SetMode(false) && !((AnswerView)reader.FindName("Answer")).Reader.Focusable);
+                foreach (var name in new[] { "CustomBaseBox", "CustomInkBox", "CustomAccentBox" })
+                {
+                    var colorInput = (TextBox)reader.FindName(name);
+                    Check(!reader.IsKeyboardTarget(colorInput));
+                    Check(reader.PrepareMouseActivation(colorInput) && reader.Interactive && reader.IsKeyboardTarget(colorInput));
+                    Check(Native.GetForegroundWindow() == origin && reader.SetMode(false));
+                }
                 foreach (var name in new[] { "DraftText", "Answer", "HideButton", "SettingsButton", "CaptureButton", "ScreenButton" })
                     Check(((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("焦点") ||
                         ((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("失焦"));
@@ -311,12 +318,24 @@ internal static class WorkspaceTests
         tests.Add(("Legacy panel settings stay opaque and appearance settings round-trip with validated limits", () =>
         {
             var legacy = JsonSerializer.Deserialize<PanelLayout>("{\"Width\":420,\"Height\":640,\"FontSize\":24}", Configuration.Json)!;
-            Check(legacy.BackgroundOpacity == 1 && legacy.FontSize == 24);
+            Check(legacy.BackgroundOpacity == 1 && legacy.FontSize == 24 && legacy.Theme == "ink" && legacy.Accent == "" && legacy.CustomBase == "" && legacy.CustomInk == "");
             var config = new Configuration { Panel = legacy with { BackgroundOpacity = .55 } }; config.Validate();
             var restored = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(config, Configuration.Json), Configuration.Json)!;
             Check(restored.Panel == config.Panel);
             foreach (var opacity in new[] { .1, 1.1, double.NaN })
                 Reject("panel_layout_invalid", () => (config with { Panel = config.Panel with { BackgroundOpacity = opacity } }).Validate());
+            Reject("panel_layout_invalid", () => (config with { Panel = config.Panel with { Theme = "neon" } }).Validate());
+            Reject("panel_layout_invalid", () => (config with { Panel = config.Panel with { Accent = "#12" } }).Validate());
+            Reject("panel_layout_invalid", () => (config with { Panel = config.Panel with { CustomBase = "#FFFFFF", CustomInk = "#EEEEEE" } }).Validate());
+            (config with { Panel = config.Panel with { CustomBase = "#101216", CustomInk = "#F4F6F8", Accent = "#8AB4F8" } }).Validate();
+            foreach (var id in Theme.Ids)
+            {
+                Check(Theme.TryResolve(id, "", "", "", out var palette, out _));
+                Check(Theme.Contrast(palette.Base, palette.Ink) >= 4.5);
+            }
+            Check(Theme.TryResolve(Theme.InkId, "", "", "", out var ink, out _) && ink.OnAccent == Theme.DarkInk);
+            Check(Theme.TryResolve(Theme.PaperId, "", "", "", out var paper, out _) && paper.OnAccent == Theme.LightInk);
+            Check(Theme.TryResolve(Theme.InkId, "#7DCEA0", "#101216", "#F4F6F8", out var mixed, out _) && mixed.Accent == Color.FromRgb(0x7D, 0xCE, 0xA0) && mixed.Base == Color.FromRgb(0x10, 0x12, 0x16));
         }));
         tests.Add(("Floating appearance controls resize and change only background alpha and answer font without losing protection", () =>
         {
@@ -341,8 +360,30 @@ internal static class WorkspaceTests
                 Check(((SolidColorBrush)((Border)reader.FindName("WindowSurface")).Background).Color.A == (byte)Math.Round(.55 * 255));
                 Check(answer.Reader.Document.Foreground.Opacity == 1 && reader.Check() && changes > 0);
                 Check(reader.Draft == "retained input" && answer.Text == "retained answer");
+                ((Button)reader.FindName("ThemePaper")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+                Check(((SolidColorBrush)Application.Current.Resources["Base"]).Color == Color.FromRgb(0xF4, 0xF5, 0xF6));
+                Check(((SolidColorBrush)Application.Current.Resources["OnAccent"]).Color == Theme.LightInk);
+                Check(((SolidColorBrush)reader.Foreground).Color == Color.FromRgb(0x1A, 0x1C, 0x1F));
+                Check(((SolidColorBrush)((Button)reader.FindName("SendButton")).Background).Color == Color.FromRgb(0x1A, 0x56, 0xC4));
+                Check(((SolidColorBrush)((TextBlock)reader.FindName("StateText")).Foreground).Color == Color.FromRgb(0x1A, 0x1C, 0x1F));
+                var renderIndex = Array.IndexOf(args, "--render-dir");
+                if (renderIndex >= 0 && renderIndex + 1 < args.Length)
+                {
+                    ((Slider)reader.FindName("PanelOpacity")).Value = 1; Pump();
+                    var bitmap = new RenderTargetBitmap((int)Math.Ceiling(reader.ActualWidth), (int)Math.Ceiling(reader.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+                    bitmap.Render(reader);
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                    using var output = File.Create(Path.Combine(args[renderIndex + 1], "workspace-paper.png")); encoder.Save(output);
+                }
+                ((Slider)reader.FindName("PanelOpacity")).Value = .5; Pump();
+                var tinted = ((SolidColorBrush)((Border)reader.FindName("WindowSurface")).Background).Color;
+                Check(tinted.R == 0xF4 && tinted.G == 0xF5 && tinted.B == 0xF6 && tinted.A == (byte)Math.Round(.5 * 255));
+                Check(answer.Reader.Document.Foreground.Opacity == 1);
                 ((Button)reader.FindName("ResetAppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
                 Check(reader.Layout().BackgroundOpacity == 1 && answer.FontSize == 18 && reader.Check());
+                Check(reader.Layout().Theme == "ink" && reader.Layout().Accent == "" && reader.Layout().CustomBase == "");
+                Check(((SolidColorBrush)((Border)reader.FindName("WindowSurface")).Background).Color == Color.FromRgb(0x13, 0x14, 0x16));
+                Check(((SolidColorBrush)Application.Current.Resources["Accent"]).Color == Color.FromRgb(0x8A, 0xB4, 0xF8));
                 Check(reader.Draft == "retained input" && answer.Text == "retained answer");
                 var saved = reader.Layout(); reader.ApplyLayout(saved); Pump();
                 Check(reader.Layout() == saved);
@@ -735,6 +776,7 @@ internal static class WorkspaceTests
                 var bitmap = new RenderTargetBitmap(600, 740, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 using var output = File.Create(Path.Combine(args[renderIndex + 1], "workspace-appearance.png")); encoder.Save(output);
+                ((Button)reader.FindName("ResetAppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             }
             reader.Clear(); Check(reader.Draft == "" && answer.Text == "" && ((ItemsControl)reader.FindName("InputQueue")).ItemsSource is null);
         }));

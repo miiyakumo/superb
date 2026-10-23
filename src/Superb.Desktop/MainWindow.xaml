@@ -5,11 +5,11 @@
       <WrapPanel DockPanel.Dock="Right"><Button Content="返回悬浮工作区" ToolTip="收起设置并显示浮窗；若设置当前有焦点，Windows 会转移焦点。" Style="{StaticResource Primary}" Click="ShowPanel_Click"/><Button x:Name="ResumeButton" Content="恢复使用" Focusable="False" ToolTip="检查会话和保护后恢复使用，保持当前焦点；不会恢复已清空的内容或续接请求。" Click="Resume_Click" Visibility="Collapsed"/><Button x:Name="SettingsPauseButton" Content="暂停" Focusable="False" ToolTip="取消任务、停止同步并清空草稿、队列与回答；保持当前焦点。" Click="Pause_Click"/></WrapPanel>
       <StackPanel><TextBlock Text="Superb 设置" FontSize="24" FontWeight="SemiBold"/><TextBlock Text="点击设置进行配置会使原窗口失焦" Style="{StaticResource Hint}" Margin="0,4,0,0"/></StackPanel>
     </DockPanel>
-    <Border Grid.Row="1" Background="{StaticResource Surface}" CornerRadius="8" Padding="14,10" Margin="0,0,0,16">
+    <Border Grid.Row="1" Background="{DynamicResource Surface}" CornerRadius="8" Padding="14,10" Margin="0,0,0,16">
       <StackPanel><TextBlock x:Name="ModeLabel" Text="正在初始化" FontWeight="SemiBold"/><TextBlock x:Name="StatusLabel" Text="正在检查显示保护。" Style="{StaticResource Hint}" Margin="0,4,0,0"/><Expander x:Name="ErrorDetails" Header="诊断详情" Visibility="Collapsed" Margin="0,6,0,0"><TextBlock x:Name="ErrorCode" Style="{StaticResource Hint}"/></Expander></StackPanel>
     </Border>
-    <TabControl x:Name="MainTabs" Grid.Row="2" Background="{StaticResource Base}" BorderThickness="0">
-      <TabItem x:Name="ConnectionTab" Header="模型"><Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,18,8,0">
+    <TabControl x:Name="MainTabs" Grid.Row="2" Background="{DynamicResource Base}" BorderThickness="0">
+      <TabItem x:Name="ConnectionTab" Header="模型"><Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}"><StackPanel Margin="8,18,8,0">
         <TextBlock Text="模型连接" Style="{StaticResource Heading}"/>
         <StackPanel x:Name="DefaultConnection"><TextBlock Text="默认连接"/><ComboBox x:Name="BackendPicker" DisplayMemberPath="Name" SelectionChanged="BackendPicker_SelectionChanged" AutomationProperties.Name="默认模型连接"/></StackPanel>
         <TextBlock x:Name="ModelSummary" Style="{StaticResource Hint}"/>
@@ -60,7 +60,7 @@
       <TabItem x:Name="ScenesTab" Header="场景"><Grid x:Name="SceneSettings" Margin="8,18,8,0">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <TextBlock Text="场景与提示词" Style="{StaticResource Heading}"/>
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="0,0,8,0">
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}"><StackPanel Margin="0,0,8,0">
                     <ComboBox x:Name="ScenePicker" DisplayMemberPath="Name" SelectionChanged="ScenePicker_SelectionChanged"/>
           <WrapPanel><Button Content="新建场景" Click="NewScene_Click"/><Button Content="删除场景" Click="DeleteScene_Click"/></WrapPanel>
           <TextBlock Text="名称"/><TextBox x:Name="SceneName"/>
@@ -88,7 +88,7 @@
 <TextBlock Text="切换模式会填入建议值，可继续编辑。重复绑定阻止保存；注册失败会列出动作。禁用后仍可点击浮窗按钮。" Style="{StaticResource Hint}"/></StackPanel></Expander>
           <Grid Margin="0,0,24,8"><Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="180"/><ColumnDefinition Width="140"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="状态"/><TextBlock Grid.Column="1" Text="动作"/><TextBlock Grid.Column="2" Text="模式"/><TextBlock Grid.Column="3" Text="按键"/></Grid>
         </StackPanel>
-        <ScrollViewer x:Name="HotkeyScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}">        <ItemsControl x:Name="HotkeyRows"><ItemsControl.ItemTemplate><DataTemplate><Grid Margin="0,0,0,6">
+        <ScrollViewer x:Name="HotkeyScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}">        <ItemsControl x:Name="HotkeyRows"><ItemsControl.ItemTemplate><DataTemplate><Grid Margin="0,0,0,6">
           <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="180"/><ColumnDefinition Width="140"/><ColumnDefinition/></Grid.ColumnDefinitions>
           <CheckBox Content="启用" IsChecked="{Binding Enabled, Mode=TwoWay}"/>
           <TextBlock Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" Margin="0,0,10,10"/>
@@ -98,15 +98,15 @@
 </ScrollViewer>
         <WrapPanel Grid.Row="2" Margin="0,12,0,0"><Button x:Name="SaveHotkeysButton" Content="保存快捷键" Style="{StaticResource Primary}" Click="SaveHotkeys_Click"/><Button Content="填入默认绑定" Click="ResetHotkeys_Click"/></WrapPanel>
       </Grid></TabItem>
-      <TabItem x:Name="AdvancedTab" Header="通用与自动化"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{StaticResource Ink}"><StackPanel Margin="8,18,8,0">
+      <TabItem x:Name="AdvancedTab" Header="通用与自动化"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}"><StackPanel Margin="8,18,8,0">
         <TextBlock Text="通用与自动化" Style="{StaticResource Heading}"/>
-        <TextBlock Text="窗口大小、透明度和回答字号：在浮窗的“外观”中调整。" Style="{StaticResource Hint}"/>
+        <TextBlock Text="窗口大小、透明度、回答字号和配色：在浮窗的“外观”中调整。" Style="{StaticResource Hint}"/>
         <Expander x:Name="ClipboardPreferences" Header="剪贴板偏好" IsExpanded="True" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">        <CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/>
         <CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/>
         <TextBlock Text="同步授权期限（分钟，1–60）"/><TextBox x:Name="SyncDuration" Text="10"/>
 <Button Content="保存剪贴板偏好" Style="{StaticResource Primary}" HorizontalAlignment="Left" Click="SavePreferences_Click"/></StackPanel></Expander>
         <TextBlock Text="以下功能按需开启：自动接收剪贴板变化、为文字与图片分别选择模型，以及设置一键场景的固定截图范围。" Style="{StaticResource Hint}"/>
-        <Expander Header="自动同步剪贴板 · 监听变化并准备或发送" Margin="0,0,0,16"><StackPanel><Border Background="{StaticResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
+        <Expander Header="自动同步剪贴板 · 监听变化并准备或发送" Margin="0,0,0,16"><StackPanel><Border Background="{DynamicResource Surface}" CornerRadius="8" Padding="18" Margin="0,12,0,20"><StackPanel>
           <TextBlock Text="Live Clipboard（可选）" FontSize="17" FontWeight="SemiBold"/>
           <TextBlock Text="监听仅在本次运行有效。停止监听只阻止新的自动输入；已提交请求仍可单独取消，紧急暂停会立即遮蔽并停止本地输出。" Style="{StaticResource Hint}"/>
           <WrapPanel><CheckBox x:Name="SyncText" Content="Unicode 文本" IsChecked="True" Margin="0,6,24,10"/><CheckBox x:Name="SyncImage" Content="静态位图"/></WrapPanel>
@@ -141,6 +141,6 @@
         <Button Content="导出无凭据配置" ToolTip="将打开系统保存对话框，需要切换焦点；关闭后由 Windows 决定焦点。" HorizontalAlignment="Left" Click="Export_Click"/>
       </StackPanel></ScrollViewer></TabItem>
     </TabControl>
-    <DockPanel Grid.Row="3" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起设置" ToolTip="隐藏当前活动设置窗口会由 Windows 转移焦点。" Click="HideControl_Click"/><Button Content="退出 Superb" ToolTip="关闭 Superb；若其窗口当前有焦点，Windows 会转移焦点。" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.2.0 · 开发版本" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></DockPanel>
+    <DockPanel Grid.Row="3" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button Content="收起设置" ToolTip="隐藏当前活动设置窗口会由 Windows 转移焦点。" Click="HideControl_Click"/><Button Content="退出 Superb" ToolTip="关闭 Superb；若其窗口当前有焦点，Windows 会转移焦点。" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.2.0 · 开发版本" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></DockPanel>
   </Grid>
 </Window>

@@ -58,6 +58,11 @@ internal static class CodeHighlightingTests
             var literal = ColorAt(runs, code.IndexOf("return 42", StringComparison.Ordinal));
             var number = ColorAt(runs, code.LastIndexOf("42", StringComparison.Ordinal));
             Check(new[] { comment, keyword, literal, number }.Distinct().Count() == 4);
+            Check(keyword == Color.FromRgb(0xC6, 0xA4, 0xE8));
+            var light = CodeHighlighting.CreateRuns(code, "cs", Brushes.Black);
+            Check(ColorAt(light, code.IndexOf("var", StringComparison.Ordinal)) == Color.FromRgb(0x6B, 0x4C, 0x9A));
+            Check(ColorAt(light, code.IndexOf("return 42", StringComparison.Ordinal)) == Color.FromRgb(0x8A, 0x5A, 0x12));
+            Check(Theme.Luminance(ColorAt(light, code.IndexOf("var", StringComparison.Ordinal))) < 0.4);
             Check(Text(runs) == code);
             const string python = "value = '''first\nreturn 42\n'''\nreturn 42";
             var pyRuns = CodeHighlighting.CreateRuns(python, "python", Brushes.White);

@@ -21,6 +21,7 @@ namespace Superb.Desktop;
 internal sealed class AnswerMarkdownRenderer(AnswerView owner)
 {
     private Brush Surface => (Brush)owner.FindResource("Surface");
+    private Brush Line => (Brush)owner.FindResource("Line");
     private Brush Accent => (Brush)owner.FindResource("Accent");
 
     internal Block Render(MdBlock source)
@@ -66,7 +67,7 @@ internal sealed class AnswerMarkdownRenderer(AnswerView owner)
             case QuoteBlock quote:
                 var section = new Section
                 {
-                    BorderBrush = Accent, BorderThickness = new Thickness(3, 0, 0, 0),
+                    BorderBrush = Line, BorderThickness = new Thickness(2, 0, 0, 0),
                     Padding = new Thickness(12, 2, 0, 2), Margin = new Thickness(0, 4, 0, 10)
                 };
                 foreach (var child in quote) section.Blocks.Add(Render(child));
@@ -76,7 +77,7 @@ internal sealed class AnswerMarkdownRenderer(AnswerView owner)
             case ThematicBreakBlock:
                 return new Paragraph
                 {
-                    BorderBrush = Accent, BorderThickness = new Thickness(0, 0, 0, 1),
+                    BorderBrush = Line, BorderThickness = new Thickness(0, 0, 0, 1),
                     Margin = new Thickness(0, 8, 0, 12), FontSize = 1
                 };
             case LeafBlock leaf:
@@ -111,7 +112,7 @@ internal sealed class AnswerMarkdownRenderer(AnswerView owner)
             {
                 var target = new TableCell
                 {
-                    BorderBrush = Accent, BorderThickness = new Thickness(0.5), Padding = new Thickness(8, 5, 8, 5),
+                    BorderBrush = Line, BorderThickness = new Thickness(0.5), Padding = new Thickness(8, 5, 8, 5),
                     ColumnSpan = Math.Max(1, cell.ColumnSpan), RowSpan = Math.Max(1, cell.RowSpan)
                 };
                 if (row.IsHeader) { target.FontWeight = FontWeights.Bold; target.Background = Surface; }

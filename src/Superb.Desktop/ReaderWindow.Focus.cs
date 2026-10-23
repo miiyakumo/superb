@@ -38,8 +38,8 @@ public partial class ReaderWindow
             for (var node = target; node is not null && node != this; node = ParentOf(node))
             {
                 if (node is ScrollBar or Thumb or ButtonBase) return false;
-                if (!ReferenceEquals(node, DraftText)) continue;
-                if (!ready || busy || !SetMode(true)) return false;
+                if (!ReferenceEquals(node, DraftText) && !IsAppearanceEditor(node)) continue;
+                if ((!IsAppearanceEditor(node) && (!ready || busy)) || !SetMode(true)) return false;
                 break;
             }
         }
@@ -52,11 +52,15 @@ public partial class ReaderWindow
         for (var node = target; node is not null && node != this; node = ParentOf(node))
         {
             if (node is ScrollBar or Thumb or ButtonBase) return false;
+            if (IsAppearanceEditor(node)) return true;
             if (ReferenceEquals(node, DraftText)) return ready && !busy;
             if (ReferenceEquals(node, Answer)) return true;
         }
         return false;
     }
+
+    private bool IsAppearanceEditor(DependencyObject node) => ReferenceEquals(node, CustomBaseBox) ||
+        ReferenceEquals(node, CustomInkBox) || ReferenceEquals(node, CustomAccentBox);
 
     private static DependencyObject? ParentOf(DependencyObject node) => node is Visual
         ? VisualTreeHelper.GetParent(node) : node is ContentElement content

@@ -9,16 +9,25 @@ public static class ShortcutHint
 {
     public static readonly DependencyProperty TextProperty = DependencyProperty.RegisterAttached("Text", typeof(string), typeof(ShortcutHint), new PropertyMetadata("仅鼠标"));
     public static readonly DependencyProperty DescriptionProperty = DependencyProperty.RegisterAttached("Description", typeof(string), typeof(ShortcutHint), new PropertyMetadata("此操作未设置专用快捷键。"));
+    private static readonly DependencyProperty ActionHintProperty = DependencyProperty.RegisterAttached("ActionHint", typeof(string), typeof(ShortcutHint));
+    private static readonly DependencyProperty ComposedToolTipProperty = DependencyProperty.RegisterAttached("ComposedToolTip", typeof(string), typeof(ShortcutHint));
     public static string GetText(DependencyObject target) => (string)target.GetValue(TextProperty);
     public static void SetText(DependencyObject target, string value) => target.SetValue(TextProperty, value);
     public static string GetDescription(DependencyObject target) => (string)target.GetValue(DescriptionProperty);
     public static void SetDescription(DependencyObject target, string value) => target.SetValue(DescriptionProperty, value);
     internal static void Apply(Button button, ShortcutLabel label)
     {
-        // The shortcut caption has its own tooltip; keep the action's focus notice there too.
-        var description = button.ToolTip is string { Length: > 0 } actionHint ? actionHint + " " + label.Description : label.Description;
+        // Shortcuts stay in the tooltip. A later call must not append the previous shortcut onto itself,
+        // but an explicit tooltip written by the caller (such as the edit-mode notice) still replaces it.
+        var live = button.ToolTip as string ?? "";
+        var composed = button.ReadLocalValue(ComposedToolTipProperty) as string;
+        var actionHint = button.ReadLocalValue(ActionHintProperty) is string stored && live == composed ? stored : live;
+        button.SetValue(ActionHintProperty, actionHint);
+        var description = actionHint.Length > 0 ? actionHint + " " + label.Description : label.Description;
         SetText(button, label.Text); SetDescription(button, description);
         AutomationProperties.SetHelpText(button, description);
+        button.SetValue(ComposedToolTipProperty, description);
+        button.ToolTip = description;
     }
 }
 

@@ -11,11 +11,9 @@ internal static class CodeHighlighting
 {
     internal const int MaximumLength = 64_000;
     private const int MaximumRuns = 8_000;
-    private static readonly SolidColorBrush Keyword = ColorBrush(0xC6A4E8);
-    private static readonly SolidColorBrush String = ColorBrush(0xD6BA8B);
-    private static readonly SolidColorBrush Comment = ColorBrush(0x8FA897);
-    private static readonly SolidColorBrush Number = ColorBrush(0x9ED8AE);
-    private static readonly SolidColorBrush Name = ColorBrush(0x86CFE0);
+    private readonly record struct SyntaxColors(SolidColorBrush Keyword, SolidColorBrush String, SolidColorBrush Comment, SolidColorBrush Number, SolidColorBrush Name);
+    private static readonly SyntaxColors OnDark = new(ColorBrush(0xC6A4E8), ColorBrush(0xD6BA8B), ColorBrush(0x8FA897), ColorBrush(0x9ED8AE), ColorBrush(0x86CFE0));
+    private static readonly SyntaxColors OnLight = new(ColorBrush(0x6B4C9A), ColorBrush(0x8A5A12), ColorBrush(0x4E665C), ColorBrush(0x1B7A45), ColorBrush(0x0E6E80));
 
     internal static IReadOnlyList<Run> CreateRuns(string code, string? language, SolidColorBrush foreground)
     {
@@ -38,6 +36,7 @@ internal static class CodeHighlighting
             return [new Run(code)];
         var definition = HighlightingManager.Instance.GetDefinition(definitionName);
         if (definition is null) return [new Run(code)];
+        var syntax = Theme.Luminance(foreground.Color) >= 0.5 ? OnDark : OnLight;
 
         var document = new TextDocument(code);
         document.UndoStack.SizeLimit = 0;
@@ -53,7 +52,7 @@ internal static class CodeHighlighting
                 {
                     themed = new HighlightingColor
                     {
-                        Foreground = new SimpleHighlightingBrush(Theme(section.Color.Name, foreground).Color)
+                        Foreground = new SimpleHighlightingBrush(Pick(section.Color.Name, foreground, syntax).Color)
                     };
                     colors.Add(section.Color, themed);
                 }
@@ -68,17 +67,17 @@ internal static class CodeHighlighting
         return runs;
     }
 
-    private static SolidColorBrush Theme(string? colorName, SolidColorBrush foreground)
+    private static SolidColorBrush Pick(string? colorName, SolidColorBrush foreground, SyntaxColors syntax)
     {
         var name = colorName?.ToLowerInvariant() ?? "";
-        if (name.Contains("comment") || name.Contains("preprocessor")) return Comment;
+        if (name.Contains("comment") || name.Contains("preprocessor")) return syntax.Comment;
         if (name.Contains("string") || name.Contains("char") || name.Contains("regex") ||
-            name.Contains("attributevalue") || name.Contains("cdata")) return String;
-        if (name.Contains("number") || name.Contains("digit")) return Number;
-        if (name.Contains("keyword") || name is "bool" or "null") return Keyword;
+            name.Contains("attributevalue") || name.Contains("cdata")) return syntax.String;
+        if (name.Contains("number") || name.Contains("digit")) return syntax.Number;
+        if (name.Contains("keyword") || name is "bool" or "null") return syntax.Keyword;
         if (name.Contains("type") || name.Contains("method") || name.Contains("function") ||
             name.Contains("command") || name.Contains("variable") || name.Contains("tag") ||
-            name.Contains("attributename") || name.Contains("fieldname")) return Name;
+            name.Contains("attributename") || name.Contains("fieldname")) return syntax.Name;
         return foreground;
     }
 

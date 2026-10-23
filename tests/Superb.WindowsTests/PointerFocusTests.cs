@@ -173,7 +173,7 @@ internal static class PointerFocusTests
                 Drag(Named<Thumb>("ResizeHandle"), 24, 12);
                 Check(reader.Width > width && !reader.Interactive, $"Resize drag must work without editing: {width} -> {reader.Width}, interactive={reader.Interactive}"); Preserved("resize");
                 var left = reader.Left;
-                Drag(Child<TextBlock>(Named<DockPanel>("DragHeader"), t => t.Text == "SUPERB"), 25, 10);
+                Drag(Named<TextBlock>("StateText"), 25, 10);
                 Check(reader.Left > left, "Header drag did not move the window"); Preserved("title drag");
                 Named<Button>("ComfortableButton").BringIntoView(); Settle();
                 Click(Named<Button>("ComfortableButton"));
@@ -182,7 +182,10 @@ internal static class PointerFocusTests
                 Named<Button>("ResetAppearanceButton").BringIntoView(); Settle();
                 Click(Named<Button>("ResetAppearanceButton"));
                 Check(reader.Width == 600 && reader.Height == 740 && Named<AnswerView>("Answer").FontSize == 18,
-                    "Reset preset did not restore layout"); Preserved("reset preset");
+                    "Reset preset did not restore layout");
+                Check(((SolidColorBrush)Application.Current.Resources["Base"]).Color == Color.FromRgb(0x13, 0x14, 0x16)
+                    && ((SolidColorBrush)Application.Current.Resources["Accent"]).Color == Color.FromRgb(0x8A, 0xB4, 0xF8),
+                    "Reset preset did not restore the ink palette"); Preserved("reset preset");
                 Click(Named<Button>("AppearanceButton"));
                 Click(Child<ToggleButton>(Named<Expander>("ComposerExpander")));
                 Check(Named<Expander>("ComposerExpander").IsExpanded, "Native composer click did not expand input");
