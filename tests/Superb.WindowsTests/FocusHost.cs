@@ -150,6 +150,7 @@ internal static class FocusHost
                 controlVisible = control.IsVisible, exclusiveReaderKeys, conflictReserved,
                 sceneRequests = endpoint.Requests.ToArray(), sceneCompletions, sceneErrors, endpointError = endpoint.Error,
                 bindings = configuration.AllHotkeys().ToArray(), sceneDefinitions = configuration.Scenes,
+                sceneModels = configuration.Scenes.ToDictionary(s => s.Id, s => SceneRequestFactory.SelectBackend(configuration, s).Model),
                 startupIntercepted = app.StartupIntercepted, productionWindowCount = app.Windows.OfType<MainWindow>().Count(),
                 affinityReadable, affinity, compositionResult, compositionEnabled,
                 protection = reader.Check(), styles = Native.GetWindowLongPtr(hwnd, -20).ToInt64(),
@@ -243,12 +244,24 @@ internal static class FocusHost
                                 case "screenSendOn":
                                     configuration = configuration with { Hotkeys = configuration.Hotkeys.Select(k => k.Action == "captureScreenSend" ? k with { Enabled = command == "screenSendOn" } : k).ToImmutableArray() };
                                     registrationFailures = Register(); break;
-                                case "quit": selectionCancellation?.Cancel(); dispatcher.BeginInvokeShutdown(DispatcherPriority.Background); break;
+                                case "quit": selectionCancellation?.Cancel(); break;
                                 default: throw new InvalidOperationException("unknown fixture command");
                             }
-                            var result = State();
-                            Record("command", new { id, command, state = result });
-                            Console.WriteLine(JsonSerializer.Serialize(new { id, state = result }));
+                            // Rendering queues Loaded-priority scroll restoration, and
+                            // ScrollViewer queues layout work. A command is not complete
+                            // until those effects settle; otherwise the next pageDown can
+                            // be overwritten by the preceding render's return to home.
+                            dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+                            {
+                                try
+                                {
+                                    var result = State();
+                                    Record("command", new { id, command, state = result });
+                                    Console.WriteLine(JsonSerializer.Serialize(new { id, state = result }));
+                                }
+                                catch (Exception ex) { Console.WriteLine(JsonSerializer.Serialize(new { id, error = ex.GetType().Name })); }
+                                if (command == "quit") dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
+                            });
                         }
                         catch (Exception ex) { Console.WriteLine(JsonSerializer.Serialize(new { id, error = ex.GetType().Name })); }
                     });

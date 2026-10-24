@@ -2,7 +2,6 @@
 import argparse, ctypes, functools, html, http.server, json, os, platform, queue
 import subprocess, sys, threading, time, tempfile
 from pathlib import Path
-from playwright.sync_api import sync_playwright
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -43,6 +42,9 @@ class Fixture:
     def close(self):
         try: self.command('quit'); self.process.wait(timeout=5)
         except Exception: self.process.kill(); self.process.wait()
+        finally:
+            for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                stream.close()
 
 class NativeBrowser:
     """Launch a fresh normal browser and attach without Playwright's focus overrides."""
@@ -181,6 +183,29 @@ SCENE_SCENARIOS = [('scene_coding','AI Coding 场景发起'), ('scene_algorithm'
 CUSTOM_SCENARIOS = [('remap_scene_exclusive','自定义 F4 发起 AI Coding'), ('remap_scene_combo','自定义 Ctrl+Alt+B 发起算法题'),
  ('old_scene_key','改绑后旧 F9 恢复透传'), ('disabled_scene','禁用场景发起键后 F9 透传'), ('remap_reader','自定义 F2 显示/收起阅读窗')]
 
+def pointer_passed_through(before, after, trial, event_type):
+    # The production reader passes body clicks/wheels to the underlying browser.
+    # Zero WPF events alone is not evidence: require a trusted browser event too.
+    return (any(e['type'] == event_type and e['isTrusted'] for e in trial['events'])
+        and after['mouseDown'] == before['mouseDown'] and after['wheel'] == before['wheel']
+        and abs(after['scrollOffset'] - before['scrollOffset']) < .5
+        and after['foreground'] == before['foreground']
+        and trial['counts']['windowBlur'] == 0 and trial['counts']['hidden'] == 0
+        and trial['dropped'] == 0)
+
+def scene_request_confirmed(scene_id, before, after, new_actions):
+    definition = next(s for s in before['sceneDefinitions'] if s['Id'] == scene_id)
+    requests = after['sceneRequests'][len(before['sceneRequests']):]
+    # ScenePreset no longer has UserTemplate or Model overrides. Inputs are sent
+    # directly, and model selection comes from the scene's resolved connection.
+    expected_messages = [{'role': 'system', 'content': definition['SystemPrompt']},
+        {'role': 'user', 'content': 'Synthetic scene input ' + scene_id}]
+    return (new_actions == ['scene:' + scene_id] and len(requests) == 1
+        and requests[0]['messages'] == expected_messages
+        and requests[0]['model'] == before['sceneModels'][scene_id]
+        and after['sceneCompletions'] == before['sceneCompletions'] + 1
+        and not after['sceneErrors'] and not after['endpointError'])
+
 def native_trials(page, context, fixture, native, repeats, results, exclusive=False, mouse_only=False):
     hwnd=native.browser_handle()
     scenarios=list(SCENARIOS)+(EXCLUSIVE_SCENARIOS if exclusive else [])+SCENE_SCENARIOS+(CUSTOM_SCENARIOS if exclusive else [])
@@ -199,7 +224,10 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
                 fixture.command('exclusiveOff' if scenario=='disabled_function' else 'exclusiveOn')
             fixture.command('closeControl'); fixture.command('show'); fixture.command('render')
             if scenario in ('idle','plain_key','activate_control','tab_control','show','hotkey_show'): fixture.command('hide')
-            if scenario in ('hotkey_up','owned_release','reenabled_function'): fixture.command('pageDown')
+            if scenario in ('hotkey_up','owned_release','reenabled_function'):
+                prepared = fixture.command('pageDown')
+                if prepared['scrollOffset'] <= 0:
+                    raise RuntimeError('Paging prerequisite failed: page-up trial must start below the top')
             for calibration in range(3):
                 page.bring_to_front(); native.focus_browser(hwnd); page.locator('#pad').click(); page.wait_for_timeout(350)
                 initial=page.evaluate("({hasFocus:document.hasFocus(),visibility:document.visibilityState})")
@@ -265,8 +293,8 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
                 'activate_control':after['foreground']!=hwnd and run['counts']['windowBlur']>0,
                 'tab_control':run['counts']['hidden']>0,
                 'show':after['visible'],
-                'click_body':after['mouseDown']>before['mouseDown'],
-                'wheel':after['wheel']>before['wheel'] and after['scrollOffset']>before['scrollOffset'],
+                'click_body':pointer_passed_through(before, after, run, 'pointerdown'),
+                'wheel':pointer_passed_through(before, after, run, 'wheel'),
                 'page_method':after['scrollOffset']>before['scrollOffset'],
                 'hotkey_show':'toggle' in new_actions and after['visible'],
                 'hotkey_hide':'toggle' in new_actions and not after['visible'],
@@ -289,14 +317,7 @@ def native_trials(page, context, fixture, native, repeats, results, exclusive=Fa
             }[scenario]
             scene_id={'scene_coding':'coding','scene_algorithm':'algorithm','scene_general':'general','remap_scene_exclusive':'coding','remap_scene_combo':'algorithm'}.get(scenario)
             if scene_id:
-                definitions={s['Id']:s for s in before['sceneDefinitions']}
-                definition=definitions[scene_id]
-                requests=after['sceneRequests'][len(before['sceneRequests']):]
-                expected_messages=[{'role':'system','content':definition['SystemPrompt']},
-                    {'role':'user','content':definition['UserTemplate'].replace('{input}','Synthetic scene input '+scene_id)}]
-                confirmed=(new_actions==['scene:'+scene_id] and len(requests)==1 and requests[0]['messages']==expected_messages
-                    and requests[0]['model']==(definition['Model'] or 'base-model') and after['sceneCompletions']==before['sceneCompletions']+1
-                    and not after['sceneErrors'] and not after['endpointError'])
+                confirmed=scene_request_confirmed(scene_id, before, after, new_actions)
             event_expectation=None
             if exclusive and scenario in ('hotkey_show','hotkey_hide','hotkey_down','hotkey_up','repeat_toggle','repeat_down','reenabled_function','scene_coding','scene_algorithm','scene_general','remap_scene_exclusive','remap_reader'):
                 event_expectation=not key_events and counts['windowBlur']==0 and counts['hidden']==0 and run['dropped']==0
@@ -332,6 +353,7 @@ def write_report(data, output):
 
 
 def main():
+    from playwright.sync_api import sync_playwright
     parser=argparse.ArgumentParser(); parser.add_argument('--browser',default='msedge',choices=['msedge','chrome','chromium'])
     parser.add_argument('--page-only',action='store_true'); parser.add_argument('--repeats',type=int,default=3)
     parser.add_argument('--mouse-only',action='store_true',help='Measure mouse focus paths without requiring global hotkey ownership; retains recorder positive controls')

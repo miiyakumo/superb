@@ -35,7 +35,10 @@ Superb 本地网页事件测试台
   Windows 输入经 SendInput（扫描码模式）注入；浏览器 isTrusted=true 仍不能说明真人硬件输入。
   测试页保持正常 DOM 事件行为，不注入防检测脚本。legacy 模式使用原有组合键；exclusive 模式由 Superb 安装限定 F6/F7/F8 的系统输入钩子。
   必须确认前台 HWND、页面焦点/可见性、显示保护和热键注册，才能开始采样。
-  动作证据：可见状态、鼠标计数、实际滚动偏移、快捷键命令记录。
+  动作证据：可见状态、实际滚动偏移、快捷键命令记录。正文点击和滚轮必须由底层浏览器收到可信事件，同时浮窗鼠标计数及滚动位置不变；没有事件不能算穿透成功。
+  测试宿主在 WPF 渲染和滚动队列完成后才回复命令；向上翻页用例必须先确认初始位置不在顶部。
+  场景请求按当前提示词、原始合成输入和解析后的模型连接检查，不依赖已删除的 UserTemplate/Model 场景字段。
+  探针回归（无需 Playwright；Windows 上需要先构建测试宿主）：python -m unittest discover -s tools/event-probe -p "test_*.py" -v
   环境失败报告 BLOCKED；记录器单测通过仅标 RECORDER_ONLY_PASS；有效原生测量标 MEASURED。
   发现失焦或键盘事件本身不导致测试失败，它是本实验要记录的结果。
 

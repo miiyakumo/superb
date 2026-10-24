@@ -35,6 +35,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: dotnet build Superb.slnx -c Release
+      - name: Verify probe evidence and settled fixture commands
+        run: python -m unittest discover -s tools/event-probe -p "test_*.py" -v
       - run: python -m pip install playwright==1.64.0
       - name: Measure headed browser with native Windows input
         run: python tools/event-probe/run_probe.py --browser ${{ matrix.browser }} --reader-keys ${{ matrix.keys }} --repeats 3 --output artifacts/event-probe/${{ matrix.browser }}-${{ matrix.keys }}
