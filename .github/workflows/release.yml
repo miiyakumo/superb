@@ -1,0 +1,147 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to publish (for example v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate requested tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') {
+            throw 'Expected a version tag such as v1.0.0 or v1.1.0-rc.1.'
+          }
+          "tag=$env:RELEASE_TAG" >> $env:GITHUB_OUTPUT
+          "prerelease=$($env:RELEASE_TAG.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.version.outputs.tag }}
+          persist-credentials: false
+      - name: Check application version
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          [xml]$project = Get-Content src/Superb.Desktop/Superb.Desktop.csproj -Raw
+          $version = [string]$project.Project.PropertyGroup.Version
+          if ($version -cne $env:RELEASE_TAG.Substring(1)) {
+            throw "Application version '$version' does not match tag '$env:RELEASE_TAG'."
+          }
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build
+        run: dotnet build Superb.slnx -c Release
+      - name: Core regressions
+        run: dotnet run --project tests/Superb.Tests -c Release --no-build
+      - name: Windows integration regressions
+        run: dotnet run --project tests/Superb.WindowsTests -c Release --no-build
+      - name: Publish self-contained Windows x64 application
+        run: dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/publish
+      - name: Package application and release notes
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if (!(Test-Path artifacts/publish/Superb.exe) -or !(Test-Path artifacts/publish/coreclr.dll)) {
+            throw 'The application or bundled .NET runtime is missing.'
+          }
+          Copy-Item README.md, LICENSE, CHANGELOG.md -Destination artifacts/publish
+          New-Item -ItemType Directory -Force artifacts/release | Out-Null
+          $archiveName = "Superb-$env:RELEASE_TAG-windows-x64.zip"
+          $archivePath = Join-Path artifacts/release $archiveName
+          Compress-Archive -Path artifacts/publish/* -DestinationPath $archivePath -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archiveName" | Set-Content "$archivePath.sha256" -Encoding utf8NoBOM
+          $version = [regex]::Escape($env:RELEASE_TAG.Substring(1))
+          $changelog = Get-Content CHANGELOG.md -Raw
+          $section = [regex]::Match($changelog, "(?ms)^## $version(?:[^\r\n]*)\r?\n(.*?)(?=^## |\z)")
+          if (!$section.Success) { throw 'No matching version section in CHANGELOG.md.' }
+          $changes = $section.Groups[1].Value.Trim()
+          $changes = ($changes -split '\r?\n以下为历史版本记录', 2)[0].Trim()
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve source commit.' }
+          $notes = @(
+            $changes
+            ''
+            '### Windows x64 下载与运行'
+            ''
+            "下载 $archiveName 并完整解压，运行 Superb.exe。保留同目录所有文件；已包含 .NET 运行时，无需单独安装。"
+            '保留应用图标；首次启动后配置模型连接。'
+            ''
+            '附带 .sha256 文件，可用 PowerShell 的 Get-FileHash -Algorithm SHA256 校验下载。'
+            ''
+            "源代码：$env:RELEASE_TAG（$commit）。"
+          ) -join "`n"
+          $notes | Set-Content artifacts/release/release-notes.md -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: artifacts/release/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Upload assets and publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="Superb-${RELEASE_TAG}-windows-x64.zip"
+          if gh release view "$RELEASE_TAG" --json isDraft,assets > existing-release.json; then
+            if [[ "$(jq -r .isDraft existing-release.json)" != "true" ]]; then
+              jq -e --arg zip "$archive" \
+                '([.assets[].name] | index($zip) != null and index($zip + ".sha256") != null)' \
+                existing-release.json > /dev/null
+              echo "Release already published with the required assets; leaving it unchanged."
+              exit 0
+            fi
+          else
+            extra=()
+            if [[ "$PRERELEASE" == "true" ]]; then extra+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "Superb $RELEASE_TAG" --notes-file release-assets/release-notes.md "${extra[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" \
+            "release-assets/$archive" "release-assets/$archive.sha256" --clobber
+          gh release edit "$RELEASE_TAG" --notes-file release-assets/release-notes.md --draft=false
