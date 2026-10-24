@@ -2,7 +2,7 @@
 
 评审基线：2026-10-16，0.1 开发实现。该文档描述代码与验证缺口，不代表需求已全部验收。
 
-本文保留早期架构评审基线，部分默认值、P1 状态与验证描述已随实现演进。当前 `0.2.0` 的进度与缺口见 [2026-10-23 项目评估](project-review-20261023.md)，各轮测试范围见 [验证记录](verification.md)；不要将本文历史状态作为当前功能清单。
+本文保留早期架构评审基线，部分默认值、P1 状态与验证描述已随实现演进。早期 `0.2.0` 的进度与缺口见 [2026-10-23 项目评估](project-review-20261023.md)，各轮测试范围见 [验证记录](verification.md)；不要将本文历史状态作为当前功能清单。
 
 ## 2026-10-24：AI Coding 持续任务
 
@@ -22,7 +22,7 @@
 
 DeepSeek 思考模式使用 `tool_choice=auto`，返回仍必须是一个合法原生动作；其他已支持强制选择的配置指定 `coding_action`，不关闭思考或回退协议。该供应商限制依据 [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) 的 `tool_choice` 说明，并通过真实模型和本机协议测试核对。官方 DeepSeek 的 JSON 动作模式启用 `response_format=json_object`，依据其 [JSON Output 文档](https://api-docs.deepseek.com/guides/json_mode/)；通用端点不假设具有此能力。解析错误只提供固定诊断类别，不记录未校验响应正文。
 
-桌面层的 `MainWindow.Coding.cs` 负责输入、生命周期和复制；`ReaderWindow.Coding.cs` 呈现方向、发送前操作、平台提示词和返回证据。复制直接取 `Directive.Prompt`，不从 Markdown 提取；自动写回保留剪贴板序列竞争检查。普通场景与 Coding 分别保存草稿、待发送材料及结果。
+桌面层的 `MainWindow.Coding.cs` 负责输入、生命周期和复制；`ReaderWindow.Coding.cs` 呈现方向、发送前操作、平台提示词和返回证据。复制直接取 `Directive.Prompt`，不从 Markdown 提取；自动写回保留剪贴板序列竞争检查。普通场景与 Coding 分别保存待发送材料及结果。
 
 ## 分层与信任边界（普通请求及早期基线）
 
@@ -58,7 +58,7 @@ flowchart LR
 | SDK / GUI | .NET 10 / WPF，不依赖 WebView |
 | 协议 | Chat Completions；可添加多个兼容后端 |
 | 端点 | 无预置供应商；必须完整显式配置 |
-| 请求超时 | 120 秒，可配置 1–600 秒 |
+| 请求超时 | 300 秒，可配置 1–600 秒 |
 | 输入 | 默认 8 MiB / 后端，绝对上限 16 MiB、图像 3200 万像素 |
 | 输出 | 默认 200000 字符、4096 tokens，分别可配置 |
 | 重试 | 无自动重试；手动重试独立计费/尝试 |

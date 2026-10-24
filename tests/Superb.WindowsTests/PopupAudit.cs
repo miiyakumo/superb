@@ -52,7 +52,7 @@ internal static class PopupAudit
         {
             reader.Configure(new Configuration().Scenes, "general", "Synthetic recipient", "Ctrl+Alt+E");
             reader.SetActions(true, false, false, false, false, false);
-            reader.Show(); reader.SetMode(true); Pump();
+            reader.Show(); Pump();
             snapshots.Add(WindowAudit.Snapshot(Environment.ProcessId));
             var picker = (ComboBox)reader.FindName("WorkspaceScene");
             picker.IsDropDownOpen = true; Pump();
@@ -67,7 +67,7 @@ internal static class PopupAudit
             Observe("tooltip", new(tooltip));
             tooltip.IsOpen = false; Pump();
             tooltip.IsOpen = true; Pump(); Observe("tooltip-reopen", new(tooltip)); tooltip.IsOpen = false; Pump();
-            var menu = new ContextMenu { PlacementTarget = (TextBox)reader.FindName("DraftText") };
+            var menu = new ContextMenu { PlacementTarget = (Button)reader.FindName("SettingsButton") };
             menu.Items.Add(new MenuItem { Header = "Synthetic context action" });
             var submenu = new MenuItem { Header = "Synthetic submenu" }; submenu.Items.Add(new MenuItem { Header = "Synthetic child action" }); menu.Items.Add(submenu);
             menu.IsOpen = true; Pump(); Observe("context-menu", new(menu));
@@ -77,7 +77,7 @@ internal static class PopupAudit
             menu.IsOpen = false; Pump();
             foreach (var label in new[] { "dropdown", "tooltip", "context-menu" })
             {
-                reader.SetDraft("Synthetic private draft"); reader.Render("Synthetic private answer", "Synthetic");
+                reader.Render("Synthetic private answer", "Synthetic");
                 ((Expander)reader.FindName("ComposerExpander")).IsExpanded = true;
                 System.Windows.Media.Visual element;
                 if (label == "dropdown") { picker.IsDropDownOpen = true; element = popup.Child; }
@@ -87,7 +87,7 @@ internal static class PopupAudit
                 var source = (HwndSource)PresentationSource.FromVisual(element);
                 var removed = Native.SetWindowDisplayAffinity(source.Handle, 0);
                 var rejected = !reader.Check();
-                var cleared = reader.Draft.Length == 0 && ((AnswerView)reader.FindName("Answer")).Text.Length == 0;
+                var cleared = ((AnswerView)reader.FindName("Answer")).Text.Length == 0;
                 var suppressed = ((UIElement)source.RootVisual).Visibility == Visibility.Collapsed;
                 observations.Add(new { label = label + "-protection-loss", removed, rejected, cleared, suppressed });
                 if (!removed || !rejected || !cleared || !suppressed) failures++;
@@ -107,12 +107,13 @@ internal static class PopupAudit
             try
             {
                 settings.Show(); Pump();
-                var backendPicker = (ComboBox)settings.FindName("BackendPicker");
+                ((TabControl)settings.FindName("MainTabs")).SelectedItem = settings.FindName("ScenesTab"); Pump();
+                var backendPicker = (ComboBox)settings.FindName("SceneBackendPicker");
                 backendPicker.IsDropDownOpen = true; Pump();
                 var backendPopup = (Popup)backendPicker.Template.FindName("PART_Popup", backendPicker);
                 Observe("settings-backend-dropdown", new(backendPopup.Child)); backendPicker.IsDropDownOpen = false; Pump();
             }
-            finally { settings.Close(); Pump(); }
+            finally { settings.ExitApplication(); Pump(); }
             if (args.Contains("--capture-check"))
             {
                 reader.Hide();

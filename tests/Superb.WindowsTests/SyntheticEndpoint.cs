@@ -15,6 +15,8 @@ internal sealed class SyntheticEndpoint : IDisposable, ICredentialStore
     private readonly CancellationTokenSource stop = new();
     private readonly Task worker;
     public ConcurrentQueue<JsonElement> Requests { get; } = new();
+    public ConcurrentQueue<string[]> Headers { get; } = new();
+    public TaskCompletionSource? ResponseGate { get; init; }
     public string Error { get; private set; } = "";
     public string Url { get; }
     public SyntheticEndpoint()
@@ -36,10 +38,12 @@ internal sealed class SyntheticEndpoint : IDisposable, ICredentialStore
                         if (header.Count >= 4 && header.TakeLast(4).SequenceEqual(new byte[] { 13, 10, 13, 10 })) break;
                     }
                     var lines = Encoding.ASCII.GetString(header.ToArray()).Split("\r\n");
+                    Headers.Enqueue(lines);
                     var length = int.Parse(lines.Single(l => l.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))[15..]);
                     if (length < 0 || length > Policy.AbsoluteInputLimit) throw new IOException("Body size");
                     var body = new byte[length]; await stream.ReadExactlyAsync(body, stop.Token);
                     using var json = JsonDocument.Parse(body); Requests.Enqueue(json.RootElement.Clone());
+                    if (ResponseGate is not null) await ResponseGate.Task.WaitAsync(stop.Token);
                     const string response = "{\"choices\":[{\"message\":{\"content\":\"Synthetic OK\"},\"finish_reason\":\"stop\"}]}";
                     await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {response.Length}\r\nConnection: close\r\n\r\n{response}"), stop.Token);
                 }

@@ -19,7 +19,7 @@ public partial class MainWindow
     {
         if (!Ready()) return;
         if (Working) { Status("正在分析；新材料可继续加入待分析队列"); return; }
-        var hasPending = codingWorkspace.HasInput(reader.Draft);
+        var hasPending = codingWorkspace.HasInput("");
         var reanalyzing = CanReanalyzeCoding;
         if (!hasPending && !reanalyzing) { Status("请带回新的代码或测试反馈，再继续分析"); return; }
         var target = frozenBackend ?? SceneRequestFactory.SelectBackend(config, WorkspaceScene);
@@ -30,20 +30,17 @@ public partial class MainWindow
         // capture remains an independent observation with its own provenance.
         if (hasPending)
         {
-            var packet = codingWorkspace.Freeze(reader.Draft, clipboard!.Sequence);
+            var packet = codingWorkspace.Freeze("", clipboard!.Sequence);
             Policy.Check(new(packet, packet.Content, target, instructions, "coding"));
         }
         codingClipboardSequence = clipboard!.Sequence;
         var observationCount = codingSession.Observations.Count;
         var observations = codingWorkspace.Items.Select(entry => entry.Snapshot).ToList();
-        if (!string.IsNullOrWhiteSpace(reader.Draft))
-            observations.Add(new(Guid.NewGuid(), InputKind.ManualText, Payload.FromText(reader.Draft),
-                codingClipboardSequence, DateTimeOffset.UtcNow));
         codingSession.AddObservations(observations);
-        codingWorkspace.Clear(); codingDraft = ""; reader.SetDraft(""); reader.ClearInput();
+        codingWorkspace.Clear(); reader.ClearInput();
         if (codingSession.Observations.Count == observationCount && !reanalyzing)
         { Status("材料与已有记录重复 · 未再次调用模型；请带回新反馈或重试未完成的分析"); return; }
-        reader.SetMode(false);
+        reader.SetClickThrough(false);
         if (!reader.IsVisible) reader.Show();
         codingTarget = target;
         await codingRunner.RunAsync(codingSession, target, options, instructions);

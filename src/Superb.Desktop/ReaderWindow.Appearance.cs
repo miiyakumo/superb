@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -20,16 +19,15 @@ public partial class ReaderWindow
     private void InitializeAppearance()
     {
         appearanceReady = true;
-        SizeChanged += (_, _) => { SyncAppearanceControls(); NotifyLayoutChanged(); };
+        SizeChanged += (_, _) => NotifyLayoutChanged();
         LocationChanged += (_, _) => NotifyLayoutChanged();
-        DraftText.GotKeyboardFocus += (_, _) => QueueComposerLayout();
-        SyncAppearanceControls(); SetBackgroundOpacity(1);
+        SetBackgroundOpacity(1);
     }
     internal void BeginAnswer()
     {
         if (answerMode) return;
-        answerMode = true; ComposerExpander.IsExpanded = false; AppearancePanel.Visibility = Visibility.Collapsed;
-        SetEditingControls();
+        answerMode = true; ComposerExpander.IsExpanded = false;
+        UpdateControls();
     }
     private Rect CurrentWorkArea()
     {
@@ -60,8 +58,14 @@ public partial class ReaderWindow
         var resources = Application.Current.Resources;
         var baseColor = ((SolidColorBrush)resources["Base"]).Color;
         var surface = ((SolidColorBrush)resources["Surface"]).Color;
+        var accent = ((SolidColorBrush)resources["Accent"]).Color;
+        // Scope translucent backgrounds to this reader. Surface also backs the Coding
+        // progress panel, attachments, code blocks and normal button hover states.
+        // Keep Accent/Ink/OnAccent opaque because they are also used for foregrounds.
+        Resources["Surface"] = new SolidColorBrush(Color.FromArgb(alpha, surface.R, surface.G, surface.B));
+        Resources["WorkspaceAccentBackground"] = new SolidColorBrush(Color.FromArgb(alpha, accent.R, accent.G, accent.B));
         WindowSurface.Background = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
-        AnswerSurface.Background = new SolidColorBrush(Color.FromArgb(alpha, surface.R, surface.G, surface.B));
+        AnswerSurface.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "Surface");
     }
     private void ApplyPalette()
     {
@@ -74,116 +78,13 @@ public partial class ReaderWindow
         SetBackgroundOpacity(backgroundOpacity);
         if (Answer.Text.Length > 0) Answer.Restyle();
     }
-    private void CommitTheme()
-    {
-        applyingAppearance = true;
-        try { ApplyPalette(); }
-        finally { applyingAppearance = false; }
-        SyncAppearanceControls(); NotifyLayoutChanged();
-    }
-    private void SyncAppearanceControls()
-    {
-        if (!appearanceReady || applyingAppearance) return;
-        applyingAppearance = true;
-        try
-        {
-            var area = CurrentWorkArea();
-            PanelWidth.Maximum = Math.Max(MinWidth, Math.Min(MaxWidth, area.Width));
-            PanelHeight.Maximum = Math.Max(MinHeight, Math.Min(MaxHeight, area.Height));
-            PanelWidth.Value = Width; PanelHeight.Value = Height;
-            PanelOpacity.Value = backgroundOpacity; PanelTextSize.Value = Answer.FontSize;
-            MarkTheme(ThemeInk, Theme.InkId); MarkTheme(ThemeMist, Theme.MistId);
-            MarkTheme(ThemePaper, Theme.PaperId); MarkTheme(ThemePine, Theme.PineId);
-            var effective = Theme.EffectiveAccent(themeId, accentHex);
-            foreach (var button in AccentSwatches.Children.OfType<Button>())
-            {
-                var selected = string.Equals(button.Tag as string, effective, StringComparison.OrdinalIgnoreCase);
-                button.BorderBrush = (Brush)FindResource(selected ? "Ink" : "Line");
-                button.BorderThickness = new Thickness(selected ? 2 : 1);
-            }
-            if (!CustomBaseBox.IsKeyboardFocused && !CustomInkBox.IsKeyboardFocused && !CustomAccentBox.IsKeyboardFocused)
-            {
-                CustomBaseBox.Text = customBase; CustomInkBox.Text = customInk; CustomAccentBox.Text = accentHex;
-                ThemeError.Text = "";
-            }
-        }
-        finally { applyingAppearance = false; }
-    }
-    private void MarkTheme(Button button, string id)
-    {
-        var selected = customBase.Length == 0 && customInk.Length == 0 && themeId == id;
-        if (selected) button.Style = (Style)FindResource("WorkspacePrimary");
-        else button.ClearValue(FrameworkElement.StyleProperty);
-        button.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
-    }
     private void NotifyLayoutChanged() { if (appearanceReady && !applyingAppearance && IsLoaded) LayoutChanged?.Invoke(); }
-    private void Appearance_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (!appearanceReady || applyingAppearance) return;
-        applyingAppearance = true;
-        try
-        {
-            if (ReferenceEquals(sender, PanelWidth)) ResizeTo(e.NewValue, Height);
-            else if (ReferenceEquals(sender, PanelHeight)) ResizeTo(Width, e.NewValue);
-            else if (ReferenceEquals(sender, PanelOpacity)) SetBackgroundOpacity(e.NewValue);
-            else if (ReferenceEquals(sender, PanelTextSize)) Answer.FontSize = Math.Round(e.NewValue);
-        }
-        finally { applyingAppearance = false; }
-        SyncAppearanceControls(); NotifyLayoutChanged();
-    }
-    private void Appearance_Click(object sender, RoutedEventArgs e)
-    {
-        var editingDraft = DraftText.IsKeyboardFocusWithin;
-        AppearancePanel.Visibility = AppearancePanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-        if (AppearancePanel.Visibility == Visibility.Visible)
-        {
-            // Collapsing the focused editor hides the draft and makes WPF move focus.
-            if (!editingDraft) ComposerExpander.IsExpanded = false;
-            SyncAppearanceControls();
-        }
-        QueueComposerLayout();
-    }
-    private void Comfortable_Click(object sender, RoutedEventArgs e)
-    {
-        ResizeTo(800, 850); ComposerExpander.IsExpanded = false; AppearancePanel.Visibility = Visibility.Collapsed;
-        SyncAppearanceControls(); NotifyLayoutChanged();
-    }
-    private void ResetAppearance_Click(object sender, RoutedEventArgs e)
-    {
-        ResizeTo(600, 740); Answer.FontSize = 18;
-        themeId = Theme.InkId; accentHex = ""; customBase = ""; customInk = "";
-        backgroundOpacity = 1; CommitTheme();
-    }
-    private void ThemePreset_Click(object sender, RoutedEventArgs e)
-    {
-        if (!appearanceReady || applyingAppearance || sender is not Button { Tag: string id }) return;
-        themeId = id; accentHex = ""; customBase = ""; customInk = "";
-        CommitTheme();
-    }
-    private void Accent_Click(object sender, RoutedEventArgs e)
-    {
-        if (!appearanceReady || applyingAppearance || sender is not Button { Tag: string hex }) return;
-        accentHex = hex; CommitTheme();
-    }
-    private void ApplyCustom_Click(object sender, RoutedEventArgs e)
-    {
-        if (!appearanceReady || applyingAppearance) return;
-        var nextBase = CustomBaseBox.Text.Trim();
-        var nextInk = CustomInkBox.Text.Trim();
-        var nextAccent = CustomAccentBox.Text.Trim();
-        if (!Theme.TryResolve(themeId, nextAccent, nextBase, nextInk, out _, out var error))
-        {
-            ThemeError.Text = error ?? "无法应用这种配色。"; return;
-        }
-        customBase = nextBase.Length == 0 ? "" : Theme.Canonical(nextBase);
-        customInk = nextInk.Length == 0 ? "" : Theme.Canonical(nextInk);
-        accentHex = nextAccent.Length == 0 ? "" : Theme.Canonical(nextAccent);
-        ThemeError.Text = ""; CommitTheme();
-    }
+    internal void CollapseInput() => ComposerExpander.IsExpanded = false;
+    internal Rect AppearanceWorkArea => CurrentWorkArea();
     private void ResizeHandle_DragDelta(object sender, DragDeltaEventArgs e)
     {
         ResizeTo(Width + e.HorizontalChange, Height + e.VerticalChange);
-        SyncAppearanceControls(); NotifyLayoutChanged(); e.Handled = true;
+        NotifyLayoutChanged(); e.Handled = true;
     }
     private void WorkArea_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -196,24 +97,7 @@ public partial class ReaderWindow
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
         {
             composerLayoutPending = false;
-            var editingDraft = DraftText.IsKeyboardFocusWithin && ComposerExpander.IsExpanded;
-            var chrome = WorkArea.RowDefinitions[0].ActualHeight - ComposerScroll.ActualHeight
-                + WorkArea.RowDefinitions[1].ActualHeight;
-            // At the minimum window size, shrink the scrollable appearance pane first.
-            // A focused draft takes priority over the answer's usual reserved space.
-            var minimumEditor = Math.Clamp(DraftText.ActualHeight + DraftText.Margin.Top + DraftText.Margin.Bottom, 74, 110);
-            var available = WorkArea.ActualHeight + (AppearancePanel.IsVisible ? AppearancePanel.ActualHeight : 0);
-            AppearanceScroll.MaxHeight = editingDraft ? Math.Clamp(available - chrome - minimumEditor - 16, 30, 220) : 220;
-            ComposerScroll.MaxHeight = editingDraft ? Math.Clamp(WorkArea.ActualHeight - chrome, minimumEditor, 220)
-                : Math.Clamp(WorkArea.ActualHeight - 220, 0, 220);
-            if (!editingDraft) return;
-            // Scroll the existing caret into view; never focus or select the editor.
-            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
-            {
-                if (!DraftText.IsKeyboardFocusWithin) return;
-                var caret = DraftText.GetRectFromCharacterIndex(DraftText.CaretIndex, true);
-                if (!caret.IsEmpty) DraftText.BringIntoView(caret);
-            }));
+            ComposerScroll.MaxHeight = Math.Clamp(WorkArea.ActualHeight - 220 - WorkArea.RowDefinitions[2].ActualHeight, 0, 220);
         }));
     }
 }

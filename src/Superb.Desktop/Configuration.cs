@@ -10,7 +10,7 @@ namespace Superb.Desktop;
 internal sealed record PanelLayout(double Left = 80, double Top = 80, double Width = 600, double Height = 740, double FontSize = 18, bool Visible = false, double BackgroundOpacity = 1, string Theme = Theme.InkId, string Accent = "", string CustomBase = "", string CustomInk = "");
 internal sealed record Configuration
 {
-    public int SchemaVersion { get; init; } = 4;
+    public int SchemaVersion { get; init; } = 6;
     public ImmutableArray<Backend> Backends { get; init; } = [];
     public string SelectedBackendId { get; init; } = "";
     public bool AutoCopy { get; init; }
@@ -18,6 +18,7 @@ internal sealed record Configuration
     public bool ExclusiveReaderKeys { get; init; }
     public bool ClearOwnedClipboardOnPause { get; init; } = true;
     public PanelLayout Panel { get; init; } = new();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExclusiveHotkeysEnabled { get; init; }
     public ImmutableArray<ScenePreset> Scenes { get; init; } = SceneDefaults.All;
     public ImmutableArray<Hotkey> Hotkeys { get; init; } = HotkeyDefaults.All;
@@ -35,7 +36,7 @@ internal sealed record Configuration
     }
     public Configuration Migrate()
     {
-        if (SchemaVersion is not (1 or 2 or 3 or 4)) throw new SafeFailure("config_invalid");
+        if (SchemaVersion is not (1 or 2 or 3 or 4 or 5 or 6)) throw new SafeFailure("config_invalid");
         if (Hotkeys.IsDefault || Scenes.IsDefault || Backends.IsDefault || Scenes.Any(s => s is null)) throw new SafeFailure("config_invalid");
         var legacy = SchemaVersion == 1;
         var keys = Hotkeys;
@@ -58,6 +59,12 @@ internal sealed record Configuration
         {
             var binding = send is null || (send == new Hotkey("send", "Ctrl+Alt+7") && ask.Enabled) ? ask : send;
             keys = keys.Where(k => k.Action is not ("ask" or "send")).Append(binding with { Action = "send" }).ToImmutableArray();
+        }
+        var oldInteraction = keys.FirstOrDefault(k => k.Action == "interact");
+        if (oldInteraction is not null)
+        {
+            keys = keys.Where(k => k.Action != "interact").ToImmutableArray();
+            if (!keys.Any(k => k.Action == "through")) keys = keys.Add(oldInteraction with { Action = "through" });
         }
         var used = new HashSet<(System.Windows.Input.Key, System.Windows.Input.ModifierKeys)>();
         Hotkey Reserve(Hotkey key)
@@ -90,11 +97,21 @@ internal sealed record Configuration
         if (scenes.Any(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt))
             scenes = scenes.Select(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt
                 ? scene with { SystemPrompt = SceneDefaults.AlgorithmPrompt } : scene).ToImmutableArray();
+        if (SchemaVersion < 5 && !ExclusiveHotkeysEnabled && !ExclusiveReaderKeys)
+        {
+            // Preserve which old exclusive bindings actually ran; the former screen-send
+            // exception becomes an ordinary enabled row after this one-time migration.
+            Hotkey PreserveEffectiveState(Hotkey key) => key.Mode == HotkeyMode.Exclusive && key.Action != "captureScreenSend"
+                ? key with { Enabled = false } : key;
+            keys = keys.Select(PreserveEffectiveState).ToImmutableArray();
+            scenes = scenes.Select(scene => scene with { Trigger = PreserveEffectiveState(scene.Trigger) }).ToImmutableArray();
+        }
         var connections = Backends.ToList();
         if (scenes.Any(scene => scene.LegacySettings is not null))
             scenes = scenes.Select(scene => MigrateScene(scene, connections)).ToImmutableArray();
-        return this with { SchemaVersion = 4, Backends = connections.Count == Backends.Length ? Backends : connections.ToImmutableArray(), Hotkeys = keys, Scenes = scenes,
-            ExclusiveHotkeysEnabled = ExclusiveHotkeysEnabled || ExclusiveReaderKeys, ExclusiveReaderKeys = false };
+        return this with { SchemaVersion = 6,
+            Backends = connections.Count == Backends.Length ? Backends : connections.ToImmutableArray(), Hotkeys = keys, Scenes = scenes,
+            ExclusiveHotkeysEnabled = false, ExclusiveReaderKeys = false };
     }
     private ScenePreset MigrateScene(ScenePreset scene, List<Backend> connections)
     {
@@ -137,8 +154,9 @@ internal sealed record Configuration
     {
         if (!File.Exists(path)) return new();
         if (new FileInfo(path).Length > 1_048_576) throw new SafeFailure("config_too_large");
-        var config = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(path), Json) ?? throw new SafeFailure("config_invalid");
-        var upgrade = config.SchemaVersion < 4 || (!config.Scenes.IsDefault && config.Scenes.Any(s => s?.LegacySettings is { Count: > 0 })) || (!config.Hotkeys.IsDefault && config.Hotkeys.Any(k => k?.Action == "ask"));
+        var content = File.ReadAllText(path);
+        var config = JsonSerializer.Deserialize<Configuration>(content, Json) ?? throw new SafeFailure("config_invalid");
+        var upgrade = config.SchemaVersion < 6 || (!config.Scenes.IsDefault && config.Scenes.Any(s => s?.LegacySettings is { Count: > 0 })) || (!config.Hotkeys.IsDefault && config.Hotkeys.Any(k => k?.Action == "ask"));
         config = config.Migrate();
         config.Validate();
         if (upgrade)
@@ -151,7 +169,7 @@ internal sealed record Configuration
     }
     public void Validate()
     {
-        if (SchemaVersion != 4 || Scenes.IsDefault || Scenes.Length > 24 || Backends.IsDefault || Hotkeys.IsDefault ||
+        if (SchemaVersion != 6 || Scenes.IsDefault || Scenes.Length > 24 || Backends.IsDefault || Hotkeys.IsDefault ||
             // Leave room for up to 24 migrated scene connections alongside the previous 32.
             Panel is null || Backends.Length > 64 || Hotkeys.Length > 32) throw new SafeFailure("config_invalid");
         foreach (var b in Backends) Policy.ValidateBackend(b);

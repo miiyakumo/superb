@@ -78,7 +78,7 @@ internal static class PassThroughTests
     {
         var renderIndex = Array.IndexOf(args, "--render-dir");
         var renderDirectory = renderIndex >= 0 && renderIndex + 1 < args.Length ? args[renderIndex + 1] : null;
-        tests.Add(("Partial pass-through reaches a different process while controls and edit selection retain native input regions", () =>
+        tests.Add(("Partial pass-through reaches a different process while controls retain native input regions", () =>
         {
             using var target = Process.Start(new ProcessStartInfo("dotnet")
             {
@@ -107,20 +107,11 @@ internal static class PassThroughTests
                 Check(!Contains(reader, inputHandle, point) && Contains(reader, reader.DisplayLayerHandle, point), "Answer regions overlap or leave a gap");
                 Check(Native.GetForegroundWindow() == before, "Creating the display companion stole foreground");
 
-                ((Expander)reader.FindName("ComposerExpander")).IsExpanded = true; Settle(reader);
-                Check(Hit(reader, Center((TextBox)reader.FindName("DraftText"), reader)) == inputHandle, "Draft input lost its native target");
-                ((Expander)reader.FindName("ComposerExpander")).IsExpanded = false; Settle(reader);
-                ((Button)reader.FindName("AppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Settle(reader);
-                var slider = (Slider)reader.FindName("PanelWidth"); slider.BringIntoView(); Settle(reader);
-                Check(Hit(reader, Center(slider, reader)) == inputHandle, "Appearance slider is not interactive");
-                ((Button)reader.FindName("AppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Settle(reader);
-                point = Center(answer, reader);
-
-                Check(reader.SetMode(true), "Cannot enter editing"); Settle(reader);
-                Check(Hit(reader, point) == inputHandle, "Editing did not restore answer selection hit target");
-                Check(reader.SetMode(false, true), "Cannot enter full pass-through"); Settle(reader);
+                Check(reader.FindName("DraftText") is null && reader.FindName("InteractionButton") is null, "Removed editing controls are still present");
+                Check(!answer.Reader.Focusable && !answer.Reader.IsSelectionEnabled, "Read-only answer accepts editing");
+                Check(reader.SetClickThrough(true), "Cannot enter full pass-through"); Settle(reader);
                 Check(Hit(reader, Center((Button)reader.FindName("ScreenSendButton"), reader)) == targetHandle, "Full pass-through still intercepts buttons");
-                Check(reader.SetMode(false), "Cannot restore reading"); Settle(reader);
+                Check(reader.SetClickThrough(false), "Cannot restore reading"); Settle(reader);
                 reader.Left += 40; reader.Top += 20; reader.Width = 500; Settle(reader);
                 Check(Hit(reader, Center(answer, reader)) == targetHandle, "Moved answer no longer passes through");
                 Check(Hit(reader, Center((Button)reader.FindName("ScreenSendButton"), reader)) == inputHandle, "Moved button region stale");

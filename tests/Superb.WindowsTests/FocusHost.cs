@@ -58,7 +58,7 @@ internal static class FocusHost
         var configuration = Settings(exclusiveReaderKeys);
         reader.Configure(configuration.Scenes, "algorithm", "Synthetic only", "Ctrl+Alt+E");
         reader.SetActions(true, false, false, false, false, false);
-        List<string> Register() => hotkeys.Register(configuration.AllHotkeys(), configuration.ExclusiveHotkeysEnabled);
+        List<string> Register() => hotkeys.Register(configuration.AllHotkeys());
         var registrationFailures = Register();
         CancellationTokenSource? selectionCancellation = null;
         string selectionState = "idle";
@@ -67,7 +67,7 @@ internal static class FocusHost
         {
             if (selectionCancellation is not null) return;
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(60)); selectionCancellation = cancellation;
-            selectionState = "first"; reader.SetMode(false, true);
+            selectionState = "first"; reader.SetClickThrough(true);
             Record("selection-start", new { selectionState });
             try
             {
@@ -83,7 +83,7 @@ internal static class FocusHost
             catch (Exception ex) { selectionState = "failed"; Record("selection-error", new { error = ex.GetType().Name }); }
             finally
             {
-                selectionCancellation = null; reader.SetMode(false);
+                selectionCancellation = null; reader.SetClickThrough(false);
                 Record("selection-finished", new { selectionState, selectionCompletions, selectionCancellations, reader.ClickThrough });
             }
         }
@@ -115,9 +115,7 @@ internal static class FocusHost
                 case "pageUp": reader.Page(false); break;
                 case "pause": reader.Clear(); break;
                 case "settings": control.Show(); break;
-                case "interact": reader.SetMode(!reader.Interactive); break;
-                case "beginEdit": reader.SetMode(true); break;
-                case "through": reader.SetMode(false, true); break;
+                case "through": reader.SetClickThrough(!reader.ClickThrough); break;
                 case "capture": case "stageCapture": _ = SelectCorners(); break;
                 // The remaining registrations are observable without production side effects.
             }
@@ -148,7 +146,7 @@ internal static class FocusHost
             return new
             {
                 hwnd = hwnd.ToInt64(), foreground = GetForegroundWindow().ToInt64(), visible = reader.IsVisible,
-                interactiveMode = reader.Interactive, clickThrough = reader.ClickThrough, draft = reader.Draft,
+                clickThrough = reader.ClickThrough,
                 controlVisible = control.IsVisible, exclusiveReaderKeys, conflictReserved,
                 sceneRequests = endpoint.Requests.ToArray(), sceneCompletions, sceneErrors, endpointError = endpoint.Error,
                 bindings = configuration.AllHotkeys().ToArray(), sceneDefinitions = configuration.Scenes,
@@ -160,8 +158,8 @@ internal static class FocusHost
                 registrationErrors = hotkeys.RegistrationErrors, lastWorkerStopped = hotkeys.LastWorkerStopped,
                 scrollOffset = scroll?.VerticalOffset ?? 0, scrollableHeight = scroll?.ScrollableHeight ?? 0,
                 points = new { body = Point(view), hide = Point(Find<Button>(reader, b => Equals(b.Content, "收起"))),
-                    edit = Point(Find<Button>(reader, b => Equals(b.Content, "编辑") || Equals(b.Content, "完成编辑"))),
-                    settings = Point(Find<Button>(reader, b => Equals(b.Content, "设置"))), pause = Point(Find<Button>(reader, b => Equals(b.Content, "暂停"))) },
+                    through = Point((Button)reader.FindName("ThroughButton")),
+                    settings = Point((Button)reader.FindName("SettingsButton")), pause = Point(Find<Button>(reader, b => Equals(b.Content, "暂停"))) },
                 os = Environment.OSVersion.VersionString, sessionId = System.Diagnostics.Process.GetCurrentProcess().SessionId,
                 interactive = Environment.UserInteractive, screen = new { width = area.Width, height = area.Height }
             };
@@ -173,7 +171,7 @@ internal static class FocusHost
         journalTimer.Tick += (_, _) => Record("sample", new
         {
             foreground = GetForegroundWindow().ToInt64(), visible = reader.IsVisible,
-            reader.Interactive, reader.ClickThrough, draftLength = reader.Draft.Length,
+            reader.ClickThrough,
             selectionState, selectionCompletions, selectionCancellations, actionCount = actions.Count,
             mouseDown, activated
         });
@@ -206,9 +204,8 @@ internal static class FocusHost
                                     break;
                                 case "pageDown": reader.Page(true); break;
                                 case "pageUp": reader.Page(false); break;
-                                case "edit": reader.SetMode(true); break;
-                                case "read": reader.SetMode(false); break;
-                                case "through": reader.SetMode(false, true); break;
+                                case "read": reader.SetClickThrough(false); break;
+                                case "through": reader.SetClickThrough(!reader.ClickThrough); break;
                                 case "selectCorners": _ = SelectCorners(); break;
                                 case "control": Action("settings"); break;
                                 case "closeControl": control.Hide(); break;

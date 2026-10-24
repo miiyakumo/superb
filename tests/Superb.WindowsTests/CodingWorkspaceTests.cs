@@ -33,12 +33,12 @@ internal static class CodingWorkspaceTests
     }
     internal static void Add(List<(string, Action)> tests, string[] args)
     {
-        tests.Add(("Coding preserves independent drafts, accumulates grounded feedback and rejects duplicate-only reruns", () =>
+        tests.Add(("Coding preserves independent material queues, accumulates grounded feedback and rejects duplicate-only reruns", () =>
         {
             using var host = new Host();
-            host.Window.QueueSnapshot(Input("ordinary input"), "ordinary"); host.Reader.SetDraft("ordinary draft");
+            host.Window.QueueSnapshot(Input("ordinary input"), "ordinary");
             host.Choose("coding");
-            Check(host.QueueCount == 0 && host.Reader.Draft == "");
+            Check(host.QueueCount == 0);
             host.Window.QueueSnapshot(Input("Task requires Solve; current function is missing"), "task");
             Wait(host.Window.RunCommand("send"));
             Check(host.Window.WorkspaceCodingSession.Memory.Attempts.Length == 1 && host.Model.Requests.Count == 3);
@@ -53,10 +53,10 @@ internal static class CodingWorkspaceTests
             Check(host.Window.WorkspaceCodingSession.Observations.Count == 2);
             Check(host.Window.WorkspaceCodingSession.Memory.Attempts.Length == 2);
             Check(host.Window.WorkspaceCodingSession.Memory.Attempts[0].Assessment?.Outcome == AttemptOutcome.Claimed);
-            host.Reader.SetDraft("coding draft"); host.Choose("general");
-            Check(host.QueueCount == 1 && host.Reader.Draft == "ordinary draft");
+            host.Choose("general");
+            Check(host.QueueCount == 1);
             Wait(host.Window.RunCommand("send")); Check(host.Ordinary.Calls == 1);
-            host.Choose("coding"); Check(host.Reader.Draft == "coding draft" && host.Answer.Contains("Return current Solve"));
+            host.Choose("coding"); Check(host.Answer.Contains("Return current Solve"));
             Wait(host.Window.RunCommand("newTask"));
             Check(host.Window.WorkspaceCodingSession.Observations.Count == 0 && host.Window.WorkspaceCodingSession.Memory.Attempts.IsEmpty);
             host.Choose("general"); Check(host.QueueCount == 1 && host.Window.WorkspaceCoordinator.State == RequestState.Completed && host.Answer == "ordinary answer");

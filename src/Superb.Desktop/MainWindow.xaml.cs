@@ -29,8 +29,10 @@ public partial class MainWindow : Window
     private Task<Payload>? captureTask;
     private CancellationTokenSource? probeCancellation;
     private long operation;
-    private bool preparing, exiting, loading, pausedForProtection, sessionLocked, configLoadFailed;
+    private bool preparing, exiting, exitRequested, loading, pausedForProtection, sessionLocked, configLoadFailed;
     private bool sessionListenerReady;
+    private bool settingsStatusExceptional;
+    private string? hotkeyRegistrationWarning;
     private nint handle;
     private readonly bool isolatedWorkspaceTest;
     private readonly Func<CaptureTarget, Task<Payload>> captureScreenshot;
@@ -60,14 +62,14 @@ public partial class MainWindow : Window
         reader.LayoutChanged += () =>
         {
             config = config with { Panel = reader.Layout() };
+            SyncAppearanceControls();
             if (!isolatedWorkspaceTest && !configLoadFailed && !exiting) { layoutSaveTimer.Stop(); layoutSaveTimer.Start(); }
         };
         layoutSaveTimer.Tick += (_, _) =>
         {
             layoutSaveTimer.Stop();
-            try { config.Save(); } catch { Status("外观已调整，但设置保存失败；本次会话仍可使用"); }
+            try { config.Save(); } catch { Status("外观已调整，但设置保存失败；本次会话仍可使用", exceptional: true); }
         };
-        reader.DraftChanged += RefreshWorkspace;
         reader.ProtectionLost += () => ProtectionFailed();
         SourceInitialized += InitializePlatform;
         guardTimer.Tick += (_, _) =>
@@ -82,7 +84,13 @@ public partial class MainWindow : Window
                 }
             }
         };
-        Closing += (_, _) => Shutdown();
+        Closing += (_, e) =>
+        {
+            if (exitRequested) { Shutdown(); return; }
+            e.Cancel = true;
+            CloseSettings();
+        };
+        InitializeAppearanceSettings();
         Populate();
     }
     internal bool CanActivateSettingsTarget(DependencyObject? target)
@@ -126,7 +134,7 @@ public partial class MainWindow : Window
         HwndSource.FromHwnd(handle)?.AddHook(WindowMessage);
         sessionListenerReady = Native.WTSRegisterSessionNotification(handle, 0);
         try { config = Configuration.Load(); }
-        catch { configLoadFailed = true; Status("配置无法读取；已使用安全默认值，未覆盖原文件"); }
+        catch { configLoadFailed = true; Status("配置无法读取；已使用安全默认值，未覆盖原文件", exceptional: true); }
         Populate();
         if (config.Backends.IsDefaultOrEmpty) MainTabs.SelectedItem = ConnectionTab;
         reader.ApplyLayout(config.Panel);
@@ -138,7 +146,7 @@ public partial class MainWindow : Window
             ? "属性已设置 · 当前配置未实测；尚无对外声明兼容的采集链路。"
             : "未验证 / 不支持 · 敏感显示与发送已阻止。";
         if (!protectedOk || !readerOk) ProtectionFailed();
-        else if (!sessionListenerReady) Status("系统会话通知注册失败；保持暂停");
+        else if (!sessionListenerReady) { UpdateMode(); Status("系统会话通知注册失败；保持暂停", exceptional: true); }
         else
         {
             pausedForProtection = false;
@@ -146,7 +154,7 @@ public partial class MainWindow : Window
             UpdateMode();
             if (!configLoadFailed)
                 Status(config.Backends.IsDefaultOrEmpty
-                    ? "填入 DeepSeek 密钥，即可开始提问"
+                    ? "新建模型配置，填写服务地址、模型和密钥后即可开始"
                     : "已就绪 · 可使用场景入口或已启用的快捷键");
         }
         guardTimer.Start();
@@ -164,42 +172,58 @@ public partial class MainWindow : Window
             }
             else if ((int)wParam is 8 or 5 or 3 or 1)
             {
-                sessionLocked = false; EmergencyPause("会话已返回；需要手动恢复");
+                sessionLocked = false; EmergencyPause("会话已返回；需要手动恢复", exceptional: true);
             }
         }
-        if (msg == 0x218 && (int)wParam == 4) EmergencyPause("系统挂起；需要手动恢复");
-        if (msg == 0x7E) EmergencyPause("显示配置变化；已暂停，请恢复后重新截图");
+        if (msg == 0x218 && (int)wParam == 4) EmergencyPause("系统挂起；需要手动恢复", exceptional: true);
+        if (msg == 0x7E) EmergencyPause("显示配置变化；已暂停，请恢复后重新截图", exceptional: true);
         if (msg == 0x31E && !protection.Check()) ProtectionFailed();
         return 0;
     }
-    private void Populate()
+    private void Populate(string? editId = null)
     {
         loading = true;
-        BackendPicker.ItemsSource = config.Backends;
-        BackendPicker.SelectedItem = config.Backends.FirstOrDefault(x => x.Id == config.SelectedBackendId);
-        EditBackendPicker.ItemsSource = config.Backends;
-        EditBackendPicker.SelectedItem = BackendPicker.SelectedItem;
+        var priorId = editId ?? EditingBackend?.Id ?? config.SelectedBackendId;
+        EditBackendPicker.ItemsSource = config.Backends.Select(b => new ModelConnectionRow(b, b.Id == config.SelectedBackendId)).ToArray();
+        EditBackendPicker.SelectedItem = ((ModelConnectionRow[])EditBackendPicker.ItemsSource).FirstOrDefault(row => row.Id == priorId);
         PopulateScenesAndKeys();
-        ExclusiveReaderKeys.IsChecked = config.ExclusiveHotkeysEnabled;
         AutoCopy.IsChecked = config.AutoCopy;
         ClearClipboard.IsChecked = config.ClearOwnedClipboardOnPause;
-        DefaultConnection.Visibility = config.Backends.IsDefaultOrEmpty ? Visibility.Collapsed : Visibility.Visible;
-        QuickSetup.IsExpanded = config.Backends.IsDefaultOrEmpty;
-        BackendSettings.IsExpanded = !config.Backends.IsDefaultOrEmpty;
-        var selected = BackendPicker.SelectedItem as Backend;
-        ModelSummary.Text = selected is null ? "先连接一个模型，即可开始提问。" : $"{selected.Name} · {selected.Model}";
-        var deepSeek = config.Backends.FirstOrDefault(x => x.Endpoint == DeepSeekSetup.Endpoint);
-        QuickStatus.Text = deepSeek is null ? "不需要填写接口地址或模型名称。" : $"已保存 {deepSeek.Name} / {deepSeek.Model}。可直接开始提问，或填入新密钥重新配置。";
+        SavedConnections.Visibility = config.Backends.IsDefaultOrEmpty ? Visibility.Collapsed : Visibility.Visible;
+        var selected = config.Backends.FirstOrDefault(b => b.Id == config.SelectedBackendId);
+        ModelSummary.Text = selected is null ? "先配置一个模型连接，即可开始提问。" : $"当前默认：{selected.Name} · {selected.Model}";
         loading = false;
+        SyncAppearanceControls();
         LoadBackendEditor();
         RefreshWorkspace();
     }
-    private void Status(string message) { StatusLabel.Text = message; reader.Status(message); SetError(null); RefreshWorkspace(); }
-    private void SetError(string? code)
+    private void Status(string message, bool exceptional = false) { StatusLabel.Text = message; reader.Status(message); SetError(null, exceptional); RefreshWorkspace(); }
+    private void SetError(string? code, bool exceptional = false)
     {
+        settingsStatusExceptional = exceptional || code is not null;
         ErrorCode.Text = code ?? "";
         ErrorDetails.Visibility = code is null ? Visibility.Collapsed : Visibility.Visible;
         if (code is null) ErrorDetails.IsExpanded = false;
+        RefreshSettingsStatus();
+    }
+    private void RefreshSettingsStatus()
+    {
+        // Health failures remain visible when ordinary workspace progress updates arrive.
+        var warning = coordinator.Mode switch
+        {
+            RunState.ProtectionUnavailable => "保护不可用；敏感内容已遮蔽，请检查诊断后恢复",
+            RunState.Locked => "系统会话已锁定或断开；返回后需要手动恢复",
+            _ when configLoadFailed => "配置无法读取；已使用安全默认值，未覆盖原文件",
+            _ when !isolatedWorkspaceTest && handle != 0 && !sessionListenerReady => "系统会话通知注册失败；保持暂停",
+            _ => hotkeyRegistrationWarning
+        };
+        SettingsStatusCard.Visibility = settingsStatusExceptional || warning is not null ? Visibility.Visible : Visibility.Collapsed;
+        ModeLabel.Text = coordinator.Mode switch
+        {
+            RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用",
+            RunState.Paused => "已暂停", _ => "需要处理"
+        };
+        if (warning is not null && !settingsStatusExceptional) StatusLabel.Text = warning;
     }
     private void ClearOutput()
     {
@@ -239,21 +263,22 @@ public partial class MainWindow : Window
     }
     private void UpdateMode()
     {
-        ModeLabel.Text = $"{coordinator.Mode switch { RunState.Ready => "就绪", RunState.Locked => "锁定", RunState.ProtectionUnavailable => "保护不可用", _ => "已暂停" }}";
         ResumeButton.Visibility = coordinator.Mode == RunState.Ready ? Visibility.Collapsed : Visibility.Visible;
+        SettingsPauseButton.Visibility = coordinator.Mode == RunState.Ready ? Visibility.Visible : Visibility.Collapsed;
+        RefreshSettingsStatus();
         RefreshWorkspace();
     }
-    public void EmergencyPause(string reason, RunState mode = RunState.Paused)
+    public void EmergencyPause(string reason, RunState mode = RunState.Paused, bool exceptional = false)
     {
         captureSelectionCancellation?.Cancel();
         CancelProbe();
         operation++; preparing = false; coordinator.SetMode(mode); completed = null; latestUpdate = null;
         codingRunner.Clear(); codingSession.Clear(); codingTarget = null;
-        ordinaryWorkspace.Clear(); codingWorkspace.Clear(); ordinaryDraft = codingDraft = "";
-        reader.Clear(); ClearOutput(); ApiKey.Clear(); QuickApiKey.Clear();
-        if (reader.Check()) reader.SetMode(false);
+        ordinaryWorkspace.Clear(); codingWorkspace.Clear();
+        reader.Clear(); ClearOutput(); ApiKey.Clear();
+        if (reader.Check()) reader.SetClickThrough(false);
         if (config.ClearOwnedClipboardOnPause) { try { clipboard?.ClearOwned(); } catch { /* Clear best effort only our own data. */ } }
-        UpdateMode(); Status(reason);
+        UpdateMode(); Status(reason, exceptional);
     }
     private void ProtectionFailed()
     {
@@ -300,15 +325,11 @@ public partial class MainWindow : Window
                     break;
                 case "workspaceCopy": CopyWorkspaceAnswer(); break;
                 case "newTask": NewWorkspaceTask(); break;
-                case "interact":
-                    if (Ready()) { if (!reader.IsVisible) reader.Show(); reader.SetMode(!reader.Interactive); }
-                    break;
-                case "beginEdit":
-                    if (Ready()) reader.SetMode(true);
-                    break;
                 case "through":
-                    if (Ready() && hotkeys?.HasAction("interact") == true && CanHideControl()) reader.SetMode(false, true);
-                    else Status("穿透未开启：请先修复编辑、设置、暂停和退出快捷键");
+                    if (!Ready()) break;
+                    if (reader.ClickThrough) reader.SetClickThrough(false);
+                    else if (hotkeys?.HasAction("through") == true && CanHideControl()) reader.SetClickThrough(true);
+                    else Status("穿透未开启：请先修复穿透、设置、暂停和退出快捷键", exceptional: true);
                     break;
                 case "resume": Resume_Click(this, new RoutedEventArgs()); break;
                 case "clipboard": await StageClipboard(); break;
@@ -326,7 +347,7 @@ public partial class MainWindow : Window
                 case "toggle":
                     if (reader.IsVisible)
                     {
-                        if (!IsVisible && !CanHideControl()) { Status("关键快捷键不可用；请先打开控制中心"); break; }
+                        if (!IsVisible && !CanHideControl()) { Status("关键快捷键不可用；请先打开控制中心", exceptional: true); break; }
                         reader.Hide();
                     }
                     else { reader.Show(); reader.Check(); }
@@ -343,10 +364,13 @@ public partial class MainWindow : Window
                 case "pageDown": reader.Page(true); break;
                 case "pageUp": reader.Page(false); break;
                 case "settings": Show(); break;
-                case "exit": Close(); break;
+                case "exit": ExitApplication(); break;
             }
         }
-        catch (Exception ex) { Report(ex); }
+        catch (Exception ex)
+        {
+            Report(ex);
+        }
     }
     private void Report(Exception ex)
     {
@@ -369,212 +393,61 @@ public partial class MainWindow : Window
     }
     private void RegisterHotkeys()
     {
-        var failed = hotkeys!.Register(config.AllHotkeys(), config.ExclusiveHotkeysEnabled);
-        if (reader.ClickThrough && !hotkeys.HasAction("interact")) reader.SetMode(false);
+        var failed = hotkeys!.Register(config.AllHotkeys());
+        if (reader.ClickThrough && !hotkeys.HasAction("through")) reader.SetClickThrough(false);
         HotkeyStatus.Text = failed.Count > 0 ? "未启用的动作：" + string.Join(", ", failed)
-            : config.ExclusiveHotkeysEnabled ? "独占接管已开启；已启用的绑定注册成功" : "已启用的绑定注册成功；截屏并发送独立接管，其他独占键关闭。普通组合键可能产生网页按键事件";
-        if (failed.Count > 0) Status("快捷键冲突或无效（动作）：" + string.Join(", ", failed));
+            : "已启用的快捷键注册成功";
+        hotkeyRegistrationWarning = failed.Count > 0 ? "快捷键冲突或无效（动作）：" + string.Join(", ", failed) : null;
+        if (hotkeyRegistrationWarning is not null) Status(hotkeyRegistrationWarning, exceptional: true);
+        else RefreshSettingsStatus();
         RefreshWorkspace();
     }
     private void Resume_Click(object sender, RoutedEventArgs e)
     {
-        if (sessionLocked || !sessionListenerReady) { Status("系统会话尚未就绪"); return; }
+        if (sessionLocked || !sessionListenerReady) { Status("系统会话尚未就绪", exceptional: true); return; }
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
         pausedForProtection = false; coordinator.SetMode(RunState.Ready); UpdateMode(); Status("已恢复");
     }
-    private sealed class TemporaryCredential(string secret) : ICredentialStore, IDisposable
-    {
-        private string value = secret;
-        public string Read(string reference) => value;
-        public void Dispose() => value = "";
-    }
-    private void SetProbeBusy(bool busy, bool quick = false)
-    {
-        TestBackendButton.IsEnabled = !busy;
-        QuickConnectButton.IsEnabled = !busy;
-        QuickApiKey.IsEnabled = !busy;
-        QuickProxyMode.IsEnabled = !busy;
-        QuickProxyAddress.IsEnabled = !busy;
-        CancelQuickButton.Visibility = busy && quick ? Visibility.Visible : Visibility.Collapsed;
-    }
-    private async void QuickConnect_Click(object sender, RoutedEventArgs e)
-    {
-        if (!Ready()) return;
-        var secret = QuickApiKey.Password.Trim();
-        QuickApiKey.Clear();
-        if (string.IsNullOrWhiteSpace(secret) || secret.Length > 8192 || secret.Any(char.IsControl))
-        { QuickStatus.Text = "请填写有效的 API 密钥。"; return; }
-        CancelProbe();
-        using var cancellation = new CancellationTokenSource();
-        probeCancellation = cancellation;
-        SetProbeBusy(true, quick: true);
-        QuickDetails.Visibility = Visibility.Collapsed;
-        QuickStatus.Text = "正在获取模型并测试连接…";
-        var existing = config.Backends.FirstOrDefault(x => x.Id == config.SelectedBackendId && x.Endpoint == DeepSeekSetup.Endpoint) ??
-            config.Backends.FirstOrDefault(x => x.Endpoint == DeepSeekSetup.Endpoint);
-        var draft = DeepSeekSetup.Preset(existing?.Id ?? Guid.NewGuid().ToString("N"), "temporary",
-            (ProxyMode)QuickProxyMode.SelectedIndex, QuickProxyAddress.Text.Trim()) with
-            { MaxInputBytes = existing?.MaxInputBytes ?? 8_388_608, MaxOutputChars = existing?.MaxOutputChars ?? 1_000_000 };
-        try
-        {
-            using var temporary = new TemporaryCredential(secret);
-            using var client = new ChatCompletionsClient(temporary);
-            var result = await DeepSeekSetup.ConnectAsync(client, client, draft, cancellation.Token);
-            if (!ReferenceEquals(probeCancellation, cancellation) || !Ready()) return;
-            cancellation.Token.ThrowIfCancellationRequested();
-            if (configLoadFailed)
-            {
-                File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"), false);
-                configLoadFailed = false;
-            }
-            config = QuickSetupPersistence.Commit(config, result.Backend, secret, credentials, next => next.Save());
-            // Populate cancels probes; detach this successful operation before refreshing controls.
-            probeCancellation = null;
-            Populate();
-            ModelName.ItemsSource = result.Models.Select(x => x.Id).ToArray();
-            ModelName.Text = result.Backend.Model;
-            QuickStatus.Text = $"连接成功 · 已选择 {result.Backend.Model}，可以开始提问。";
-            Status("DeepSeek 已连接并保存");
-            OpenWorkspace();
-        }
-        catch (Exception ex)
-        {
-            if (!ReferenceEquals(probeCancellation, cancellation)) return;
-            var code = ConnectionDiagnostics.CodeFor(ex);
-            QuickStatus.Text = ConnectionDiagnostics.Explain(code);
-            QuickErrorCode.Text = code; QuickDetails.Visibility = Visibility.Visible;
-        }
-        finally
-        {
-            secret = "";
-            if (ReferenceEquals(probeCancellation, cancellation)) probeCancellation = null;
-            if (probeCancellation is null) SetProbeBusy(false);
-        }
-    }
     private void Pause_Click(object sender, RoutedEventArgs e) => EmergencyPause("紧急暂停已生效");
-    private void ShowPanel_Click(object sender, RoutedEventArgs e) => OpenWorkspace(explicitHide: true);
+    private void ShowPanel_Click(object sender, RoutedEventArgs e) => CloseSettings();
     private bool CanHideControl() => hotkeys is not null && new[] { "settings", "pause", "exit" }.All(hotkeys.HasAction);
-    private void HideControl_Click(object sender, RoutedEventArgs e)
-    {
-        if (!CanHideControl()) { Status("打开设置、暂停或退出的快捷键不可用；保留控制中心入口"); return; }
-        reader.Show(); Hide();
-    }
-    private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-    private void BackendPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!loading && BackendPicker.SelectedItem is Backend b && b.Id != config.SelectedBackendId)
-        {
-            Mutate(() => config = config with { SelectedBackendId = b.Id });
-        }
-    }
-    private void EditBackendPicker_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (!loading) LoadBackendEditor(); }
-    private void LoadBackendEditor()
+    private void CloseSettings()
     {
         CancelProbe();
-        var b = EditBackendPicker.SelectedItem as Backend;
-        DeleteModelButton.IsEnabled = b is not null;
-        ModelName.ItemsSource = null;
-        BackendName.Text = b?.Name ?? ""; ModelName.Text = b?.Model ?? ""; Endpoint.Text = b?.Endpoint ?? "";
-        ApiKey.Clear(); Vision.IsChecked = b?.SupportsImages ?? false; Streaming.IsChecked = b?.Stream ?? true;
-        Loopback.IsChecked = b?.AllowLoopbackHttp ?? false; TimeoutSeconds.Text = (b?.TimeoutSeconds ?? 120).ToString();
-        Temperature.Text = (b?.Temperature ?? 0.2).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        MaxTokens.Text = (b?.MaxTokens ?? Policy.DefaultOutputTokens).ToString();
-        ProxyModePicker.SelectedIndex = (int)(b?.ProxyMode ?? ProxyMode.Direct);
-        ProxyAddressBox.Text = b?.ProxyAddress ?? "";
-        SendTemperature.IsChecked = b?.SendTemperature ?? true;
-        UseCompletionTokens.IsChecked = b?.TokenLimitParameter == TokenLimitParameter.MaxCompletionTokens;
-        ThinkingModePicker.SelectedIndex = (int)(b?.ThinkingMode ?? ThinkingMode.Default);
-        ConnectionStatus.Text = "尚未测试此后端";
+        // Keep a reachable settings button even when recovery hotkeys are unavailable.
+        // Do not pause, clear the workspace, or dispose its active model request.
+        reader.Show();
+        if (reader.ClickThrough) reader.SetClickThrough(false);
+        Hide();
     }
-    private void NewBackend_Click(object sender, RoutedEventArgs e) { EditBackendPicker.SelectedItem = null; LoadBackendEditor(); }
-    private void SaveBackend_Click(object sender, RoutedEventArgs e)
+    private void MinimizeSettings_Click(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+    private void MaximizeSettings_Click(object sender, RoutedEventArgs e)
     {
-        var secret = ApiKey.Password;
-        var old = EditBackendPicker.SelectedItem as Backend;
-        Mutate(() =>
-        {
-            var b = BuildBackendSettings();
-            if (secret.Length > 0) b = b with { CredentialRef = credentials.Save(secret) };
-            config = config with { Backends = config.Backends.Where(x => x.Id != b.Id).Append(b).ToImmutableArray(), SelectedBackendId = b.Id };
-            config.Save();
-            if (secret.Length > 0 && old is not null && old.CredentialRef.Length > 0 &&
-                !config.Backends.Any(other => other.CredentialRef == old.CredentialRef)) credentials.Delete(old.CredentialRef);
-        });
+        if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this); else SystemCommands.MaximizeWindow(this);
     }
-    internal Backend BuildBackendSettings()
+    private void HideControl_Click(object sender, RoutedEventArgs e) => CloseSettings();
+    private void Exit_Click(object sender, RoutedEventArgs e) => ExitApplication();
+    internal void ExitApplication()
     {
-        var old = EditBackendPicker.SelectedItem as Backend;
-        var proxyMode = (ProxyMode)ProxyModePicker.SelectedIndex;
-        var b = new Backend(old?.Id ?? Guid.NewGuid().ToString("N"), BackendName.Text.Trim(), Endpoint.Text.Trim(),
-            ModelName.Text.Trim(), old?.CredentialRef ?? "", Vision.IsChecked == true, Loopback.IsChecked == true,
-            Streaming.IsChecked == true, int.Parse(TimeoutSeconds.Text), old?.MaxInputBytes ?? 8_388_608,
-            old?.MaxOutputChars ?? 1_000_000, double.Parse(Temperature.Text, System.Globalization.CultureInfo.InvariantCulture),
-            int.Parse(MaxTokens.Text), ProxyMode: proxyMode, ProxyAddress: proxyMode == ProxyMode.Custom ? ProxyAddressBox.Text.Trim() : "",
-            SendTemperature: SendTemperature.IsChecked == true,
-            TokenLimitParameter: UseCompletionTokens.IsChecked == true ? TokenLimitParameter.MaxCompletionTokens : TokenLimitParameter.MaxTokens,
-            ThinkingMode: (ThinkingMode)ThinkingModePicker.SelectedIndex);
-        Policy.ValidateBackend(b);
-        if (b.Name.Length is < 1 or > 80) throw new SafeFailure("backend_name_invalid");
-        return b;
-    }
-    private void CancelProbe()
-    {
-        if (probeCancellation is null) return;
-        var pending = probeCancellation;
-        probeCancellation = null;
-        pending.Cancel();
-        SetProbeBusy(false);
-        QuickStatus.Text = "连接测试已取消，未保存更改。";
-        ConnectionStatus.Text = "连接测试已取消";
-    }
-    private void CancelProbe_Click(object sender, RoutedEventArgs e) => CancelProbe();
-    private async void TestBackend_Click(object sender, RoutedEventArgs e)
-    {
-        if (!Ready()) return;
-        if (EditBackendPicker.SelectedItem is not Backend selected)
-        {
-            ConnectionStatus.Text = "请先保存并选择后端";
-            return;
-        }
-        CancelProbe();
-        using var cancellation = new CancellationTokenSource();
-        probeCancellation = cancellation;
-        SetProbeBusy(true);
-        ConnectionStatus.Text = $"测试中 · {selected.ProxyMode} · 超时 {selected.TimeoutSeconds} 秒";
-        var elapsed = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            var result = await BackendProbe.RunAsync(backend, selected, cancellation.Token);
-            if (!ReferenceEquals(probeCancellation, cancellation)) return;
-            ConnectionStatus.Text = result.Success
-                ? $"连接测试通过 · {(result.ReceivedText ? "已收到完整文本响应" : "后端正常结束但未返回文本")} · {elapsed.Elapsed.TotalSeconds:F1} 秒"
-                : $"测试失败 · {(result.HttpAccepted ? "HTTP 已成功，响应处理失败 · " : "")}{ConnectionDiagnostics.Describe(result.Code)}";
-        }
-        finally
-        {
-            if (ReferenceEquals(probeCancellation, cancellation))
-            {
-                probeCancellation = null;
-                SetProbeBusy(false);
-            }
-        }
+        exitRequested = true;
+        Close();
     }
     private void DeleteBackend_Click(object sender, RoutedEventArgs e)
     {
-        if (EditBackendPicker.SelectedItem is not Backend b) return;
-        if (config.Scenes.Any(s => s.BackendId == b.Id)) { Status("该后端仍被场景引用，请先调整场景后端"); return; }
+        if (EditingBackend is not { } b) return;
+        if (config.Scenes.Any(s => s.BackendId == b.Id)) { Status("该后端仍被场景引用，请先调整场景后端", exceptional: true); return; }
         CancelProbe();
         try
         {
             var candidate = config.WithoutBackend(b.Id);
-            candidate.Save();
+            if (!isolatedWorkspaceTest) candidate.Save();
             config = candidate;
             Populate(); Status($"已删除模型配置：{b.Name}");
             // Shared credentials must remain available to other saved connections.
             if (!config.Backends.Any(other => other.CredentialRef == b.CredentialRef))
             {
                 try { credentials.Delete(b.CredentialRef); }
-                catch { Status("模型配置已删除，但凭据文件清理失败"); }
+                catch { Status("模型配置已删除，但凭据文件清理失败", exceptional: true); }
             }
         }
         catch (Exception ex) { Report(ex); }
@@ -584,8 +457,7 @@ public partial class MainWindow : Window
     {
         var bindings = ((IEnumerable<HotkeyEditorRow>)HotkeyRows.ItemsSource).Select(r => r.Binding()).ToArray();
         return config with { Hotkeys = bindings.Where(k => !k.Action.StartsWith("scene:")).ToImmutableArray(),
-            Scenes = config.Scenes.Select(s => s with { Trigger = bindings.Single(k => k.Action == s.Action) }).ToImmutableArray(),
-            ExclusiveHotkeysEnabled = ExclusiveReaderKeys.IsChecked == true };
+            Scenes = config.Scenes.Select(s => s with { Trigger = bindings.Single(k => k.Action == s.Action) }).ToImmutableArray() };
     }
     internal Configuration BuildClipboardPreferences() => config with
     {

@@ -153,17 +153,20 @@ internal static class Program
             var app = new App(isolatedTestHost: true); app.InitializeComponent();
             var window = new MainWindow();
             var tabs = (TabControl)window.FindName("MainTabs");
-            Assert(tabs.Items.Count == 4);
-            Assert(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] { "模型", "场景", "快捷键", "通用" }));
+            Assert(tabs.Items.Count == 5);
+            Assert(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] { "模型", "场景", "快捷键", "外观", "通用" }));
             Assert(window.FindName("QuestionBox") is null && window.FindName("AnswerText") is null);
-            Assert(((Expander)window.FindName("QuickSetup")).IsExpanded);
+            Assert(((StackPanel)window.FindName("BackendSettings")).Visibility == Visibility.Visible);
             Assert(((ComboBox)window.FindName("ScenePicker")).Items.Count == 3);
             Assert(((ItemsControl)window.FindName("HotkeyRows")).Items.Count == HotkeyDefaults.All.Length + 3);
-            Assert(!((Expander)window.FindName("BackendSettings")).IsExpanded);
+            Assert(!((Expander)window.FindName("BackendAdvancedSettings")).IsExpanded);
             foreach (var name in new[] { "CaptureSettings", "PipelineBox", "SyncDuration", "SyncSend", "SyncSummary", "TargetPicker" })
                 Assert(window.FindName(name) is null);
             Assert(window.Background == app.Resources["Base"] && window.Foreground == app.Resources["Ink"]);
-            Assert(((Expander)window.FindName("BackendSettings")).Foreground == app.Resources["Ink"]);
+            Assert(((StackPanel)window.FindName("BackendSettings")).IsEnabled);
+            foreach (var name in new[] { "BackendName", "ModelName", "Endpoint", "ApiKey", "MaxTokens", "TimeoutSeconds" })
+                for (var node = (DependencyObject)window.FindName(name); node is not null; node = LogicalTreeHelper.GetParent(node))
+                    Assert(node is not Expander); // Required inputs are never gated by optional sections.
             var root = (FrameworkElement)window.Content;
             // Render WPF content off-screen; this does not exercise a logged-in interactive desktop.
             window.Content = null;
@@ -174,10 +177,10 @@ internal static class Program
             var renderIndex = Array.IndexOf(args, "--render-dir");
             for (var i = 0; i < 9; i++)
             {
-                tabs.SelectedIndex = i < 4 ? i : i == 4 ? 0 : i == 5 ? 0 : i - 6;
-                if (i == 4) { ((Expander)window.FindName("QuickSetup")).IsExpanded = false; ((Expander)window.FindName("BackendSettings")).IsExpanded = true; }
+                tabs.SelectedIndex = i < 5 ? i : i == 5 ? 0 : i - 6;
                 if (i == 5) ((Expander)window.FindName("BackendAdvancedSettings")).IsExpanded = true;
                 if (i == 6) ((Expander)window.FindName("BackendAdvancedSettings")).IsExpanded = false;
+                if (i == 6) ((ScrollViewer)window.FindName("ModelEditorScroll")).ScrollToTop();
                 var size = i < 6 ? new Size(904, 780) : new Size(784, 640);
                 surface.Measure(size); surface.Arrange(new Rect(new Point(), size)); surface.UpdateLayout();
                 if (i == 5)
@@ -195,10 +198,11 @@ internal static class Program
                     var row = ((IEnumerable<HotkeyEditorRow>)rows.ItemsSource).First();
                     var presenter = (ContentPresenter)rows.ItemContainerGenerator.ContainerFromIndex(0);
                     var editor = FindControl<TextBox>(presenter, box => box.GetBindingExpression(TextBox.TextProperty)?.ParentBinding.Path?.Path == "Gesture")!;
-                    var mode = FindControl<ComboBox>(presenter)!;
+                    var mode = editor.ContextMenu!;
+                    mode.DataContext = row; mode.ApplyTemplate();
                     row.Mode = HotkeyMode.Exclusive; row.Gesture = "F2"; surface.UpdateLayout();
-                    Assert(editor.Text == "F2" && Equals(mode.SelectedValue, HotkeyMode.Exclusive));
-                    mode.SelectedValue = HotkeyMode.Combination; surface.UpdateLayout();
+                    Assert(editor.Text == "F2" && row.IsExclusive);
+                    row.IsExclusive = false; surface.UpdateLayout();
                     Assert(row.Mode == HotkeyMode.Combination && row.Gesture == row.Default.Gesture);
                 }
                 Assert(surface.ActualWidth == size.Width && surface.ActualHeight == size.Height && root.ActualWidth > 0);
@@ -218,17 +222,17 @@ internal static class Program
                 }
             }
             var reader = window.WorkspaceWindow;
-            var question = (TextBox)reader.FindName("DraftText");
+            Assert(reader.FindName("DraftText") is null && reader.FindName("InteractionButton") is null);
             var answer = (AnswerView)reader.FindName("Answer");
-            Assert(!question.IsUndoEnabled);
-            var key = (PasswordBox)window.FindName("QuickApiKey");
             var advancedKey = (PasswordBox)window.FindName("ApiKey");
-            question.Text = "synthetic question"; answer.Render("synthetic answer");
-            key.Password = "synthetic-key"; advancedKey.Password = "synthetic-key";
+            answer.Render("synthetic answer");
+            advancedKey.Password = "synthetic-key";
             window.EmergencyPause("synthetic pause");
-            Assert(question.Text == "" && answer.Text == "" && key.Password == "" && advancedKey.Password == "");
+            Assert(answer.Text == "" && advancedKey.Password == "");
             Assert(((Button)window.FindName("ResumeButton")).Visibility == Visibility.Visible);
         }));
+        ModelSettingsTests.Add(tests);
+        SettingsSimplificationTests.Add(tests, args);
         WorkspaceTests.Add(tests, args);
         CodingWorkspaceTests.Add(tests, args);
         if (args.Contains("--interactive")) tests.Add(("Protection attributes and no-activate styles on an interactive desktop", () =>

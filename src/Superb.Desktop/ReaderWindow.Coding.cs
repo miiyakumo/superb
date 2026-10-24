@@ -33,7 +33,7 @@ public partial class ReaderWindow
                 $"{i + 1}. {a.Directive.Direction} · {(a.Copied ? "已复制" : "已生成")} · {Outcome(a.Assessment?.Outcome)}"));
         }
         else CodingHistory.Text = "";
-        SetEditingControls();
+        UpdateControls();
     }
 
     private static string Outcome(AttemptOutcome? outcome) => outcome switch

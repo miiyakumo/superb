@@ -17,7 +17,7 @@ public sealed class AnswerView : UserControl
     internal FlowDocumentScrollViewer Reader { get; } = new()
     {
         IsToolBarVisible = false, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        Background = Brushes.Transparent, ContextMenu = null, Focusable = false
+        Background = Brushes.Transparent, ContextMenu = null, Focusable = false, IsSelectionEnabled = false
     };
     private readonly Button latest = new() { Content = "回到最新", HorizontalAlignment = HorizontalAlignment.Right, Visibility = Visibility.Collapsed, Focusable = false };
     private FlowDocument document = null!;
@@ -43,13 +43,6 @@ public sealed class AnswerView : UserControl
         Clear();
     }
     internal ScrollViewer? Scroll => FindScroll(Reader);
-    internal void SetInteractive(bool interactive)
-    {
-        // WPF's text editor needs keyboard focus to begin a real drag selection.
-        // Keep reading passive, and enable focus only alongside explicit editing.
-        Reader.IsSelectionEnabled = interactive;
-        Reader.Focusable = interactive;
-    }
     internal void Clear()
     {
         revision++; text = ""; rendered.Clear(); SetFollow(true);

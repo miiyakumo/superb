@@ -90,40 +90,25 @@ internal static class WorkspaceTests
             }
             finally { window.Close(); }
         }));
-        tests.Add(("Only explicit text input and answer selection opt into keyboard focus; scene and drag controls stay passive", () =>
+        tests.Add(("Read-only reader rejects keyboard focus and keeps a normal arrow during passive corner resizing", () =>
         {
             var reader = new ReaderWindow();
             try
             {
-                new WindowInteropHelper(reader).EnsureHandle();
+                var hwnd = new WindowInteropHelper(reader).EnsureHandle(); reader.Show(); Pump();
                 reader.SetActions(true, false, true, false, false, false);
-                Check(reader.ResizeMode == ResizeMode.NoResize); // only the passive resize thumb owns resizing
-                var draft = (TextBox)reader.FindName("DraftText");
-                Check(!reader.IsKeyboardTarget(draft));
-                Check(!reader.PrepareMouseActivation((ComboBox)reader.FindName("WorkspaceScene")) && !reader.Interactive);
+                Check(reader.FindName("DraftText") is null && reader.FindName("InteractionButton") is null);
                 var origin = Native.GetForegroundWindow();
-                Check(reader.PrepareMouseActivation(draft) && reader.Interactive && Native.GetForegroundWindow() == origin);
-                Check(reader.SetMode(false));
-                Check(reader.SetMode(true));
-                Check(reader.IsKeyboardTarget(draft) && reader.IsKeyboardTarget((AnswerView)reader.FindName("Answer")));
-                Check(((AnswerView)reader.FindName("Answer")).Reader.Focusable);
-                foreach (var name in new[] { "AppearanceButton", "SettingsButton", "PanelWidth", "ResizeHandle", "WorkspaceScene", "ComposerScroll" })
-                    Check(!reader.IsKeyboardTarget((DependencyObject)reader.FindName(name)));
-                var scene = (ComboBox)reader.FindName("WorkspaceScene");
-                Check(!scene.Focusable && Equals(scene.ItemContainerStyle.Setters.OfType<Setter>().Single().Value, false));
-                reader.SetActions(true, true, true, false, false, false);
-                Check(!reader.IsKeyboardTarget(draft));
-                Check(reader.SetMode(false) && !((AnswerView)reader.FindName("Answer")).Reader.Focusable);
-                foreach (var name in new[] { "CustomBaseBox", "CustomInkBox", "CustomAccentBox" })
-                {
-                    var colorInput = (TextBox)reader.FindName(name);
-                    Check(!reader.IsKeyboardTarget(colorInput));
-                    Check(reader.PrepareMouseActivation(colorInput) && reader.Interactive && reader.IsKeyboardTarget(colorInput));
-                    Check(Native.GetForegroundWindow() == origin && reader.SetMode(false));
-                }
-                foreach (var name in new[] { "DraftText", "Answer", "HideButton", "SettingsButton", "CaptureButton", "ScreenButton" })
-                    Check(((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("焦点") ||
-                        ((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("失焦"));
+                foreach (var message in new[] { 0x200, 0x201, 0x203, 0x204 }) Check(PointerFocusTests.MouseActivation(hwnd, message) == 3);
+                var answer = (AnswerView)reader.FindName("Answer");
+                Check(!answer.Reader.Focusable && !answer.Reader.IsSelectionEnabled && reader.ResizeMode == ResizeMode.NoResize);
+                var resize = (Thumb)reader.FindName("ResizeHandle");
+                Check(resize.Cursor == Cursors.Arrow && resize.ForceCursor && !resize.Focusable);
+                var before = reader.Width;
+                resize.RaiseEvent(new DragDeltaEventArgs(20, 10) { RoutedEvent = Thumb.DragDeltaEvent }); Pump();
+                Check(reader.Width > before && resize.Cursor == Cursors.Arrow && Native.GetForegroundWindow() == origin && reader.Check());
+                Check(reader.SetClickThrough(true) && reader.InputRegions().Count == 0);
+                Check(reader.SetClickThrough(false) && reader.InputRegions().Count > 0 && Native.GetForegroundWindow() == origin);
             }
             finally { reader.Finish(); }
         }));
@@ -141,7 +126,7 @@ internal static class WorkspaceTests
                 Check(PointerFocusTests.MouseActivation(hwnd, 0xa0) == 3); // title bar hover
                 Check(Native.GetForegroundWindow() == origin);
             }
-            finally { window.Close(); }
+            finally { window.ExitApplication(); }
         }));
         tests.Add(("Settings emergency buttons reject mouse activation and keyboard focus while configuration remains interactive", () =>
         {
@@ -158,7 +143,7 @@ internal static class WorkspaceTests
                     var caption = new TextBlock(); button.Content = caption;
                     Check(!window.CanActivateSettingsTarget(caption));
                 }
-                Check(window.CanActivateSettingsTarget((PasswordBox)window.FindName("QuickApiKey")));
+                Check(window.CanActivateSettingsTarget((PasswordBox)window.FindName("ApiKey")));
                 new WindowInteropHelper(host).EnsureHandle();
                 var policy = new Protection(host, false); Check(policy.Install());
                 var hwnd = new WindowInteropHelper(host).Handle;
@@ -167,7 +152,7 @@ internal static class WorkspaceTests
                 policy.AllowMouseActivation = () => true;
                 Check(PointerFocusTests.MouseActivation(hwnd, 0x201) == 1 && PointerFocusTests.MouseActivation(hwnd, 0x200) == 3);
             }
-            finally { host.Close(); window.Close(); }
+            finally { host.Close(); window.ExitApplication(); }
         }));
         tests.Add(("Settings pages save independently and reopening settings preserves the floating task and selected page", () =>
         {
@@ -176,8 +161,8 @@ internal static class WorkspaceTests
             var window = new MainWindow(config, new WorkspaceBackend());
             try
             {
-                Check(((Expander)window.FindName("BackendSettings")).IsExpanded);
-                Check(!((Expander)window.FindName("QuickSetup")).IsExpanded && !((Expander)window.FindName("BackendAdvancedSettings")).IsExpanded);
+                Check(((StackPanel)window.FindName("BackendSettings")).Visibility == Visibility.Visible);
+                Check(!((Expander)window.FindName("BackendAdvancedSettings")).IsExpanded);
                 var rows = (IEnumerable<HotkeyEditorRow>)((ItemsControl)window.FindName("HotkeyRows")).ItemsSource;
                 rows.Single(r => r.Action == "clipboard").Gesture = "Ctrl+Shift+B";
                 ((CheckBox)window.FindName("AutoCopy")).IsChecked = !config.AutoCopy;
@@ -189,15 +174,15 @@ internal static class WorkspaceTests
                 Check(preferences.Hotkeys == config.Hotkeys && preferences.Scenes == config.Scenes && preferences.Backends == config.Backends);
                 new WindowInteropHelper(window).EnsureHandle();
                 var reader = window.WorkspaceWindow; reader.Show(); Pump();
-                reader.SetDraft("retained floating draft"); reader.Render("retained floating answer", "已完成");
+                window.QueueText("retained floating draft"); reader.Render("retained floating answer", "已完成");
                 var tabs = (TabControl)window.FindName("MainTabs"); tabs.SelectedItem = window.FindName("ScenesTab");
                 ((Button)window.FindName("OpenHotkeysButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(tabs.SelectedItem == window.FindName("ShortcutsTab"));
                 window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
                 Check(tabs.SelectedItem == window.FindName("ShortcutsTab") && window.WorkspaceCoordinator.Mode == RunState.Ready);
-                Check(reader.Draft == "retained floating draft" && ((AnswerView)reader.FindName("Answer")).Text == "retained floating answer" && reader.Check());
+                Check(window.QueuedText() == "retained floating draft" && ((AnswerView)reader.FindName("Answer")).Text == "retained floating answer" && reader.Check());
             }
-            finally { window.Close(); }
+            finally { window.ExitApplication(); }
         }));
         tests.Add(("Model management exposes deletion, retains saved limits and defaults new models to 200k", () =>
         {
@@ -207,13 +192,13 @@ internal static class WorkspaceTests
             {
                 Check(((Button)window.FindName("DeleteModelButton")).IsEnabled);
                 Check(((TextBox)window.FindName("MaxTokens")).Text == "4096");
-                Check(((Expander)window.FindName("ClipboardPreferences")).IsExpanded);
+                Check(((StackPanel)window.FindName("ClipboardPreferences")).Visibility == Visibility.Visible);
                 ((Button)window.FindName("NewModelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(((TextBox)window.FindName("MaxTokens")).Text == "200000");
                 Check(window.FindName("MaxOutput") is null && window.FindName("InputLimit") is null);
                 Check(!((Button)window.FindName("DeleteModelButton")).IsEnabled);
             }
-            finally { window.Close(); }
+            finally { window.ExitApplication(); }
         }));
         tests.Add(("Connection editor preserves exact hidden limits and advanced compatibility while tokens timeout and thinking remain adjustable", () =>
         {
@@ -229,7 +214,7 @@ internal static class WorkspaceTests
                 foreach (var removed in new[] { "SceneModel", "SceneTemperature", "SceneTokens", "SceneUserTemplate", "SceneInputPicker" })
                     Check(window.FindName(removed) is null);
                 var advanced = (Expander)window.FindName("BackendAdvancedSettings");
-                Check(advanced.Header.ToString() == "高级连接设置" && !advanced.IsExpanded);
+                Check(!advanced.IsExpanded);
                 bool InsideAdvanced(DependencyObject control)
                 {
                     for (var node = control; node is not null; node = LogicalTreeHelper.GetParent(node))
@@ -248,7 +233,7 @@ internal static class WorkspaceTests
                 var saved = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(new Configuration { Backends = [edited], SelectedBackendId = edited.Id }, Configuration.Json), Configuration.Json)!;
                 saved.Validate(); Check(saved.Backends.Single() == edited);
             }
-            finally { window.Close(); }
+            finally { window.ExitApplication(); }
         }));
         tests.Add(("Deleting models preserves unrelated defaults and protects scene references", () =>
         {
@@ -266,7 +251,7 @@ internal static class WorkspaceTests
             Reject("backend_missing", () => config.WithoutBackend("missing"));
             Check(config.Backends.Length == 2);
         }));
-        tests.Add(("Scene shortcuts select a scene without sending; explicit send freezes the floating draft and queue", () =>
+        tests.Add(("Scene shortcuts select a scene without sending; explicit send freezes the queued input", () =>
         {
             var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "", SupportsImages: true);
             var scene = SceneDefaults.All.Single(s => s.Id == "algorithm");
@@ -279,28 +264,28 @@ internal static class WorkspaceTests
                 new WindowInteropHelper(window).EnsureHandle(); var reader = window.WorkspaceWindow; reader.Show(); Pump();
                 var picture = ImageProcessor.Encode(BitmapSource.Create(2, 2, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 16).ToArray(), 8));
                 window.QueueSnapshot(new(Guid.NewGuid(), InputKind.Screen, picture, 1, DateTimeOffset.UtcNow), "queued screenshot");
-                reader.SetDraft("synthetic question from the floating input");
+                window.QueueText("synthetic question from the floating input");
                 window.RunCommand(scene.Action).GetAwaiter().GetResult();
                 Check(client.Requests.Count == 0 && reader.SelectedSceneId == scene.Id);
                 var pending = window.RunCommand("send"); Until(() => client.Requests.Count == 1 || pending.IsCompleted);
                 var request = client.Requests.Single();
-                Check(request.SceneId == scene.Id && request.Snapshot.Kind == InputKind.Screen && request.Content.Png == picture.Png && request.Content.Text!.Contains(reader.Draft));
+                Check(request.SceneId == scene.Id && request.Snapshot.Kind == InputKind.Screen && request.Content.Png == picture.Png && request.Content.Text!.Contains(window.QueuedText()));
                 client.Events.Writer.TryWrite(new("synthetic result")); client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
                 Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
                 Check(window.WorkspaceCoordinator.Latest is { State: RequestState.Completed, Text: "synthetic result" });
             }
-            finally { window.Close(); SynchronizationContext.SetSynchronizationContext(context); }
+            finally { window.ExitApplication(); SynchronizationContext.SetSynchronizationContext(context); }
         }));
         tests.Add(("Shortcut hints distinguish registration, disabled keys and inactive exclusive capture", () =>
         {
             var custom = new Hotkey("clipboard", "Ctrl+Shift+B");
-            Check(ShortcutLabel.Describe(custom, false, true).Text == "Ctrl+Shift+B");
-            Check(ShortcutLabel.Describe(custom with { Enabled = false }, false, false).Text == "已停用");
-            Check(ShortcutLabel.Describe(custom, false, false, "win32_1409").Text == "未生效");
-            Check(!ShortcutLabel.Describe(custom, false, false, "win32_1409").Active);
-            Check(ShortcutLabel.Describe(new("clipboard", "F1", HotkeyMode.Exclusive), false, false).Text == "接管未开");
-            Check(ShortcutLabel.Describe(new("clipboard", "F1", HotkeyMode.Exclusive), true, true).Text == "F1");
-            Check(ShortcutLabel.Describe(null, false, false).Text == "未设置");
+            Check(ShortcutLabel.Describe(custom, true).Text == "Ctrl+Shift+B");
+            Check(ShortcutLabel.Describe(custom with { Enabled = false }, false).Text == "已停用");
+            Check(ShortcutLabel.Describe(custom, false, "win32_1409").Text == "未生效");
+            Check(!ShortcutLabel.Describe(custom, false, "win32_1409").Active);
+            Check(ShortcutLabel.Describe(new("clipboard", "F1", HotkeyMode.Exclusive), false).Text == "未注册");
+            Check(ShortcutLabel.Describe(new("clipboard", "F1", HotkeyMode.Exclusive), true).Text == "F1");
+            Check(ShortcutLabel.Describe(null, false).Text == "未设置");
         }));
         tests.Add(("Floating key captions follow custom bindings and each button's exact current action", () =>
         {
@@ -308,11 +293,11 @@ internal static class WorkspaceTests
             try
             {
                 new WindowInteropHelper(reader).EnsureHandle();
-                var labels = HotkeyDefaults.All.ToDictionary(k => k.Action, k => ShortcutLabel.Describe(k, false, true));
+                var labels = HotkeyDefaults.All.ToDictionary(k => k.Action, k => ShortcutLabel.Describe(k, true));
                 reader.SetActions(true, false, true, true, false, true); reader.SetShortcutHints(labels);
                 string Caption(string name) => ShortcutHint.GetText((Button)reader.FindName(name));
                 Check(Caption("ClipboardButton") == "Ctrl+Alt+1" && Caption("SettingsButton") == "Ctrl+Alt+0");
-                labels = new(labels) { ["clipboard"] = ShortcutLabel.Describe(new("clipboard", "Ctrl+Shift+B"), false, true) };
+                labels = new(labels) { ["clipboard"] = ShortcutLabel.Describe(new("clipboard", "Ctrl+Shift+B"), true) };
                 reader.SetShortcutHints(labels); Check(Caption("ClipboardButton") == "Ctrl+Shift+B");
                 reader.SetActions(true, false, true, true, true, true); Check(Caption("CopyButton") == "仅鼠标");
                 reader.SetActions(false, false, true, true, false, true); Check(Caption("PauseButton") == "Ctrl+Alt+S");
@@ -324,7 +309,7 @@ internal static class WorkspaceTests
                 var tiles = ((ItemsControl)reader.FindName("InputQueue")).Items.Cast<object>().ToArray();
                 string Remove(object tile) => (string)tile.GetType().GetProperty("RemoveHint")!.GetValue(tile)!;
                 Check(Remove(tiles[0]) == "仅鼠标" && Remove(tiles[1]) == "Ctrl+Alt+Backspace");
-                labels = new(labels) { ["deleteCapture"] = ShortcutLabel.Describe(new("deleteCapture", "Ctrl+Alt+Backspace", Enabled: false), false, false) };
+                labels = new(labels) { ["deleteCapture"] = ShortcutLabel.Describe(new("deleteCapture", "Ctrl+Alt+Backspace", Enabled: false), false) };
                 reader.SetShortcutHints(labels); Check(Remove(tiles[1]) == "已停用");
             }
             finally { reader.Finish(); }
@@ -351,108 +336,7 @@ internal static class WorkspaceTests
             Check(Theme.TryResolve(Theme.PaperId, "", "", "", out var paper, out _) && paper.OnAccent == Theme.LightInk);
             Check(Theme.TryResolve(Theme.InkId, "#7DCEA0", "#101216", "#F4F6F8", out var mixed, out _) && mixed.Accent == Color.FromRgb(0x7D, 0xCE, 0xA0) && mixed.Base == Color.FromRgb(0x10, 0x12, 0x16));
         }));
-        tests.Add(("Floating appearance controls resize and change only background alpha and answer font without losing protection", () =>
-        {
-            var reader = new ReaderWindow();
-            try
-            {
-                new WindowInteropHelper(reader).EnsureHandle();
-                reader.ApplyLayout(new(40, 40, 600, 650, 24, false, .8)); reader.Show(); Pump();
-                var answer = (AnswerView)reader.FindName("Answer");
-                var draft = (TextBox)reader.FindName("DraftText"); draft.Text = "retained input";
-                reader.Render("retained answer", "已完成");
-                var changes = 0; reader.LayoutChanged += () => changes++;
-                ((Button)reader.FindName("AppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Check(((Border)reader.FindName("AppearancePanel")).Visibility == Visibility.Visible);
-                ((Slider)reader.FindName("PanelOpacity")).Value = .55;
-                ((Slider)reader.FindName("PanelTextSize")).Value = 30;
-                ((Slider)reader.FindName("PanelWidth")).Value = 680;
-                var width = reader.Width;
-                ((Thumb)reader.FindName("ResizeHandle")).RaiseEvent(new DragDeltaEventArgs(40, 20) { RoutedEvent = Thumb.DragDeltaEvent }); Pump();
-                Check(reader.Width >= width && reader.Layout().BackgroundOpacity == .55 && reader.Layout().FontSize == 30);
-                Check(reader.FontSize == 14 && draft.FontSize == 14 && answer.FontSize == 30 && reader.Opacity == 1);
-                Check(((SolidColorBrush)((Border)reader.FindName("WindowSurface")).Background).Color.A == (byte)Math.Round(.55 * 255));
-                Check(answer.Reader.Document.Foreground.Opacity == 1 && reader.Check() && changes > 0);
-                Check(reader.Draft == "retained input" && answer.Text == "retained answer");
-                ((Button)reader.FindName("ThemePaper")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
-                Check(((SolidColorBrush)Application.Current.Resources["Base"]).Color == Color.FromRgb(0xF4, 0xF5, 0xF6));
-                Check(((SolidColorBrush)Application.Current.Resources["OnAccent"]).Color == Theme.LightInk);
-                Check(((SolidColorBrush)reader.Foreground).Color == Color.FromRgb(0x1A, 0x1C, 0x1F));
-                Check(((SolidColorBrush)((Button)reader.FindName("SendButton")).Background).Color == Color.FromRgb(0x1A, 0x56, 0xC4));
-                Check(((SolidColorBrush)((TextBlock)reader.FindName("StateText")).Foreground).Color == Color.FromRgb(0x1A, 0x1C, 0x1F));
-                var renderIndex = Array.IndexOf(args, "--render-dir");
-                if (renderIndex >= 0 && renderIndex + 1 < args.Length)
-                {
-                    ((Slider)reader.FindName("PanelOpacity")).Value = 1; Pump();
-                    var bitmap = new RenderTargetBitmap((int)Math.Ceiling(reader.ActualWidth), (int)Math.Ceiling(reader.ActualHeight), 96, 96, PixelFormats.Pbgra32);
-                    bitmap.Render(reader);
-                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-                    using var output = File.Create(Path.Combine(args[renderIndex + 1], "workspace-paper.png")); encoder.Save(output);
-                }
-                ((Slider)reader.FindName("PanelOpacity")).Value = .5; Pump();
-                var tinted = ((SolidColorBrush)((Border)reader.FindName("WindowSurface")).Background).Color;
-                Check(tinted.R == 0xF4 && tinted.G == 0xF5 && tinted.B == 0xF6 && tinted.A == (byte)Math.Round(.5 * 255));
-                Check(answer.Reader.Document.Foreground.Opacity == 1);
-                ((Button)reader.FindName("ResetAppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
-                Check(reader.Layout().BackgroundOpacity == 1 && answer.FontSize == 18 && reader.Check());
-                Check(reader.Layout().Theme == "ink" && reader.Layout().Accent == "" && reader.Layout().CustomBase == "");
-                Check(((SolidColorBrush)((Border)reader.FindName("WindowSurface")).Background).Color == Color.FromRgb(0x13, 0x14, 0x16));
-                Check(((SolidColorBrush)Application.Current.Resources["Accent"]).Color == Color.FromRgb(0x8A, 0xB4, 0xF8));
-                Check(reader.Draft == "retained input" && answer.Text == "retained answer");
-                var saved = reader.Layout(); reader.ApplyLayout(saved); Pump();
-                Check(reader.Layout() == saved);
-            }
-            finally { reader.Finish(); }
-        }));
-        tests.Add(("Appearance presets and drag controls keep reading mode and expose focus notices", () =>
-        {
-            var reader = new ReaderWindow();
-            try
-            {
-                reader.Show(); reader.SetActions(true, false, true, false, false, false); Pump();
-                var commands = new List<string>(); reader.Command += commands.Add;
-                void PointerDown(UIElement target) => target.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
-                { RoutedEvent = Mouse.PreviewMouseDownEvent });
-                T? Child<T>(DependencyObject root) where T : DependencyObject
-                {
-                    if (root is T match) return match;
-                    for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-                        if (Child<T>(VisualTreeHelper.GetChild(root, i)) is { } found) return found;
-                    return null;
-                }
-                var panel = (Border)reader.FindName("AppearancePanel");
-                var hwnd = new WindowInteropHelper(reader).Handle;
-                foreach (var name in new[] { "ComfortableButton", "ResetAppearanceButton" })
-                {
-                    panel.Visibility = Visibility.Visible; reader.UpdateLayout(); Pump();
-                    var button = (Button)reader.FindName(name);
-                    var caption = Child<TextBlock>(button) ?? throw new Exception("Preset caption not rendered");
-                    var before = reader.Layout();
-                    PointerDown(caption);
-                    button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
-                    Check(commands.Count == 0 && !reader.Interactive && !reader.ClickThrough && reader.Check());
-                    Check((Native.GetWindowLongPtr(hwnd, -20).ToInt64() & 0x08000000L) != 0);
-                    Check(reader.Layout() != before);
-                }
-                panel.Visibility = Visibility.Visible; reader.UpdateLayout(); Pump();
-                PointerDown(panel); Check(commands.Count == 0);
-                var slider = (Slider)reader.FindName("PanelWidth");
-                var thumb = Child<Thumb>(slider) ?? throw new Exception("Slider thumb not rendered");
-                PointerDown(thumb); Check(commands.Count == 0 && !reader.Interactive);
-                PointerDown((Thumb)reader.FindName("ResizeHandle")); Check(commands.Count == 0 && !reader.Interactive);
-                reader.SetShortcutHints(HotkeyDefaults.All.ToDictionary(k => k.Action, k => ShortcutLabel.Describe(k, false, true)));
-                foreach (var name in new[] { "InteractionButton", "SettingsButton" })
-                {
-                    var button = (Button)reader.FindName(name);
-                    Check(ShortcutHint.GetDescription(button).Contains("焦点"));
-                    Check(System.Windows.Automation.AutomationProperties.GetHelpText(button).Contains("焦点"));
-                }
-                foreach (var name in new[] { "WorkspaceScene", "DraftText", "PanelWidth", "PanelHeight", "PanelOpacity", "PanelTextSize", "ResizeHandle" })
-                    Check(((FrameworkElement)reader.FindName(name)).ToolTip.ToString()!.Contains("焦点"));
-            }
-            finally { reader.Finish(); }
-        }));
-        tests.Add(("Sending without a model keeps settings closed and preserves the draft with an actionable notice", () =>
+        tests.Add(("Sending without a model keeps settings closed and preserves the input queue with an actionable notice", () =>
         {
             var client = new WorkspaceBackend();
             var window = new MainWindow(new Configuration { Backends = [], SelectedBackendId = "" }, client);
@@ -460,25 +344,25 @@ internal static class WorkspaceTests
             {
                 new WindowInteropHelper(window).EnsureHandle();
                 var reader = window.WorkspaceWindow; reader.Show(); Pump();
-                ((TextBox)reader.FindName("DraftText")).Text = "synthetic draft without a model";
+                window.QueueText("synthetic clipboard input without a model");
                 Check(((Button)reader.FindName("SendButton")).IsEnabled && !window.IsVisible);
                 var shown = 0; window.IsVisibleChanged += (_, _) => { if (window.IsVisible) shown++; };
                 window.RunCommand("send").GetAwaiter().GetResult(); Pump();
-                Check(!window.IsVisible && shown == 0 && !reader.Interactive && reader.Check());
-                Check(reader.Draft == "synthetic draft without a model" && client.Requests.Count == 0);
+                Check(!window.IsVisible && shown == 0 && reader.Check());
+                Check(window.QueuedText() == "synthetic clipboard input without a model" && client.Requests.Count == 0);
                 var status = ((TextBlock)reader.FindName("StateText")).Text;
                 Check(status.Contains("设置") && status.Contains("点击设置窗口") && !status.Contains("会切换焦点"));
                 window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
-                Check(window.IsVisible && reader.Draft == "synthetic draft without a model");
+                Check(window.IsVisible && window.QueuedText() == "synthetic clipboard input without a model");
             }
-            finally { window.Close(); }
+            finally { window.ExitApplication(); }
         }));
-        tests.Add(("Schema 2 adds edit shortcut without replacing an existing scene binding", () =>
+        tests.Add(("Schema 2 adds recovery shortcut without replacing an existing scene binding", () =>
         {
-            var config = new Configuration { Hotkeys = HotkeyDefaults.All.Where(k => k.Action != "interact").ToImmutableArray() };
+            var config = new Configuration { Hotkeys = HotkeyDefaults.All.Where(k => k.Action != "through").ToImmutableArray() };
             config = config with { Scenes = config.Scenes.SetItem(0, config.Scenes[0] with { Trigger = new("scene:coding", "Ctrl+Alt+E") }) };
             var migrated = config.Migrate(); migrated.Validate();
-            Check(migrated.Scenes[0].Trigger.Enabled && !migrated.Hotkeys.Single(k => k.Action == "interact").Enabled);
+            Check(migrated.Scenes[0].Trigger.Enabled && !migrated.Hotkeys.Single(k => k.Action == "through").Enabled);
         }));
         tests.Add(("Workspace input freezes encoded image and supplement before scene routing", () =>
         {
@@ -575,7 +459,7 @@ internal static class WorkspaceTests
             answer.Follow(); Layout(); Check(answer.Following && answer.Scroll.VerticalOffset >= answer.Scroll.ScrollableHeight - 2);
             answer.Clear(); Layout(); Check(answer.Text == "" && answer.Reader.Document.Blocks.Count == 0);
         }));
-        tests.Add(("Production workspace sends selected scene with visible draft, stops without loss, and clears a new task", () =>
+        tests.Add(("Production workspace sends selected scene with queued material, stops without loss, and clears a new task", () =>
         {
             var client = new WorkspaceBackend();
             var b = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "base", "");
@@ -588,20 +472,10 @@ internal static class WorkspaceTests
                 new WindowInteropHelper(window).EnsureHandle();
                 var reader = window.WorkspaceWindow;
                 reader.Show(); Pump();
-                var input = (TextBox)reader.FindName("DraftText");
                 var picker = (ComboBox)reader.FindName("WorkspaceScene");
-                Check(!reader.Interactive && input.IsReadOnly && picker.IsEnabled);
-                var inputClick = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
-                    { RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent };
-                input.RaiseEvent(inputClick);
-                Check(reader.Interactive && !input.IsReadOnly && !inputClick.Handled && client.Requests.Count == 0);
-                Check(reader.SetMode(false));
-                var sceneClick = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
-                    { RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent };
-                picker.RaiseEvent(sceneClick);
-                Check(!reader.Interactive && picker.IsEnabled && !picker.Focusable && !sceneClick.Handled && client.Requests.Count == 0);
+                Check(reader.FindName("DraftText") is null && reader.FindName("InteractionButton") is null && picker.IsEnabled && !picker.Focusable);
                 ((ComboBox)reader.FindName("WorkspaceScene")).SelectedValue = "algorithm";
-                reader.SetDraft("only visible manual input");
+                window.QueueText("only visible manual input");
                 var pending = window.RunCommand("send");
                 Until(() => client.Requests.Count == 1 || pending.IsCompleted);
                 if (client.Requests.Count != 1)
@@ -610,9 +484,9 @@ internal static class WorkspaceTests
                     throw new Exception("Synthetic request did not reach backend");
                 }
                 Check(client.Requests[0].SceneId == "algorithm" && client.Requests[0].Content.Text!.Contains("only visible manual input"));
-                Check(client.Requests[0].Snapshot.Kind == InputKind.ManualText);
+                Check(client.Requests[0].Snapshot.Kind == InputKind.ClipboardText);
                 Check(!((Button)reader.FindName("SendButton")).IsEnabled && ((Button)reader.FindName("StopButton")).IsEnabled);
-                Check(input.IsReadOnly && !picker.IsEnabled);
+                Check(!picker.IsEnabled);
                 client.Events.Writer.TryWrite(new(Thinking: true));
                 Until(() => window.WorkspaceCoordinator.State == RequestState.Thinking);
                 Check(!((Button)reader.FindName("SendButton")).IsEnabled && ((Button)reader.FindName("StopButton")).IsEnabled);
@@ -626,14 +500,14 @@ internal static class WorkspaceTests
                 Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
                 Check(window.WorkspaceCoordinator.Latest!.Text == "synthetic partial");
                 window.RunCommand("newTask").GetAwaiter().GetResult();
-                Check(reader.Draft == "" && window.WorkspaceCoordinator.Latest is null && ((AnswerView)reader.FindName("Answer")).Text == "");
+                Check(window.QueuedText() == "" && window.WorkspaceCoordinator.Latest is null && ((AnswerView)reader.FindName("Answer")).Text == "");
                 Check(!((Button)reader.FindName("CopyButton")).IsEnabled && !((Button)reader.FindName("SendButton")).IsEnabled);
-                reader.SetDraft("must clear when protection is lost");
+                window.QueueText("must clear when protection is lost");
                 Check(Native.SetWindowDisplayAffinity(new WindowInteropHelper(reader).Handle, 0));
                 window.RunCommand("send").GetAwaiter().GetResult();
-                Check(window.WorkspaceCoordinator.Mode == RunState.ProtectionUnavailable && client.Requests.Count == 1 && reader.Draft == "");
+                Check(window.WorkspaceCoordinator.Mode == RunState.ProtectionUnavailable && client.Requests.Count == 1 && window.QueuedText() == "");
             }
-            finally { window.Close(); SynchronizationContext.SetSynchronizationContext(context); }
+            finally { window.ExitApplication(); SynchronizationContext.SetSynchronizationContext(context); }
         }));
         tests.Add(("Production queue sends retained text and images together and starts fresh after an answer", () =>
         {
@@ -654,7 +528,7 @@ internal static class WorkspaceTests
                 var image = ImageProcessor.Encode(BitmapSource.Create(2, 2, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 16).ToArray(), 8));
                 window.QueueSnapshot(Entry(image), "screen"); window.QueueSnapshot(Entry(image), "region");
                 window.RunCommand("removeInput:" + removed.Id).GetAwaiter().GetResult();
-                reader.SetDraft("supplement");
+                window.QueueText("supplement");
                 var pending = window.RunCommand("send");
                 Until(() => client.Requests.Count == 1 || pending.IsCompleted);
                 var request = client.Requests.Single();
@@ -668,13 +542,13 @@ internal static class WorkspaceTests
                 Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
                 Check(window.WorkspaceCoordinator.Latest?.State == RequestState.Completed);
                 window.QueueSnapshot(Entry(Payload.FromText("next task")), "clipboard");
-                Check(reader.Draft == "" && window.WorkspaceCoordinator.Latest is null);
+                Check(window.QueuedText() == "next task" && window.WorkspaceCoordinator.Latest is null);
                 var tiles = ((ItemsControl)reader.FindName("InputQueue")).Items;
                 Check(tiles.Count == 1);
                 window.RunCommand("deleteCapture").GetAwaiter().GetResult();
                 Check(((ItemsControl)reader.FindName("InputQueue")).Items.Count == 0 && !((Button)reader.FindName("SendButton")).IsEnabled);
             }
-            finally { window.Close(); SynchronizationContext.SetSynchronizationContext(context); }
+            finally { window.ExitApplication(); SynchronizationContext.SetSynchronizationContext(context); }
         }));
         tests.Add(("Reasoning token exhaustion is visible in the floating answer area and never offers a completed copy", () =>
         {
@@ -686,7 +560,7 @@ internal static class WorkspaceTests
             try
             {
                 new WindowInteropHelper(window).EnsureHandle(); var reader = window.WorkspaceWindow; reader.Show(); Pump();
-                reader.SetDraft("synthetic algorithm"); var pending = window.RunCommand("send"); Until(() => client.Requests.Count == 1);
+                window.QueueText("synthetic algorithm"); var pending = window.RunCommand("send"); Until(() => client.Requests.Count == 1);
                 client.Events.Writer.TryWrite(new(Thinking: true)); Until(() => window.WorkspaceCoordinator.State == RequestState.Thinking);
                 Check(((TextBlock)window.FindName("StatusLabel")).Text.Contains("模型正在思考"));
                 client.Events.Writer.Complete(new SafeFailure("response_token_limit")); Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
@@ -694,7 +568,7 @@ internal static class WorkspaceTests
                 Check(((TextBlock)reader.FindName("EmptyAnswer")).Text.Contains("token 已用尽"));
                 Check(((TextBlock)reader.FindName("StateText")).Text.Contains("提高上限后重新发送"));
                 Check(!((Button)reader.FindName("CopyButton")).IsEnabled && ((Button)reader.FindName("SendButton")).IsEnabled);
-                Check(reader.Draft == "synthetic algorithm");
+                Check(window.QueuedText() == "synthetic algorithm");
                 var recoveryButton = (Button)reader.FindName("DirectRetryButton");
                 Check(recoveryButton.Visibility == Visibility.Visible && recoveryButton.Content.ToString()!.Contains("16K"));
                 var original = client.Requests.Single();
@@ -706,7 +580,7 @@ internal static class WorkspaceTests
                 Until(() => recovery.IsCompleted); recovery.GetAwaiter().GetResult();
                 Check(window.WorkspaceCoordinator.State == RequestState.Completed && recoveryButton.Visibility == Visibility.Collapsed);
             }
-            finally { window.Close(); SynchronizationContext.SetSynchronizationContext(context); }
+            finally { window.ExitApplication(); SynchronizationContext.SetSynchronizationContext(context); }
         }));
         tests.Add(("Control center visibility keeps startup ready without automatically resuming explicit pause", () =>
         {
@@ -718,26 +592,23 @@ internal static class WorkspaceTests
                 for (var i = 0; i < 3; i++)
                 {
                     window.Show(); Pump(); window.WorkspaceWindow.Show(); window.Hide(); Pump();
-                    window.RunCommand("beginEdit").GetAwaiter().GetResult();
-                    Check(window.WorkspaceCoordinator.Mode == RunState.Ready && window.WorkspaceWindow.Interactive);
+                    Check(window.WorkspaceCoordinator.Mode == RunState.Ready && window.WorkspaceWindow.FindName("InteractionButton") is null);
                     Check(((Button)window.WorkspaceWindow.FindName("ClipboardButton")).IsEnabled);
                     Check(Native.GetWindowDisplayAffinity(new WindowInteropHelper(window).Handle, out var affinity) && affinity == 0x11);
                 }
                 Check(client.Requests.Count == 0);
                 window.RunCommand("pause").GetAwaiter().GetResult();
                 window.Show(); Pump(); window.Hide(); Pump();
-                window.RunCommand("beginEdit").GetAwaiter().GetResult();
-                Check(window.WorkspaceCoordinator.Mode == RunState.Paused && !window.WorkspaceWindow.Interactive);
+                Check(window.WorkspaceCoordinator.Mode == RunState.Paused && window.WorkspaceWindow.FindName("DraftText") is null);
             }
-            finally { window.Close(); }
+            finally { window.ExitApplication(); }
         }));
-        tests.Add(("Floating workspace renders narrow and normal layouts and clears all draft and output text", () =>
+        tests.Add(("Floating workspace renders narrow and normal layouts and clears all queued material and output text", () =>
         {
             var reader = new ReaderWindow();
             new WindowInteropHelper(reader).EnsureHandle();
             reader.Configure(SceneDefaults.All, "algorithm", "Synthetic / test-model", "Ctrl+Alt+E");
-            reader.SetShortcutHints(HotkeyDefaults.All.ToDictionary(k => k.Action, k => ShortcutLabel.Describe(k, false, true)));
-            reader.SetDraft("合成问题：分析数组去重的时间复杂度。");
+            reader.SetShortcutHints(HotkeyDefaults.All.ToDictionary(k => k.Action, k => ShortcutLabel.Describe(k, true)));
             reader.SetActions(true, false, true, true, false, true);
             var queue = new WorkspaceDraft();
             queue.Add(new(Guid.NewGuid(), InputKind.ClipboardText, Payload.FromText("输入约束：数组长度不超过 100000，保留元素原始顺序。"), 1, DateTimeOffset.UtcNow), "剪贴板文本");
@@ -779,121 +650,17 @@ internal static class WorkspaceTests
             if (renderIndex >= 0 && renderIndex + 1 < args.Length)
             {
                 reader.SetDirectRetry(null); reader.ClearAnswer(); reader.Render("合成回答：回答区应清晰可读。\n\n```python\nprint('readable workspace')\n```", "已完成");
-                ((Button)reader.FindName("AppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                ((Slider)reader.FindName("PanelOpacity")).Value = .85; ((Slider)reader.FindName("PanelTextSize")).Value = 24;
+                reader.ApplyLayout(reader.Layout() with { BackgroundOpacity = .85, FontSize = 24 });
                 surface.Measure(new Size(600, 740)); surface.Arrange(new Rect(0, 0, 600, 740)); surface.UpdateLayout(); Pump();
                 var bitmap = new RenderTargetBitmap(600, 740, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 using var output = File.Create(Path.Combine(args[renderIndex + 1], "workspace-appearance.png")); encoder.Save(output);
-                ((Button)reader.FindName("ResetAppearanceButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                reader.ApplyLayout(reader.Layout() with { BackgroundOpacity = 1, FontSize = 18 });
             }
-            reader.Clear(); Check(reader.Draft == "" && answer.Text == "" && ((ItemsControl)reader.FindName("InputQueue")).ItemsSource is null);
-        }));
-        if (args.Contains("--interactive")) tests.Add(("Floating modes preserve foreground and keyboard focus while retaining edit and pass-through styles", () =>
-        {
-            var input = new TextBox();
-            var control = new Window { Title = "Synthetic workspace focus control", Width = 300, Height = 200, Content = input };
-            var reader = new ReaderWindow();
-            var activations = 0;
-            reader.Activated += (_, _) => activations++;
-            try
-            {
-                control.Show(); ChooseWindow(control); input.Focus(); Pump();
-                var origin = Native.GetForegroundWindow();
-                Check(origin == new WindowInteropHelper(control).Handle && Keyboard.FocusedElement == input);
-                reader.Show(); Pump(); var hwnd = new WindowInteropHelper(reader).Handle;
-                Check(reader.Check() && reader.Topmost && !reader.ShowInTaskbar && Native.GetForegroundWindow() == origin);
-                reader.SetActions(true, false, false, false, false, false);
-                var edited = reader.SetMode(true); Pump();
-                if (!edited || !reader.Check() || !reader.Interactive || (Native.GetWindowLongPtr(hwnd, -20).ToInt64() & 0x08000000L) != 0)
-                    throw new Exception($"Edit mode: success={edited}, protected={reader.Check()}, interactive={reader.Interactive}, active={Native.GetForegroundWindow() == hwnd}, style={Native.GetWindowLongPtr(hwnd, -20):X}");
-                Check(Native.GetForegroundWindow() == origin && Keyboard.FocusedElement == input && activations == 0);
-                var read = reader.SetMode(false); Pump();
-                Check(read && reader.Check() && !reader.Interactive && Native.GetForegroundWindow() == origin && Keyboard.FocusedElement == input);
-                var location = reader.PointToScreen(new Point(30, 30));
-                var hit = new NativePoint { X = (int)location.X, Y = (int)location.Y };
-                Check(GetAncestor(WindowFromPoint(hit), 2) == hwnd);
-                var passed = reader.SetMode(false, true);
-                Check(passed);
-                Check(reader.Check() && reader.ClickThrough && (Native.GetWindowLongPtr(hwnd, -20).ToInt64() & 0x80020L) == 0x80020L);
-                Check(GetAncestor(WindowFromPoint(hit), 2) != hwnd);
-                reader.Hide(); reader.Show(); Pump();
-                Check(reader.Check() && !reader.ClickThrough && (Native.GetWindowLongPtr(hwnd, -20).ToInt64() & 0x20L) == 0);
-                Check(Native.GetWindowDisplayAffinity(hwnd, out var affinity) && affinity == 0x11);
-                Check(Native.GetForegroundWindow() == origin && activations == 0);
-
-                // Simulate the user choosing the editor. Ending editing must neither clear
-                // its keyboard focus nor force the earlier control window back to foreground.
-                Check(reader.SetMode(true)); ChooseWindow(reader);
-                var draft = (TextBox)reader.FindName("DraftText"); draft.Focus(); Pump();
-                Check(Native.GetForegroundWindow() == hwnd && Keyboard.FocusedElement == draft);
-                Check(reader.SetMode(false)); Pump();
-                Check(Native.GetForegroundWindow() == hwnd && Keyboard.FocusedElement == draft);
-
-                // Switching elsewhere during editing must also leave that choice alone.
-                Check(reader.SetMode(true));
-                ChooseWindow(control); input.Focus(); Pump();
-                Check(reader.SetMode(false)); Pump();
-                Check(Native.GetForegroundWindow() == origin && Keyboard.FocusedElement == input);
-            }
-            finally { reader.Finish(); control.Close(); }
-        }));
-        if (args.Contains("--interactive")) tests.Add(("Settings startup, reopening, minimized restore and workspace send never activate a window", () =>
-        {
-            var control = new Window { Title = "Synthetic settings focus control", Width = 300, Height = 200 };
-            var backend = new Backend("test", "Synthetic", "https://example.test/v1/chat/completions", "model", "");
-            var client = new WorkspaceBackend();
-            var window = new MainWindow(new Configuration { Backends = [backend], SelectedBackendId = backend.Id }, client);
-            var reader = window.WorkspaceWindow;
-            var activations = 0;
-            window.Activated += (_, _) => activations++;
-            reader.Activated += (_, _) => activations++;
-            var context = SynchronizationContext.Current;
-            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(window.Dispatcher));
-            try
-            {
-                control.Show(); ChooseWindow(control);
-                var origin = new WindowInteropHelper(control).Handle;
-                Check(Native.GetForegroundWindow() == origin);
-                window.Show(); Pump();
-                Check(window.IsVisible && !window.ShowActivated && Native.GetForegroundWindow() == origin && activations == 0);
-                window.Hide();
-                window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
-                Check(window.IsVisible && Native.GetForegroundWindow() == origin && activations == 0);
-                window.WindowState = WindowState.Minimized; Pump();
-                window.RunCommand("settings").GetAwaiter().GetResult(); Pump();
-                Check(window.WindowState == WindowState.Normal && Native.GetForegroundWindow() == origin && activations == 0);
-                window.RunCommand("interact").GetAwaiter().GetResult(); Pump();
-                Check(reader.Interactive && Native.GetForegroundWindow() == origin && activations == 0);
-                reader.SetDraft("Synthetic focus regression question");
-                var pending = window.RunCommand("send");
-                Until(() => client.Requests.Count == 1 || pending.IsCompleted);
-                Check(client.Requests.Count == 1 && Native.GetForegroundWindow() == origin && activations == 0);
-                client.Events.Writer.TryWrite(new("Synthetic answer"));
-                client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
-                Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
-                Check(window.WorkspaceCoordinator.Latest is { State: RequestState.Completed });
-                Check(Native.GetForegroundWindow() == origin && activations == 0);
-
-                // Sending from an editor the user has chosen must not jump to the old window.
-                window.RunCommand("newTask").GetAwaiter().GetResult();
-                Check(reader.SetMode(true)); ChooseWindow(reader);
-                var editor = new WindowInteropHelper(reader).Handle;
-                var chosenActivations = activations;
-                reader.SetDraft("Synthetic question from the active editor");
-                pending = window.RunCommand("send");
-                Until(() => client.Requests.Count == 2 || pending.IsCompleted);
-                Check(client.Requests.Count == 2 && Native.GetForegroundWindow() == editor && activations == chosenActivations);
-                client.Events.Writer.TryWrite(new("Second synthetic answer"));
-                client.Events.Writer.TryWrite(new(Completed: true)); client.Events.Writer.Complete();
-                Until(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
-                reader.Render("Second synthetic answer", "已完成"); Pump();
-                Check(window.WorkspaceCoordinator.Latest is { State: RequestState.Completed });
-                Check(Native.GetForegroundWindow() == editor && activations == chosenActivations);
-            }
-            finally { window.Close(); control.Close(); SynchronizationContext.SetSynchronizationContext(context); }
+            reader.Clear(); Check(answer.Text == "" && ((ItemsControl)reader.FindName("InputQueue")).ItemsSource is null);
         }));
     }
+
     private sealed class WorkspaceBackend : IBackendClient
     {
         public List<PreparedRequest> Requests { get; } = [];

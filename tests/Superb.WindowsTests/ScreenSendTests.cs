@@ -45,7 +45,6 @@ internal static class ScreenSendTests
             host.Window.Show();
             host.Window.QueueSnapshot(Entry(Payload.FromText("queued text")), "text");
             host.Window.QueueSnapshot(Entry(Picture(80)), "previous image");
-            host.Reader.SetDraft("current question");
             ((ComboBox)host.Reader.FindName("WorkspaceScene")).SelectedValue = "algorithm";
             var pending = host.Window.RunCommand("captureScreenSend");
             Check(host.Captures == 1 && !host.Reader.IsVisible && !host.Window.IsVisible);
@@ -56,7 +55,7 @@ internal static class ScreenSendTests
             capture.SetResult(screenshot); Wait(pending);
             var request = host.Client.Requests.Single();
             Check(request.SceneId == "algorithm" && request.Backend == Vision);
-            Check(string.IsNullOrEmpty(request.Content.Text) && host.Reader.Draft == "");
+            Check(string.IsNullOrEmpty(request.Content.Text));
             Check(request.Content.Images.Count() == 1 && host.Queue.Count == 1);
             Check(request.Content.Png.AsSpan().SequenceEqual(screenshot.Png.AsSpan()));
             Check(host.Reader.IsVisible && host.Window.WorkspaceCoordinator.State == RequestState.Completed);
@@ -73,10 +72,9 @@ internal static class ScreenSendTests
                 using var host = new Host(Settings(failedCapture ? Vision : Vision with { MaxInputBytes = 1 }),
                     _ => failedCapture ? Task.FromException<Payload>(new SafeFailure("capture_unavailable")) : Task.FromResult(Picture()));
                 host.Window.QueueSnapshot(Entry(Payload.FromText("keep input")), "text");
-                host.Reader.SetDraft("keep draft");
                 Wait(host.Window.RunCommand("captureScreenSend"));
                 Check(host.Client.Requests.Count == 0 && host.Captures == 1 && host.Queue.Count == 1);
-                Check(host.Reader.Draft == "keep draft" && host.Reader.IsVisible);
+                Check(host.Window.QueuedText() == "keep input" && host.Reader.IsVisible);
             }
         }));
         tests.Add(("Cancelled, cleared, paused and unprotected captures cannot send late screenshot data", () =>
@@ -86,7 +84,6 @@ internal static class ScreenSendTests
                 var capture = new TaskCompletionSource<Payload>();
                 using var host = new Host(Settings(), _ => capture.Task);
                 host.Window.QueueSnapshot(Entry(Payload.FromText("existing input")), "text");
-                host.Reader.SetDraft("existing draft");
                 var pending = host.Window.RunCommand("captureScreenSend");
                 Check(host.Captures == 1);
                 if (action == "loseProtection")
@@ -94,8 +91,8 @@ internal static class ScreenSendTests
                 else Wait(host.Window.RunCommand(action));
                 capture.SetResult(Picture()); Wait(pending);
                 Check(host.Client.Requests.Count == 0);
-                if (action == "cancel") Check(host.Queue.Count == 1 && host.Reader.Draft == "existing draft" && host.Reader.IsVisible);
-                else Check(host.Queue.Count == 0 && host.Reader.Draft == "");
+                if (action == "cancel") Check(host.Queue.Count == 1 && host.Window.QueuedText() == "existing input" && host.Reader.IsVisible);
+                else Check(host.Queue.Count == 0);
             }
         }));
         tests.Add(("Screen send checks the recipient before capture and replaces full queues with only the new screenshot", () =>
@@ -115,11 +112,11 @@ internal static class ScreenSendTests
         tests.Add(("Screen send after an answer starts fresh, retry reuses its image, and ordinary capture still only queues", () =>
         {
             using var host = new Host(Settings(), _ => Task.FromResult(Picture()));
-            host.Reader.SetDraft("previous question"); Wait(host.Window.RunCommand("send"));
+            host.Window.QueueText("previous question"); Wait(host.Window.RunCommand("send"));
             Wait(host.Window.RunCommand("captureScreenSend"));
             Check(host.Client.Requests.Count == 2 && host.Captures == 1);
             var request = host.Client.Requests[1];
-            Check(request.Content.HasImage && string.IsNullOrEmpty(request.Content.Text) && host.Reader.Draft == "");
+            Check(request.Content.HasImage && string.IsNullOrEmpty(request.Content.Text));
             Check(host.Queue.Count == 1);
             Wait(host.Window.RunCommand("retry"));
             Check(host.Client.Requests.Count == 3 && host.Client.Requests[2] == request && host.Captures == 1);
@@ -145,10 +142,10 @@ internal static class ScreenSendTests
             var previousConflict = (previous with { Scenes = conflict.Scenes }).Migrate();
             previousConflict.Validate(); Check(!previousConflict.Hotkeys.Single(k => k.Action == "captureScreenSend").Enabled);
             Check(!previous.Migrate().ExclusiveHotkeysEnabled);
-            Check(ShortcutLabel.Describe(defaultKey, false, true).Active);
-            Check(!ShortcutLabel.Describe(defaultKey with { Enabled = false }, false, true).Active);
-            Check(!ShortcutLabel.Describe(new("cancel", "F5", HotkeyMode.Exclusive), false, true).Active);
-            Check(ShortcutLabel.Describe(defaultKey, false, false, "exclusive_registration_failed").Text == "未生效");
+            Check(ShortcutLabel.Describe(defaultKey, true).Active);
+            Check(!ShortcutLabel.Describe(defaultKey with { Enabled = false }, true).Active);
+            Check(ShortcutLabel.Describe(new("cancel", "F5", HotkeyMode.Exclusive), true).Active);
+            Check(ShortcutLabel.Describe(defaultKey, false, "exclusive_registration_failed").Text == "未生效");
         }));
     }
     private sealed class Host : IDisposable
@@ -171,7 +168,7 @@ internal static class ScreenSendTests
             SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Window.Dispatcher));
             new WindowInteropHelper(Window).EnsureHandle(); Reader.Show();
         }
-        public void Dispose() { Window.Close(); SynchronizationContext.SetSynchronizationContext(context); }
+        public void Dispose() { Window.ExitApplication(); SynchronizationContext.SetSynchronizationContext(context); }
     }
     private sealed class TestBackend : IBackendClient
     {

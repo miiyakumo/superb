@@ -22,7 +22,7 @@ public partial class MainWindow
     private Hotkey DefaultBinding(string action) => HotkeyDefaults.All.FirstOrDefault(k => k.Action == action)
         ?? SceneDefaults.All.FirstOrDefault(s => s.Action == action)?.Trigger ?? new(action, "Ctrl+Alt+N", Enabled: false);
     private string TriggerLabel(Hotkey key) => !key.Enabled ? "快捷键关闭" : key.Mode == HotkeyMode.Exclusive
-        ? key.Gesture + (config.ExclusiveHotkeysEnabled ? " · 独占" : " · 独占接管未开启") : key.Gesture + " · 普通组合键";
+        ? key.Gesture + " · 独占" : key.Gesture + " · 普通组合键";
     private void PopulateSelectedScene()
     {
         var scene = ScenePicker.SelectedItem as ScenePreset;
@@ -49,25 +49,31 @@ public partial class MainWindow
         {
             CancelProbe();
             var candidate = build(); candidate.Validate();
-            if (configLoadFailed && File.Exists(Configuration.FilePath))
-                File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + Guid.NewGuid().ToString("N"), false);
-            candidate.Save();
+            if (!isolatedWorkspaceTest)
+            {
+                if (configLoadFailed && File.Exists(Configuration.FilePath))
+                    File.Copy(Configuration.FilePath, Configuration.FilePath + ".invalid-" + Guid.NewGuid().ToString("N"), false);
+                candidate.Save();
+            }
             config = candidate; configLoadFailed = false;
-            RegisterHotkeys(); Populate(); Status("配置已保存；快捷键状态见“快捷键”页");
+            if (!isolatedWorkspaceTest) RegisterHotkeys();
+            Populate(); Status("配置已保存；后续任务使用已保存的参数");
         }
         catch (Exception ex) { Report(ex); }
     }
     private void SaveScene_Click(object sender, RoutedEventArgs e)
     {
-        if (ScenePicker.SelectedItem is not ScenePreset scene) return;
-        SaveScenarioSettings(() =>
-        {
-            var updated = scene with { Name = SceneName.Text.Trim(), SystemPrompt = SceneSystemPrompt.Text,
-                BackendId = SceneBackendPicker.SelectedValue is string id && id.Length > 0 ? id : null };
-            var candidate = config with { Scenes = config.Scenes.Replace(scene, updated) };
-            return candidate;
-        });
+        if (ScenePicker.SelectedItem is not ScenePreset) return;
+        SaveScenarioSettings(BuildSceneSettings);
     }
+    internal Configuration BuildSceneSettings()
+    {
+        var scene = ScenePicker.SelectedItem as ScenePreset ?? throw new SafeFailure("scene_missing");
+        var updated = scene with { Name = SceneName.Text.Trim(), SystemPrompt = SceneSystemPrompt.Text,
+            BackendId = SceneBackendPicker.SelectedValue is string id && id.Length > 0 ? id : null };
+        return config with { Scenes = config.Scenes.Replace(scene, updated) };
+    }
+
     private void NewScene_Click(object sender, RoutedEventArgs e)
     {
         var scene = SceneDefaults.Custom();
@@ -99,7 +105,6 @@ public partial class MainWindow
     {
         HotkeyRows.ItemsSource = config.AllHotkeys().Select(k => new HotkeyEditorRow(DefaultBinding(k.Action),
             config.Scenes.FirstOrDefault(s => s.Action == k.Action)?.Name is { } name ? "场景 · " + name : HotkeyDefaults.Label(k.Action), DefaultBinding(k.Action))).ToList();
-        ExclusiveReaderKeys.IsChecked = false;
         Status("已填入默认绑定，保存快捷键后生效");
     }
 }

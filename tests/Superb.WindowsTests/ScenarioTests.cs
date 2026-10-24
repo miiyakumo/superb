@@ -32,7 +32,7 @@ internal static class ScenarioTests
             }
             CheckBinding(oldSend, oldAsk, oldAsk with { Action = "send" });
             var customSend = oldSend with { Gesture = "F23", Mode = HotkeyMode.Exclusive };
-            CheckBinding(customSend, oldAsk, customSend);
+            CheckBinding(customSend, oldAsk, customSend with { Enabled = false });
             CheckBinding(oldSend with { Enabled = false }, oldAsk, oldSend with { Enabled = false });
             CheckBinding(oldSend, oldAsk with { Enabled = false }, oldSend);
             CheckBinding(null, oldAsk with { Gesture = "Ctrl+Shift+Enter", Enabled = false },
@@ -55,7 +55,7 @@ internal static class ScenarioTests
                 json = json.Insert(json.LastIndexOf('}'), ",\"Pipeline\":{\"Steps\":[{\"Kind\":\"Mask\"}]},\"Capture\":{\"Kind\":\"Window\"},\"SyncMinutes\":15,\"CombineCaptureAndSend\":true,\"Routing\":{\"TextBackendId\":\"gone\",\"ImageBackendId\":\"gone\"}");
                 File.WriteAllText(path, json);
                 var upgraded = Configuration.Load(path); upgraded.Validate();
-                Check(upgraded.SchemaVersion == 4 && upgraded.AutoCopy && upgraded.Panel == old.Panel);
+                Check(upgraded.SchemaVersion == 6 && upgraded.AutoCopy && upgraded.Panel == old.Panel);
                 Check(upgraded.Backends.SequenceEqual(old.Backends) && upgraded.Scenes.SequenceEqual(old.Scenes));
                 var backups = Directory.GetFiles(directory, "*.bak");
                 Check(backups.Length == 1 && File.ReadAllText(backups[0]) == json);
@@ -77,7 +77,7 @@ internal static class ScenarioTests
                 Hotkeys = HotkeyDefaults.All.Where(k => k.Action is not ("ask" or "resume" or "retry")).Select(k => k.Action == "copy" ? k with { Gesture = "Ctrl+Alt+V" } : k).ToImmutableArray() };
             var migrated = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(old, Configuration.Json), Configuration.Json)!.Migrate();
             migrated.Validate();
-            Check(migrated.SchemaVersion == 4 && !migrated.ExclusiveReaderKeys && migrated.ExclusiveHotkeysEnabled);
+            Check(migrated.SchemaVersion == 6 && !migrated.ExclusiveReaderKeys && !migrated.ExclusiveHotkeysEnabled);
             Check(migrated.Hotkeys.Single(k => k.Action == "toggle") is { Gesture: "F6", Mode: HotkeyMode.Exclusive });
             Check(migrated.Hotkeys.Single(k => k.Action == "copy").Gesture == "Ctrl+Alt+V");
             Check(!migrated.Hotkeys.Any(k => k.Action == "ask") && migrated.Scenes.Length == 3);

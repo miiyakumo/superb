@@ -10,7 +10,7 @@ internal sealed class HotkeyManager(nint handle) : IDisposable
     private ExclusiveReaderHotkeys? exclusive;
     public Dictionary<string, string> RegistrationErrors { get; } = [];
     public bool LastWorkerStopped { get; private set; } = true;
-    public List<string> Register(IEnumerable<Hotkey> keys, bool exclusiveEnabled = false)
+    public List<string> Register(IEnumerable<Hotkey> keys)
     {
         var entries = keys.ToArray();
         HotkeyDefaults.Validate(entries);
@@ -23,7 +23,7 @@ internal sealed class HotkeyManager(nint handle) : IDisposable
         foreach (var entry in entries)
         {
             ++id;
-            if (!entry.Enabled || (entry.Mode == HotkeyMode.Exclusive && !HotkeyDefaults.ExclusiveEnabled(entry, exclusiveEnabled))) continue;
+            if (!entry.Enabled) continue;
             try
             {
                 var gesture = HotkeyDefaults.Parse(entry);

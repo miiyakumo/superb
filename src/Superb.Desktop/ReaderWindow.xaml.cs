@@ -29,12 +29,10 @@ public partial class ReaderWindow : Window
     private readonly Protection protection;
     public event Action<string>? Command;
     public event Action? ProtectionLost;
-    internal event Action? DraftChanged;
-    private bool allowClose, populating, busy, ready, handlingProtectionLoss;
-    private string interactionKey = "Ctrl+Alt+E";
-    internal bool Interactive { get; private set; }
+    private bool allowClose, populating, busy, ready, handlingProtectionLoss, canRetryAnswer;
+    private int? directRetryLimit;
+    private string throughKey = "Ctrl+Alt+E";
     internal bool ClickThrough { get; private set; }
-    internal string Draft => DraftText.Text;
     internal string? SelectedSceneId => WorkspaceScene.SelectedValue as string;
     public ReaderWindow()
     {
@@ -46,13 +44,14 @@ public partial class ReaderWindow : Window
             var ok = protection.Install();
             if (ok) { InitializePassThrough(); ok = displayLayer!.Check(); }
             ProtectionStatus.Text = ok ? "保护属性已设置 · 当前采集配置未实测" : "保护不可用 · 敏感显示已关闭";
+            ProtectionStatus.Visibility = ok ? Visibility.Collapsed : Visibility.Visible;
             if (!ok) Clear();
         };
         Closing += (_, e) => { if (!allowClose) { e.Cancel = true; Command?.Invoke("toggle"); } };
         LocationChanged += (_, _) => Check();
         SizeChanged += (_, _) => Check();
         InitializeAppearance();
-        SetEditingControls();
+        UpdateControls();
     }
     public bool Check()
     {
@@ -63,7 +62,7 @@ public partial class ReaderWindow : Window
         try
         {
             displayLayer?.Invalidate();
-            Clear(); ProtectionStatus.Text = "保护不可用 · 敏感显示已关闭";
+            Clear(); ProtectionStatus.Text = "保护不可用 · 敏感显示已关闭"; ProtectionStatus.Visibility = Visibility.Visible;
             ProtectionLost?.Invoke(); return false;
         }
         finally { handlingProtectionLoss = false; }
@@ -72,48 +71,38 @@ public partial class ReaderWindow : Window
     {
         new WindowInteropHelper(this).EnsureHandle();
         if (!protection.RefreshDisplayAffinity()) { Clear(); ProtectionLost?.Invoke(); return; }
-        SetMode(false);
+        SetClickThrough(false);
         Topmost = true;
         Native.SetWindowPos(protection.Handle, (nint)(-1), 0, 0, 0, 0, 0x0013);
         base.Show(); Check();
     }
     public new void Hide()
     {
-        if (protection.Handle != 0 && protection.Check()) SetMode(false);
+        if (protection.Handle != 0 && protection.Check()) SetClickThrough(false);
         base.Hide();
         if (protection.Handle != 0 && !protection.RefreshDisplayAffinity()) { Clear(); ProtectionLost?.Invoke(); }
     }
-    internal bool SetMode(bool interactive, bool through = false)
+    internal bool SetClickThrough(bool through)
     {
-        if (!protection.SetInteraction(interactive, through)) { Clear(); ProtectionLost?.Invoke(); return false; }
-        Interactive = interactive; ClickThrough = through; SetEditingControls();
-        // Modes only change interaction policy. Let the user's click choose the window
-        // and control; never activate, focus a draft, or restore an earlier foreground.
+        if (!protection.SetInteraction(false, through)) { Clear(); ProtectionLost?.Invoke(); return false; }
+        ClickThrough = through; UpdateControls();
         return true;
     }
-    private void SetEditingControls()
+    private void UpdateControls()
     {
-        DraftText.IsReadOnly = !ready || !Interactive || busy && !codingAcceptsInput;
-        // Explicit clicks enter editing; simply showing or updating the window never activates it.
-        DraftText.Focusable = ready && (!busy || codingAcceptsInput);
         WorkspaceScene.IsEnabled = ready && (!busy || codingMode);
-        Answer.SetInteractive(Interactive);
-        InteractionButton.Content = Interactive ? "完成编辑" : "编辑";
-        InteractionButton.ToolTip = Interactive ? "结束编辑，不自动跳回其他窗口；如需返回原应用，请手动点击。" : "仅启用编辑，不抢焦点；随后点击输入框或选择回答文字会使原窗口失焦。";
-        ModeHint.Text = ClickThrough ? $"穿透阅读 · 点击目标窗口输入 · {interactionKey} 退出穿透" : Interactive
-            ? "输入／选字会使原窗口失焦 · Esc 结束编辑，不自动返回"
-            : "内容与空白可穿透 · 点击输入会使原窗口失焦";
-        ModeHint.Visibility = answerMode && !Interactive && !ClickThrough ? Visibility.Collapsed : Visibility.Visible;
+        ModeHint.Text = ClickThrough ? $"全穿透 · {throughKey} 恢复操作" : "";
+        ModeHint.Visibility = ClickThrough ? Visibility.Visible : Visibility.Collapsed;
         RefreshShortcutHints();
         RefreshInputRegions();
     }
-    internal void Configure(IEnumerable<ScenePreset> scenes, string? selectedId, string receiver, string editKey)
+    internal void Configure(IEnumerable<ScenePreset> scenes, string? selectedId, string receiver, string recoveryKey)
     {
         populating = true;
         var next = scenes.ToArray();
         if (WorkspaceScene.ItemsSource is not ScenePreset[] existing || !existing.SequenceEqual(next)) WorkspaceScene.ItemsSource = next;
         if (!Equals(WorkspaceScene.SelectedValue, selectedId)) WorkspaceScene.SelectedValue = selectedId;
-        ReceiverText.Text = receiver; interactionKey = editKey; populating = false; SetEditingControls();
+        ReceiverText.Text = receiver; throughKey = recoveryKey; populating = false; UpdateControls();
     }
     internal void SetActions(bool ready, bool working, bool hasInput, bool canCopy, bool partial, bool canRetry)
     {
@@ -125,33 +114,32 @@ public partial class ReaderWindow : Window
         StopButton.IsEnabled = ready && working;
         CopyButton.IsEnabled = ready && canCopy;
         CopyButton.Content = partial ? "复制部分回答" : "复制回答";
+        canRetryAnswer = canRetry;
         RetryButton.IsEnabled = ready && !working && canRetry;
+        StopButton.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
+        CopyButton.Visibility = canCopy && !working ? Visibility.Visible : Visibility.Collapsed;
+        RefreshRetryVisibility();
         DirectRetryButton.IsEnabled = ready && !working;
         ThroughButton.IsEnabled = ready;
         InputQueue.IsEnabled = ClearInputButton.IsEnabled = ready && !working;
         PauseButton.Content = ready ? "暂停" : "恢复";
-        SetEditingControls();
+        UpdateControls();
     }
     public void Clear()
     {
         CodingHistory.Text = ""; CodingPending.Text = "";
-        populating = true; DraftText.Clear(); populating = false;
         ClearInput(); ClearAnswer(); StateText.Text = "等待输入";
         ComposerExpander.IsExpanded = true;
     }
-    internal void SetDraft(string text)
-    {
-        populating = true; DraftText.Text = text; populating = false;
-    }
     internal void ClearAnswer()
     {
-        answerMode = false; SetEditingControls(); Answer.Clear(); EmptyAnswer.Text = "选择场景，输入问题或收集截图、剪贴板。\n确认队列后发送。";
+        answerMode = false; UpdateControls(); Answer.Clear(); EmptyAnswer.Text = "选择场景，读取剪贴板或收集截图。\n确认队列后发送。";
         EmptyAnswer.Visibility = Visibility.Visible;
     }
     internal void ClearInput()
     {
         inputIds = []; InputQueue.ItemsSource = null; QueueCount.Text = ""; Attachment.Visibility = Visibility.Collapsed;
-        InputHeading.Text = "输入与队列";
+        InputHeading.Text = "材料队列";
     }
     public void Status(string text) => StateText.Text = text;
     public void Preview(Payload payload) => SetInput(payload, "已准备输入");
@@ -177,21 +165,26 @@ public partial class ReaderWindow : Window
         }).ToArray();
         RefreshInputHints();
         QueueCount.Text = $"待发送队列 · {values.Length} 项";
-        InputHeading.Text = values.Length == 0 ? "输入与队列" : $"输入与队列 · {values.Length} 项";
+        InputHeading.Text = values.Length == 0 ? "材料队列" : $"材料队列 · {values.Length} 项";
         Attachment.Visibility = values.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
     internal void SetSelecting(bool selecting)
     {
-        selectingCorners = selecting; StopButton.Content = selecting ? "取消截图" : "停止";
+        selectingCorners = selecting; StopButton.Content = selecting ? "取消截图" : "停止生成";
         RefreshShortcutHints();
     }
     internal void SetDirectRetry(int? limit)
     {
-        DirectRetryButton.Visibility = limit is null ? Visibility.Collapsed : Visibility.Visible;
-        RetryButton.Visibility = limit is null ? Visibility.Visible : Visibility.Collapsed;
+        directRetryLimit = limit;
+        RefreshRetryVisibility();
         if (limit is not { } tokens) return;
         DirectRetryButton.Content = $"直接回答（{(tokens == 16384 ? "16K" : tokens.ToString())} tokens）";
         DirectRetryButton.ToolTip = $"仅这次重试关闭 DeepSeek 深度思考，生成上限改为 {tokens} tokens，可能增加用量；保持上次输入、模型和保护规则，不修改保存的设置。";
+    }
+    private void RefreshRetryVisibility()
+    {
+        RetryButton.Visibility = !busy && canRetryAnswer && directRetryLimit is null ? Visibility.Visible : Visibility.Collapsed;
+        DirectRetryButton.Visibility = !busy && directRetryLimit is not null ? Visibility.Visible : Visibility.Collapsed;
     }
     private void DirectRetry_Click(object sender, RoutedEventArgs e) => Command?.Invoke("retryDirect");
     public void Render(string text, string state)
@@ -221,26 +214,9 @@ public partial class ReaderWindow : Window
             ApplyPalette();
         }
         finally { applyingAppearance = false; }
-        SyncAppearanceControls();
     }
     public void Finish() { allowClose = true; Close(); }
     private void WorkspaceScene_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (!populating) Command?.Invoke("selectScene"); }
-    private void DraftText_TextChanged(object sender, TextChangedEventArgs e) { if (!populating) DraftChanged?.Invoke(); }
-    private void Editor_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        // A text box's preview route also includes its scrollbar. Scrolling the draft
-        // is passive; only a click on the text area should enable editing.
-        for (var node = e.OriginalSource as DependencyObject; node is not null && !ReferenceEquals(node, sender); node = ParentOf(node))
-            if (node is ScrollBar or Thumb or ButtonBase) return;
-        if (ready && (!busy || codingAcceptsInput) && !Interactive) Command?.Invoke("beginEdit");
-        // Let the same mouse event place the caret normally.
-    }
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Escape && Interactive) { SetMode(false); e.Handled = true; }
-        else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control) { Command?.Invoke("send"); e.Handled = true; }
-    }
-    private void Interaction_Click(object sender, RoutedEventArgs e) => Command?.Invoke("interact");
     private void Through_Click(object sender, RoutedEventArgs e) => Command?.Invoke("through");
     private void Hide_Click(object sender, RoutedEventArgs e) => Command?.Invoke("toggle");
     private void Send_Click(object sender, RoutedEventArgs e) => Command?.Invoke("send");

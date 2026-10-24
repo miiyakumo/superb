@@ -13,15 +13,9 @@ public partial class ReaderWindow
 
     private void InitializeFocusPolicy()
     {
-        protection.AllowMouseActivation = () => Native.GetCursorPos(out var point) &&
-            PrepareMouseActivation(InputHitTest(PointFromScreen(new Point(point.X, point.Y))) as DependencyObject);
-        PreviewGotKeyboardFocus += (_, e) =>
-        {
-            if (!IsKeyboardTarget(e.NewFocus as DependencyObject)) e.Handled = true;
-        };
-        // The answer has no context menu. WPF's text editor nevertheless focuses it
-        // on right-down unless we handle that otherwise inert background interaction.
-        Answer.PreviewMouseRightButtonDown += (_, e) => { if (!IsActive) e.Handled = true; };
+        protection.AllowMouseActivation = () => false;
+        PreviewGotKeyboardFocus += (_, e) => e.Handled = true;
+        Answer.PreviewMouseRightButtonDown += (_, e) => e.Handled = true;
         DragHeader.MouseMove += DragHeader_MouseMove;
         DragHeader.MouseLeftButtonUp += (_, e) =>
         {
@@ -30,37 +24,6 @@ public partial class ReaderWindow
         };
         DragHeader.LostMouseCapture += (_, _) => headerDragStart = null;
     }
-
-    internal bool PrepareMouseActivation(DependencyObject? target)
-    {
-        if (!Interactive)
-        {
-            for (var node = target; node is not null && node != this; node = ParentOf(node))
-            {
-                if (node is ScrollBar or Thumb or ButtonBase) return false;
-                if (!ReferenceEquals(node, DraftText) && !IsAppearanceEditor(node)) continue;
-                if ((!IsAppearanceEditor(node) && (!ready || busy)) || !SetMode(true)) return false;
-                break;
-            }
-        }
-        return IsKeyboardTarget(target);
-    }
-
-    internal bool IsKeyboardTarget(DependencyObject? target)
-    {
-        if (!Interactive) return false;
-        for (var node = target; node is not null && node != this; node = ParentOf(node))
-        {
-            if (node is ScrollBar or Thumb or ButtonBase) return false;
-            if (IsAppearanceEditor(node)) return true;
-            if (ReferenceEquals(node, DraftText)) return ready && !busy;
-            if (ReferenceEquals(node, Answer)) return true;
-        }
-        return false;
-    }
-
-    private bool IsAppearanceEditor(DependencyObject node) => ReferenceEquals(node, CustomBaseBox) ||
-        ReferenceEquals(node, CustomInkBox) || ReferenceEquals(node, CustomAccentBox);
 
     private static DependencyObject? ParentOf(DependencyObject node) => node is Visual
         ? VisualTreeHelper.GetParent(node) : node is ContentElement content

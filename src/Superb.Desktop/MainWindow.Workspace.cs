@@ -9,8 +9,8 @@ public partial class MainWindow
     private readonly WorkspaceDraft ordinaryWorkspace = new();
     private readonly WorkspaceDraft codingWorkspace = new();
     private WorkspaceDraft workspace => IsCoding ? codingWorkspace : ordinaryWorkspace;
+    internal IReadOnlyList<WorkspaceAttachment> WorkspaceItems => workspace.Items;
     private bool IsCoding => workspaceSceneId == "coding";
-    private string ordinaryDraft = "", codingDraft = "";
     private string? workspaceSceneId = "general";
     private CancellationTokenSource? captureSelectionCancellation;
     private ScenePreset? WorkspaceScene => config.Scenes.FirstOrDefault(s => s.Id == workspaceSceneId);
@@ -40,22 +40,22 @@ public partial class MainWindow
             var actual = $"本次：{codingBackend.Name} / {codingBackend.Model}";
             receiver = codingRunner.IsRunning ? actual : receiver + " · " + actual;
         }
-        var key = config.AllHotkeys().FirstOrDefault(k => k.Action == "interact");
-        var editKey = key is not null && hotkeys?.HasAction("interact") == true ? key.Gesture : "编辑快捷键不可用";
+        var key = config.AllHotkeys().FirstOrDefault(k => k.Action == "through");
+        var recoveryKey = key is not null && hotkeys?.HasAction("through") == true ? key.Gesture : "穿透快捷键不可用";
         var shownScene = !IsCoding && Working && coordinator.Current is { } active ? active.Request.SceneId ?? "" : scene?.Id ?? "";
-        reader.Configure(choices, shownScene, receiver, editKey);
+        reader.Configure(choices, shownScene, receiver, recoveryKey);
         var update = coordinator.Latest;
         var partial = update?.State is RequestState.Cancelled or RequestState.Failed;
-        reader.SetActions(coordinator.Mode == RunState.Ready, Working, workspace.HasInput(reader.Draft) || IsCoding && CanReanalyzeCoding,
+        reader.SetActions(coordinator.Mode == RunState.Ready, Working, workspace.HasInput("") || IsCoding && CanReanalyzeCoding,
             IsCoding ? CodingDirective is not null && !Working : !string.IsNullOrEmpty(update?.Text) && !Working,
             !IsCoding && partial, IsCoding ? codingRunner.CanRetry : coordinator.Current is not null && update?.State is RequestState.Completed or RequestState.Failed or RequestState.Cancelled);
         reader.SetCodingMode(IsCoding, codingRunner.IsRunning && !preparing,
-            codingWorkspace.Items.Count + (IsCoding && !string.IsNullOrWhiteSpace(reader.Draft) ? 1 : 0),
+            codingWorkspace.Items.Count,
             codingSession.Memory.Attempts);
         reader.SetSelecting(captureSelectionCancellation is not null);
         reader.SetDirectRetry(IsCoding ? null : DirectRetryLimit);
         reader.SetShortcutHints(config.AllHotkeys().ToDictionary(binding => binding.Action, binding =>
-            ShortcutLabel.Describe(binding, config.ExclusiveHotkeysEnabled, hotkeys?.HasAction(binding.Action) == true,
+            ShortcutLabel.Describe(binding, hotkeys?.HasAction(binding.Action) == true,
                 hotkeys?.RegistrationErrors.GetValueOrDefault(binding.Action))));
     }
     private void OpenWorkspace(bool hideControl = true, bool explicitHide = false)
@@ -66,7 +66,7 @@ public partial class MainWindow
             // A system dialog owned by settings also counts as foreground. A completed
             // connection must not hide its owner and make Windows select another app.
             if (explicitHide || !ControlOwnsForeground()) Hide();
-            else Status("浮窗已打开；设置仍在前台，点击“返回悬浮工作区”收起设置（Windows 会转移焦点）");
+            else Status("浮窗已打开；设置仍在前台，点击“返回工作区”收起设置（Windows 会转移焦点）");
         }
         else if (hideControl && !CanHideControl()) Status("浮窗已打开；关键快捷键不可用，保留控制中心入口");
     }
@@ -79,9 +79,7 @@ public partial class MainWindow
     {
         if (id == workspaceSceneId) return;
         if (Working) StopGeneration();
-        if (IsCoding) codingDraft = reader.Draft; else ordinaryDraft = reader.Draft;
         workspaceSceneId = id;
-        reader.SetDraft(IsCoding ? codingDraft : ordinaryDraft);
         reader.SetInputs(workspace.Items);
         if (IsCoding) RenderCoding();
         else if (coordinator.Latest is { } previous) reader.Render(previous.Text, StateLabel(previous));
@@ -121,10 +119,11 @@ public partial class MainWindow
         }
         // A new acquisition after an answer starts the next task, like Quiz; cancellation before
         // acquisition leaves the previous answer and its input intact.
-        if (startNewTask || coordinator.Latest is not null) { workspace.Set(snapshot, label); reader.SetDraft(""); }
+        if (startNewTask || coordinator.Latest is not null) { workspace.Set(snapshot, label); }
         else workspace.Add(snapshot, label);
         coordinator.Invalidate(); completed = null; latestUpdate = null; ClearOutput();
         reader.SetInputs(workspace.Items);
+        RefreshWorkspace();
     }
     private async Task StageScreenshot(bool region, bool sendImmediately = false)
     {
@@ -156,7 +155,7 @@ public partial class MainWindow
                 captureSelectionCancellation = selection;
                 if (!reader.IsVisible) reader.Show();
                 if (IsVisible) Hide();
-                if (!reader.SetMode(false, true)) return;
+                if (!reader.SetClickThrough(true)) return;
                 Status("两点截图：点击第一个角 · 右键或 Esc 取消");
                 var corners = await TwoPointSelector.SelectAsync(_ => Dispatcher.BeginInvoke(() =>
                 {
@@ -204,7 +203,7 @@ public partial class MainWindow
                 preparing = false;
                 if (coordinator.Mode == RunState.Ready)
                 {
-                    reader.SetMode(false);
+                    reader.SetClickThrough(false);
                     if (captured || wasVisible) reader.Show(); else reader.Hide();
                     if (!captured && controlVisible) Show();
                 }
@@ -230,18 +229,18 @@ public partial class MainWindow
         if (!Ready()) return;
         if (Working) { Status("正在处理；请先停止生成"); return; }
         if (config.Backends.IsDefaultOrEmpty) { Status("尚未连接模型，请打开“设置”并点击设置窗口连接"); return; }
-        if (!workspace.HasInput(reader.Draft)) { Status("请先输入问题或收集输入"); return; }
+        if (!workspace.HasInput("")) { Status("请先读取剪贴板或收集截图"); return; }
         var version = ++operation;
         var settings = config; var scene = WorkspaceScene;
         preparing = true; RefreshWorkspace();
         try
         {
-            var snapshot = workspace.Freeze(reader.Draft, clipboard!.Sequence);
+            var snapshot = workspace.Freeze("", clipboard!.Sequence);
             if (snapshot.Content.Size > Policy.AbsoluteInputLimit) throw new SafeFailure("input_too_large");
             coordinator.Invalidate(); completed = null; latestUpdate = null; ClearOutput();
             if (version != operation || !Ready()) return;
             var request = SceneRequestFactory.Prepare(settings, scene, snapshot);
-            reader.SetMode(false);
+            reader.SetClickThrough(false);
             if (!reader.IsVisible) reader.Show();
             await SendPrepared(request);
         }
@@ -275,8 +274,8 @@ public partial class MainWindow
         captureSelectionCancellation?.Cancel();
         if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
         operation++; preparing = false;
-        if (IsCoding) { codingRunner.Clear(); codingSession.Clear(); codingDraft = ""; codingTarget = null; }
-        else { coordinator.Invalidate(); completed = null; latestUpdate = null; ordinaryDraft = ""; }
+        if (IsCoding) { codingRunner.Clear(); codingSession.Clear(); codingTarget = null; }
+        else { coordinator.Invalidate(); completed = null; latestUpdate = null; }
         workspace.Clear();
         reader.Clear(); ClearOutput(); Status("等待输入 · 新任务"); RefreshWorkspace();
     }
@@ -294,7 +293,7 @@ public partial class MainWindow
         // Explicit one-attempt recovery: retain frozen input and show the new budget.
         // It neither changes saved defaults nor silently repeats the original paid request.
         var request = prior.Request with { Backend = prior.Request.Backend with { ThinkingMode = ThinkingMode.Disabled, MaxTokens = limit } };
-        reader.SetMode(false);
+        reader.SetClickThrough(false);
         await SendPrepared(request);
     }
 }

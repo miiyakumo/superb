@@ -16,12 +16,9 @@ public partial class ReaderWindow
     private ShortcutLabel KeyHint(string action) => shortcutLabels.TryGetValue(action, out var label) ? label : new("未注册", "本次会话尚未取得快捷键注册状态。");
     private void RefreshShortcutHints()
     {
-        var edit = KeyHint("interact");
-        ShortcutHint.Apply(InteractionButton, !edit.Active && Interactive ? new("Esc", "交互模式下按 Esc 返回阅读；编辑全局键状态：" + edit.Description, true) : edit);
+        ShortcutHint.Apply(ThroughButton, KeyHint("through"));
         ShortcutHint.Apply(SettingsButton, KeyHint("settings")); ShortcutHint.Apply(HideButton, KeyHint("toggle"));
-        var send = KeyHint("send");
-        if (!send.Active && Interactive) send = new("Ctrl+Enter", "交互模式下按 Ctrl+Enter 发送工作区。", true);
-        ShortcutHint.Apply(SendButton, send with { Description = send.Description + " 交互模式下也可按 Ctrl+Enter。" });
+        ShortcutHint.Apply(SendButton, KeyHint("send"));
         ShortcutHint.Apply(ClipboardButton, KeyHint("clipboard")); ShortcutHint.Apply(CaptureButton, KeyHint("capture"));
         ShortcutHint.Apply(ScreenButton, KeyHint("captureScreen"));
         ShortcutHint.Apply(ScreenSendButton, KeyHint("captureScreenSend"));

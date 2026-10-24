@@ -46,7 +46,7 @@ public partial class ReaderWindow
                     clip.Intersect(element.TransformToAncestor(this).TransformBounds(geometry.Bounds));
                 if (clip.IsEmpty) return;
                 if (element is ButtonBase or TextBoxBase or PasswordBox or ComboBox or Slider or ScrollBar or Thumb ||
-                    ReferenceEquals(element, DragHeader) || (Interactive && ReferenceEquals(element, Answer)))
+                    ReferenceEquals(element, DragHeader))
                 {
                     bounds.Intersect(clip);
                     if (!bounds.IsEmpty && bounds.Width > 0 && bounds.Height > 0) result.Add(bounds);
