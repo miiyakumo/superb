@@ -29,7 +29,7 @@ public sealed record Payload(string? Text, ImmutableArray<byte> Png, int Width =
 public sealed record InputSnapshot(Guid Id, InputKind Kind, Payload Content, uint ClipboardSequence, DateTimeOffset CapturedAt);
 public sealed record Backend(string Id, string Name, string Endpoint, string Model, string CredentialRef,
     bool SupportsImages = false, bool AllowLoopbackHttp = false, bool Stream = true,
-    int TimeoutSeconds = 120, int MaxInputBytes = 8_388_608, int MaxOutputChars = 1_000_000,
+    int TimeoutSeconds = 300, int MaxInputBytes = 8_388_608, int MaxOutputChars = 1_000_000,
     double Temperature = 0.2, int MaxTokens = Policy.DefaultOutputTokens, string Adapter = "chat-completions",
     ProxyMode ProxyMode = ProxyMode.Direct, string ProxyAddress = "",
     bool SendTemperature = true, TokenLimitParameter TokenLimitParameter = TokenLimitParameter.MaxTokens,

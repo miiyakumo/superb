@@ -112,13 +112,13 @@ internal static class Program
                 var first = DeepSeekSetup.Preset("deepseek", old);
                 var other = new Backend("other", "Other", "https://example.test/chat/completions", "test", "");
                 var current = new Configuration { Backends = [first, other], SelectedBackendId = other.Id };
-                var updated = QuickSetupPersistence.Commit(current, first, "synthetic-new-key", store, saved =>
+                var updated = BackendPersistence.Commit(current, first, "synthetic-new-key", store, saved =>
                 {
                     created = saved.Backends.Single(x => x.Id == first.Id).CredentialRef;
                     Assert(store.Read(created) == "synthetic-new-key");
                     Assert(!JsonSerializer.Serialize(saved, Configuration.Json).Contains("synthetic-new-key"));
                 });
-                Assert(updated.SelectedBackendId == first.Id && updated.Backends.Length == 2);
+                Assert(updated.SelectedBackendId == other.Id && updated.Backends.Length == 2);
                 Assert(updated.Backends.Contains(other) && current.Backends[0].CredentialRef == old);
                 try { store.Read(old); throw new Exception("Old credential retained"); }
                 catch (SafeFailure ex) { Assert(ex.Code == "credential_unavailable"); }
@@ -134,7 +134,7 @@ internal static class Program
                 var current = new Configuration { Backends = [first], SelectedBackendId = first.Id };
                 try
                 {
-                    QuickSetupPersistence.Commit(current, first, "synthetic-new-key", store, saved =>
+                    BackendPersistence.Commit(current, first, "synthetic-new-key", store, saved =>
                     {
                         created = saved.Backends[0].CredentialRef;
                         throw new IOException("synthetic write failure");

@@ -49,6 +49,18 @@ Test("Reject URL credentials, query secrets and unsupported adapters", () =>
         Fails("endpoint_invalid", () => Policy.ValidateBackend(backend with { Endpoint = endpoint }));
     Fails("adapter_unsupported", () => Policy.ValidateBackend(backend with { Adapter = "unknown" }));
 });
+Test("Connection setup accepts base URLs and preserves explicit gateway paths without bypassing URL policy", () =>
+{
+    Assert(BackendSetup.NormalizeEndpoint(" https://example.test/v1/ ") == "https://example.test/v1/chat/completions");
+    Assert(BackendSetup.NormalizeEndpoint("https://example.test/") == "https://example.test/v1/chat/completions");
+    Assert(BackendSetup.NormalizeEndpoint(DeepSeekSetup.Endpoint) == DeepSeekSetup.Endpoint);
+    Assert(BackendSetup.NormalizeEndpoint("https://example.test/gateway/invoke/") == "https://example.test/gateway/invoke/");
+    var local = BackendSetup.NormalizeEndpoint("http://127.0.0.1:11434/v1");
+    Fails("encrypted_transport_required", () => Policy.ValidateBackend(backend with { Endpoint = local }));
+    Policy.ValidateBackend(backend with { Endpoint = local, AllowLoopbackHttp = true });
+    foreach (var invalid in new[] { "", "/v1", "https://user:key@example.test/v1", "https://example.test/v1?key=secret", "https://example.test/#key" })
+        Fails("endpoint_invalid", () => BackendSetup.NormalizeEndpoint(invalid));
+});
 Test("Reject empty, oversize, malformed and unsupported image inputs", () =>
 {
     Fails("input_empty", () => Policy.Check(Request("  ")));
@@ -79,7 +91,7 @@ Test("New backends default to 200k output tokens and accept their local output c
     var preset = DeepSeekSetup.Preset("new", "");
     Assert(preset.MaxTokens == 200000 && preset.TimeoutSeconds == 300 && preset.ThinkingMode == ThinkingMode.Default);
     Policy.ValidateBackend(preset);
-    Assert(backend.MaxTokens == 200000 && backend.MaxOutputChars == 1_000_000 && backend.ThinkingMode == ThinkingMode.Default);
+    Assert(backend.TimeoutSeconds == 300 && backend.MaxTokens == 200000 && backend.MaxOutputChars == 1_000_000 && backend.ThinkingMode == ThinkingMode.Default);
     var saved = System.Text.Json.JsonSerializer.Deserialize<Backend>(System.Text.Json.JsonSerializer.Serialize(backend with { MaxTokens = 4096, MaxOutputChars = 200000 }))!;
     Assert(saved.MaxTokens == 4096 && saved.MaxOutputChars == 200000);
 });
