@@ -73,7 +73,7 @@
         <TextBlock Text="场景与提示词" Style="{StaticResource Heading}"/>
         <ScrollViewer x:Name="SceneEditorScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}"><StackPanel Margin="0,0,8,0">
                     <ComboBox x:Name="ScenePicker" DisplayMemberPath="Name" SelectionChanged="ScenePicker_SelectionChanged"/>
-          <WrapPanel><Button Content="新建场景" Click="NewScene_Click"/><Button Content="删除场景" Click="DeleteScene_Click"/></WrapPanel>
+          <WrapPanel><Button Content="新建场景" Click="NewScene_Click"/><Button x:Name="DeleteSceneButton" Content="删除场景" Click="DeleteScene_Click" ToolTipService.ShowOnDisabled="True"/></WrapPanel>
           <TextBlock Text="名称"/><TextBox x:Name="SceneName"/>
           <TextBlock Text="系统提示词"/><TextBox x:Name="SceneSystemPrompt" AcceptsReturn="True" Height="120" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
 
@@ -81,12 +81,6 @@
           <TextBlock Text="未指定时使用当前默认连接。模型和生成参数在“模型”页配置；需要不同参数时，新建模型配置。" Style="{StaticResource Hint}"/>
           <TextBlock Text="场景切换提示词，使用当前工作区输入。" ToolTip="输入正文直接附加，任务说明放在系统提示词中。一键快捷键切换场景，使用当前工作区输入与截图队列；发起键在“快捷键”页配置。输入正文不会保存。" Style="{StaticResource Hint}"/>
           <TextBlock x:Name="SceneTriggerSummary" Style="{StaticResource Hint}"/>
-          <Expander x:Name="CodingAnalysisSettings" Header="高级分析设置" Visibility="Collapsed" Margin="0,8,0,16"><StackPanel Margin="8,8,8,0">
-
-            <TextBlock Text="控制一次任务分析的调用预算。保存场景后应用于后续分析；正在运行的分析和“重试任务分析”继续使用启动时的参数。" Style="{StaticResource Hint}"/>
-            <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="调用次数上限（留空不限）"/><TextBox x:Name="CodingCalls" Text="" AutomationProperties.Name="任务分析最多调用次数"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="一次分析最长时间（秒，10–1800）"/><TextBox x:Name="CodingSeconds" Text="300" AutomationProperties.Name="任务分析最长时间"/></StackPanel></Grid>
-            <TextBlock Text="使用原生工具调用；默认不限调用次数，总时限 300 秒。可随时停止，模型连接的单次超时仍生效。" Style="{StaticResource Hint}"/>
-          </StackPanel></Expander>
           <Expander Header="恢复内置预设" Margin="0,0,0,16"><WrapPanel Margin="8,12,8,0"><Button Content="恢复当前预设内容" Click="RestoreScene_Click"/><Button Content="补回缺失的内置场景" Click="RestoreMissingScenes_Click"/></WrapPanel></Expander>
         </StackPanel></ScrollViewer>
         <WrapPanel Grid.Row="2" Margin="0,12,0,0"><Button x:Name="SaveSceneButton" Content="保存场景" Style="{StaticResource Primary}" Click="SaveScene_Click"/><Button x:Name="OpenHotkeysButton" Content="配置发起键" Click="OpenHotkeys_Click"/></WrapPanel>
@@ -113,10 +107,10 @@
       <TabItem x:Name="AdvancedTab" Header="通用"><ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}"><StackPanel Margin="8,18,8,0">
         <TextBlock Text="剪贴板偏好" Style="{StaticResource Heading}"/>
         <StackPanel x:Name="ClipboardPreferences"><CheckBox x:Name="AutoCopy" Content="完成后自动写回剪贴板（内容被其他应用更新时跳过）"/><CheckBox x:Name="ClearClipboard" Content="暂停、锁屏或退出时，清除仍属于本应用的剪贴板输出"/><Button Content="保存剪贴板偏好" Style="{StaticResource Primary}" HorizontalAlignment="Left" Click="SavePreferences_Click"/></StackPanel>
-        <Expander x:Name="DiagnosticsSettings" Header="诊断与数据保护" Margin="0,24,0,8"><StackPanel Margin="8,8,8,0"><TextBlock x:Name="DiagnosticsLocation" Style="{StaticResource Hint}"/><TextBlock Text="Coding 诊断只记录状态、耗时、计数和错误码，不记录正文、截图或密钥。" Style="{StaticResource Hint}"/><TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/><TextBlock Text="不会保存截图、正文或回答；无后台遥测或崩溃上传。模型服务会接收已发送的内容。" Style="{StaticResource Hint}"/></StackPanel></Expander>
+        <Expander x:Name="DiagnosticsSettings" Header="诊断与数据保护" Margin="0,24,0,8"><StackPanel Margin="8,8,8,0"><TextBlock x:Name="DiagnosticsLocation" Style="{StaticResource Hint}"/><TextBlock Text="工作区诊断只记录操作、材料数量和错误码，不记录正文、截图或密钥。" Style="{StaticResource Hint}"/><TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/><TextBlock Text="不会保存截图、正文或回答；无后台遥测或崩溃上传。模型服务会接收已发送的内容。" Style="{StaticResource Hint}"/></StackPanel></Expander>
       </StackPanel></ScrollViewer></TabItem>
     </TabControl>
-    <DockPanel Grid.Row="2" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button x:Name="ExitButton" Content="退出 Superb" ToolTip="关闭 Superb；若其窗口当前有焦点，Windows 会转移焦点。" Click="Exit_Click"/></WrapPanel><TextBlock Text="0.4.0 · 开发版本" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></DockPanel>
+    <DockPanel Grid.Row="2" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button x:Name="ExitButton" Content="退出 Superb" ToolTip="关闭 Superb；若其窗口当前有焦点，Windows 会转移焦点。" Click="Exit_Click"/></WrapPanel><TextBlock Text="1.0.0" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></DockPanel>
   </Grid>
   </Grid></Border>
 </Window>

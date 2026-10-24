@@ -116,7 +116,7 @@ internal static class SettingsSimplificationTests
             }
             finally { window.ExitApplication(); }
         }));
-        tests.Add(("Coding panel and primary button backgrounds follow opacity and theme without fading text or settings", () =>
+        tests.Add(("Workspace panels and primary button backgrounds follow opacity and theme without fading text or settings", () =>
         {
             var window = new MainWindow(new Configuration(), new UnusedBackend());
             try
@@ -134,7 +134,7 @@ internal static class SettingsSimplificationTests
                         Control<Slider>(window, "PanelOpacity").Value = opacity; Pump();
                         var alpha = (byte)Math.Round(opacity * 255);
                         var expectedSurface = ((SolidColorBrush)Application.Current.Resources["Surface"]).Color;
-                        foreach (var name in new[] { "CodingProgressPanel", "Attachment", "AnswerSurface" })
+                        foreach (var name in new[] { "Attachment", "AnswerSurface" })
                         {
                             var panel = (Border)reader.FindName(name);
                             Check(((SolidColorBrush)panel.Background).Color == Color.FromArgb(alpha, expectedSurface.R, expectedSurface.G, expectedSurface.B));
@@ -150,8 +150,6 @@ internal static class SettingsSimplificationTests
                             Check(((SolidColorBrush)button.FindResource("Surface")).Color.A == alpha);
                         }
                         Check(((SolidColorBrush)reader.FindResource("Accent")).Color.A == 255);
-                        Check(((SolidColorBrush)((TextBlock)reader.FindName("CodingProgressState")).Foreground).Color ==
-                            ((SolidColorBrush)Application.Current.Resources["Ink"]).Color);
                         Check(((SolidColorBrush)Application.Current.Resources["Surface"]).Color.A == 255);
                         Check(((SolidColorBrush)Application.Current.Resources["Accent"]).Color.A == 255 && window.Opacity == 1 && reader.Opacity == 1);
                         Check(((AnswerView)reader.FindName("Answer")).Reader.Document.Foreground.Opacity == 1 && reader.Check());
@@ -161,7 +159,7 @@ internal static class SettingsSimplificationTests
                             Directory.CreateDirectory(args[index + 1]);
                             var bitmap = new RenderTargetBitmap((int)reader.ActualWidth, (int)reader.ActualHeight, 96, 96, PixelFormats.Pbgra32);
                             bitmap.Render(reader); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-                            using var file = File.Create(Path.Combine(args[index + 1], $"coding-opacity-{theme}-{opacity * 100:0}.png")); encoder.Save(file);
+                            using var file = File.Create(Path.Combine(args[index + 1], $"workspace-opacity-{theme}-{opacity * 100:0}.png")); encoder.Save(file);
                         }
                     }
                 }

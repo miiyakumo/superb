@@ -2,7 +2,6 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Text.Json;
 using Superb.Core;
-using Superb.Core.Coding;
 using Superb.Desktop;
 using Superb.Desktop.Platform;
 
@@ -18,68 +17,40 @@ internal static class ScenarioTests
     }
     internal static void Add(List<(string, Action)> tests)
     {
-        tests.Add(("Analysis configuration defaults load from old JSON and saved custom budgets round trip with validation", () =>
+        tests.Add(("Programming is an ordinary deletable preset and migration does not restore it", () =>
         {
-            var old = JsonSerializer.Deserialize<Configuration>("{}", Configuration.Json)!;
-            Check(old.CodingAnalysis == new CodingRunOptions());
-            var configured = old with { CodingAnalysis = new(7, 77, 23456) };
-            var path = Path.Combine(Path.GetTempPath(), "superb-analysis-" + Guid.NewGuid().ToString("N"), "settings.json");
-            try
-            {
-                configured.Save(path);
-                Check(Configuration.Load(path).CodingAnalysis == configured.CodingAnalysis);
-            }
-            finally { if (File.Exists(path)) File.Delete(path); Directory.Delete(Path.GetDirectoryName(path)!); }
-            foreach (var invalid in new[] { new CodingRunOptions(MaximumCalls: 0), new CodingRunOptions(MaximumSeconds: 0),
-                new CodingRunOptions(MaximumOutputChars: 1) })
-                Reject(() => (old with { CodingAnalysis = invalid }).Validate(), "coding_budget_invalid");
-            Reject(() => (old with { CodingAnalysis = null! }).Validate(), "coding_budget_invalid");
+            var config = new Configuration();
+            var without = config.WithoutScene("coding");
+            without.Validate();
+            Check(!without.Migrate().Scenes.Any(s => s.Id == "coding"));
+            Check(!JsonSerializer.Serialize(config, Configuration.Json).Contains("CodingAnalysis"));
         }));
-        tests.Add(("Previous stock analysis defaults migrate to unlimited native calls while custom budgets and backups survive", () =>
+        tests.Add(("Agent settings are backed up once while customized scenes connections and preferences survive", () =>
         {
-            var directory = Path.Combine(Path.GetTempPath(), "superb-analysis-migration-" + Guid.NewGuid().ToString("N"));
+            var directory = Path.Combine(Path.GetTempPath(), "superb-general-migration-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             try
             {
-                foreach (var (name, options) in new[]
-                {
-                    ("stock", new CodingRunOptions(12, 300, 180000)),
-                    ("custom", new CodingRunOptions(7, 77, 23456))
-                })
-                {
-                    var path = Path.Combine(directory, name + ".json");
-                    var config = new Configuration { CodingAnalysis = options };
-                    var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(config, Configuration.Json))!.AsObject();
-                    json.Remove("CodingAnalysisVersion"); json["CodingAnalysis"]!["Protocol"] = "JsonActions"; var original = json.ToJsonString(); File.WriteAllText(path, original);
-                    var loaded = Configuration.Load(path);
-                    Check(loaded.CodingAnalysis == (name == "stock" ? new CodingRunOptions() : options));
-                    Check(File.ReadAllText(Directory.GetFiles(directory, name + ".json.upgrade-*.bak").Single()) == original);
-                    Check(Configuration.Load(path).CodingAnalysis == loaded.CodingAnalysis);
-                }
-                var explicitChoice = new Configuration { CodingAnalysis = new(12, 300, 180000) };
-                var current = Path.Combine(directory, "explicit.json"); explicitChoice.Save(current);
-                Check(Configuration.Load(current).CodingAnalysis == explicitChoice.CodingAnalysis);
-            }
-            finally { foreach (var path in Directory.GetFiles(directory)) File.Delete(path); Directory.Delete(directory); }
-        }));
-        tests.Add(("Removed analysis protocol fields are dropped from old settings without changing custom budgets", () =>
-        {
-            var directory = Path.Combine(Path.GetTempPath(), "superb-native-only-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(directory);
-            try
-            {
-                var path = Path.Combine(directory, "settings.json");
-                var config = new Configuration { CodingAnalysisVersion = 1, CodingAnalysis = new(7, 77, 23456) };
+                var config = new Configuration { AutoCopy = true, Panel = new(FontSize: 22),
+                    Backends = [new("saved", "Saved", "https://example.test/v1/chat/completions", "model", "credential-ref")],
+                    SelectedBackendId = "saved" };
+                config = config with { Scenes = config.Scenes.SetItem(0, config.Scenes[0] with
+                    { Name = "Custom programming", SystemPrompt = "Retain my prompt", BackendId = "saved" }) };
                 var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(config, Configuration.Json))!.AsObject();
-                json["CodingAnalysis"]!["Protocol"] = "JsonActions";
-                var original = json.ToJsonString(); File.WriteAllText(path, original);
+                json["CodingAnalysisVersion"] = 2;
+                json["CodingAnalysis"] = System.Text.Json.Nodes.JsonNode.Parse("{\"MaximumCalls\":7,\"MaximumSeconds\":77}");
+                var original = json.ToJsonString();
+                var path = Path.Combine(directory, "settings.json"); File.WriteAllText(path, original);
                 var loaded = Configuration.Load(path);
-                Check(loaded.CodingAnalysis == config.CodingAnalysis && loaded.CodingAnalysisVersion == 2);
-                using var saved = JsonDocument.Parse(File.ReadAllText(path));
-                Check(!saved.RootElement.GetProperty("CodingAnalysis").TryGetProperty("Protocol", out _));
+                Check(loaded.Scenes.SequenceEqual(config.Scenes) && loaded.Backends.SequenceEqual(config.Backends));
+                Check(loaded.Panel == config.Panel && loaded.AutoCopy && loaded.SelectedBackendId == "saved");
+                Check(loaded.Hotkeys.SequenceEqual(config.Hotkeys));
                 Check(File.ReadAllText(Directory.GetFiles(directory, "*.bak").Single()) == original);
+                Check(!File.ReadAllText(path).Contains("CodingAnalysis"));
+                Configuration.Load(path);
+                Check(Directory.GetFiles(directory, "*.bak").Length == 1);
             }
-            finally { foreach (var path in Directory.GetFiles(directory)) File.Delete(path); Directory.Delete(directory); }
+            finally { foreach (var file in Directory.GetFiles(directory)) File.Delete(file); Directory.Delete(directory); }
         }));
         tests.Add(("Old send aliases merge deterministically and preserve customized or disabled bindings", () =>
         {
@@ -173,13 +144,39 @@ internal static class ScenarioTests
                 Trigger = new("scene:algorithm", "Ctrl+Alt+Z") };
             var config = new Configuration { Scenes = [scene] };
             var migrated = config.Migrate();
-            Check(migrated.Scenes.Single() == scene with { SystemPrompt = SceneDefaults.AlgorithmPrompt });
+            Check(migrated.Scenes.Single(s => s.Id == scene.Id) == scene with { SystemPrompt = SceneDefaults.AlgorithmPrompt });
             Check(migrated.Migrate() == migrated);
             var custom = scene with { SystemPrompt = "User supplied algorithm instructions" };
-            Check((config with { Scenes = [custom] }).Migrate().Scenes.Single() == custom);
+            Check((config with { Scenes = [custom] }).Migrate().Scenes.Single(s => s.Id == custom.Id) == custom);
             var backend = new Backend("ds", "Synthetic", DeepSeekSetup.Endpoint, "deepseek-flash", "", ThinkingMode: ThinkingMode.Disabled);
             var saved = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(new Configuration { Backends = [backend], SelectedBackendId = backend.Id }, Configuration.Json), Configuration.Json)!;
             Check(saved.Backends.Single().ThinkingMode == ThinkingMode.Disabled);
+        }));
+        tests.Add(("Stock coding prompt upgrades once with a backup while customized prompts remain untouched", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "superb-coding-prompt-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var scene = SceneDefaults.All[0] with { Name = "My programming scene", SystemPrompt = SceneDefaults.LegacyCodingPrompt,
+                    Trigger = new("scene:coding", "Ctrl+Alt+Z", Enabled: false) };
+                var config = new Configuration { Scenes = [scene], AutoCopy = true };
+                var path = Path.Combine(directory, "stock.json"); config.Save(path);
+                var original = File.ReadAllText(path);
+                var loaded = Configuration.Load(path);
+                Check(loaded.Scenes.Single() == scene with { SystemPrompt = SceneDefaults.CodingPrompt });
+                Check(loaded.AutoCopy && loaded.Hotkeys.SequenceEqual(config.Hotkeys));
+                Check(File.ReadAllText(Directory.GetFiles(directory, "*.bak").Single()) == original);
+                Check(Configuration.Load(path).Scenes.Single() == loaded.Scenes.Single());
+                Check(Directory.GetFiles(directory, "*.bak").Length == 1);
+                var custom = scene with { SystemPrompt = "My own collaboration instructions" };
+                var customPath = Path.Combine(directory, "custom.json");
+                (config with { Scenes = [custom] }).Save(customPath);
+                var customOriginal = File.ReadAllText(customPath);
+                Check(Configuration.Load(customPath).Scenes.Single() == custom);
+                Check(File.ReadAllText(customPath) == customOriginal && Directory.GetFiles(directory, "custom.json.upgrade-*.bak").Length == 0);
+            }
+            finally { foreach (var file in Directory.GetFiles(directory)) File.Delete(file); Directory.Delete(directory); }
         }));
         tests.Add(("Duplicate keys across scenes and actions and reserved keys are rejected", () =>
         {
@@ -220,13 +217,13 @@ internal static class ScenarioTests
                 """, Configuration.Json)!;
             var old = new Configuration { SchemaVersion = 2, Backends = [backend], SelectedBackendId = backend.Id, Scenes = [scene] };
             var migrated = old.Migrate(); migrated.Validate();
-            var next = migrated.Scenes.Single(); var connection = migrated.Backends.Single(b => b.Id == next.BackendId);
+            var next = migrated.Scenes.Single(s => s.Id == scene.Id); var connection = migrated.Backends.Single(b => b.Id == next.BackendId);
             Check(connection == backend with { Id = connection.Id, Name = "Custom · 模型配置", Model = "custom-model", Temperature = 0.7, MaxTokens = 1234 });
             Check(migrated.Backends[0] == backend && migrated.SelectedBackendId == backend.Id);
             Check(next.SystemPrompt == "System instructions\n\nSolve carefully:" && next.Trigger == scene.Trigger && next.LegacySettings is null);
             Check(migrated.Migrate() == migrated);
             var restored = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(migrated, Configuration.Json), Configuration.Json)!.Migrate();
-            restored.Validate(); Check(restored.Backends.SequenceEqual(migrated.Backends) && restored.Scenes.Single() == next);
+            restored.Validate(); Check(restored.Backends.SequenceEqual(migrated.Backends) && restored.Scenes.Single(s => s.Id == scene.Id) == next);
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(migrated, Configuration.Json));
             var savedScene = json.RootElement.GetProperty("Scenes")[0];
             foreach (var removed in new[] { "Model", "Temperature", "MaxTokens", "UserTemplate", "Input", "LegacySettings" })

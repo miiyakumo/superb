@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Superb application icon</title>
+  <desc id="desc">An ivory geometric B inside an open frame on a charcoal rounded square.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#191A18"/>
+  <path d="M340 116V96H112V416H340V396" stroke="#F5F3ED" stroke-width="20" stroke-linecap="butt" stroke-linejoin="miter"/>
+  <path fill="#F5F3ED" fill-rule="evenodd" d="M160 136H284C356 136 396 156 396 200C396 226 381 242 358 250C390 258 408 277 408 306C408 352 369 376 298 376H160V136ZM236 182C228 182 224 187 224 194V214C224 222 228 226 236 226H310C321 226 326 218 326 204C326 190 321 182 310 182H236ZM236 278C228 278 224 283 224 290V314C224 322 228 326 236 326H318C330 326 336 318 336 302C336 286 330 278 318 278H236Z"/>
+</svg>

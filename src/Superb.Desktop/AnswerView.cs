@@ -46,7 +46,10 @@ public sealed class AnswerView : UserControl
     internal void Clear()
     {
         revision++; text = ""; rendered.Clear(); SetFollow(true);
-        document = new FlowDocument { PagePadding = new Thickness(0), Foreground = (Brush)FindResource("Ink") };
+        document = new FlowDocument { PagePadding = new Thickness(0) };
+        // Theme restoration can replace a frozen brush before the first answer exists.
+        // Follow the resource rather than retaining the previous theme's brush instance.
+        document.SetResourceReference(TextElement.ForegroundProperty, "Ink");
         document.SetBinding(TextElement.FontSizeProperty, new Binding(nameof(FontSize)) { Source = this });
         document.SetBinding(TextElement.FontFamilyProperty, new Binding(nameof(FontFamily)) { Source = this });
         Reader.Document = document;

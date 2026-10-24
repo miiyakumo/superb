@@ -7,7 +7,7 @@
     <SolidColorBrush x:Key="Muted" Color="#9399A1" options:Freeze="False" />
     <SolidColorBrush x:Key="Accent" Color="#8AB4F8" options:Freeze="False" />
     <SolidColorBrush x:Key="OnAccent" Color="#131416" options:Freeze="False" />
-    <Style TargetType="Window"><Setter Property="Background" Value="{DynamicResource Base}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="Segoe UI, Microsoft YaHei UI"/><Setter Property="FontSize" Value="14"/></Style>
+    <Style TargetType="Window"><Setter Property="Icon" Value="pack://application:,,,/Superb;component/Assets/Superb.ico"/><Setter Property="Background" Value="{DynamicResource Base}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="Segoe UI, Microsoft YaHei UI"/><Setter Property="FontSize" Value="14"/></Style>
     <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
     <Style TargetType="Button">
       <Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="Transparent"/>

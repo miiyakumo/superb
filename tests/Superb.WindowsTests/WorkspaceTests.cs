@@ -67,6 +67,41 @@ internal static class WorkspaceTests
         ScreenSendTests.Add(tests);
         PassThroughTests.Add(tests, args);
         if (args.Contains("--native-pointer")) PointerFocusTests.Add(tests);
+        tests.Add(("Legacy programming scene uses ordinary requests and new input replaces the completed task", () =>
+        {
+            var client = new WorkspaceBackend();
+            var config = new Configuration { Backends = [new("test", "Test", "https://example.test/v1/chat/completions", "test", "")], SelectedBackendId = "test" };
+            var window = new MainWindow(config, client);
+            var context = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(window.Dispatcher));
+            try
+            {
+                new WindowInteropHelper(window).EnsureHandle();
+                var reader = window.WorkspaceWindow;
+                window.QueueText("first question");
+                window.RunCommand("scene:coding").GetAwaiter().GetResult();
+                Check(window.QueuedText() == "first question");
+                Check(reader.FindName("CodingProgressPanel") is null && window.FindName("CodingAnalysisSettings") is null);
+                Check(((Button)reader.FindName("SendButton")).Content.ToString() == "发送");
+                Check(window.Icon is not null && reader.Icon is not null);
+                var sending = window.RunCommand("send");
+                Until(() => client.Requests.Count == 1);
+                Check(client.Requests[0].SceneId == "coding" && client.Requests[0].Content.Text!.Contains("first question"));
+                client.Events.Writer.TryWrite(new("ordinary answer"));
+                client.Events.Writer.TryWrite(new(Completed: true));
+                client.Events.Writer.TryComplete();
+                Until(() => sending.IsCompleted); sending.GetAwaiter().GetResult();
+                Check(window.WorkspaceCoordinator.Latest?.State == RequestState.Completed);
+                window.QueueText("second question");
+                Check(window.QueuedText() == "second question" && window.WorkspaceCoordinator.Current is null);
+                var picker = (ComboBox)window.FindName("ScenePicker");
+                picker.SelectedItem = picker.Items.Cast<ScenePreset>().Single(s => s.Id == "coding");
+                var delete = (Button)window.FindName("DeleteSceneButton"); Check(delete.IsEnabled);
+                delete.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(!window.BuildClipboardPreferences().Scenes.Any(s => s.Id == "coding"));
+            }
+            finally { window.ExitApplication(); SynchronizationContext.SetSynchronizationContext(context); }
+        }));
         tests.Add(("Mouse activation policy rejects hover and non-input clicks even while editing", () =>
         {
             var window = new Window { ShowActivated = false, ShowInTaskbar = false };

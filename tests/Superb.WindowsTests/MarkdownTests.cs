@@ -15,6 +15,49 @@ internal static class MarkdownTests
     internal static void Add(List<(string, Action)> tests, string[] args)
     {
         CodeHighlightingTests.Add(tests, args);
+        tests.Add(("First answer follows restored theme even when the original text brush was frozen", () =>
+        {
+            Check(Theme.TryResolve(Theme.InkId, "", "", "", out var dark, out _));
+            Check(Theme.TryResolve(Theme.PaperId, "", "", "", out var paper, out _));
+            Theme.Apply(dark);
+            var reader = new ReaderWindow();
+            try
+            {
+                // WPF consumers may freeze shared resources. Theme.Apply then replaces
+                // the brush, so a cached local Foreground retains the previous palette.
+                ((SolidColorBrush)Application.Current.Resources["Ink"]).Freeze();
+                reader.ApplyLayout(new PanelLayout(Width: 600, Height: 740, Theme: Theme.PaperId));
+                const string markdown = "**问题进展分析**\n\n这是浅色主题下首次生成的正文。图书编号应连续递增。\n\n" +
+                    "**给人类的指令**\n\n关联 main.py 后输入下方指令。\n\n**给 AI 的指令**\n\n```text\n改为字典保存图书，登记成功后递增编号。\n```";
+                var answer = (AnswerView)reader.FindName("Answer");
+                // Exercise rendering without opening or capturing a user window.
+                answer.Render(markdown);
+                ((TextBlock)reader.FindName("EmptyAnswer")).Visibility = Visibility.Collapsed;
+                var actual = ((SolidColorBrush)answer.Reader.Document.Foreground).Color;
+                Console.WriteLine($"FIRST ANSWER foreground={actual} expected={paper.Ink} contrast={Theme.Contrast(actual, paper.Surface):F2}");
+                var index = Array.IndexOf(args, "--render-dir");
+                if (index >= 0 && index + 1 < args.Length)
+                {
+                    var surface = (FrameworkElement)reader.Content;
+                    surface.Measure(new Size(600, 740)); surface.Arrange(new Rect(0, 0, 600, 740)); surface.UpdateLayout();
+                    var bitmap = new RenderTargetBitmap(600, 740, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                    Directory.CreateDirectory(args[index + 1]);
+                    using var output = File.Create(Path.Combine(args[index + 1], "first-paper-answer.png")); encoder.Save(output);
+                }
+                Check(actual == paper.Ink && Theme.Contrast(actual, paper.Surface) >= 4.5);
+                foreach (var paragraph in answer.Reader.Document.Blocks.OfType<Paragraph>())
+                    Check(((SolidColorBrush)paragraph.Foreground).Color == paper.Ink);
+                reader.ApplyLayout(reader.Layout() with { Theme = Theme.InkId, BackgroundOpacity = 0.25 });
+                Check(((SolidColorBrush)answer.Reader.Document.Foreground).Color == dark.Ink && answer.Text == markdown);
+                answer.Clear();
+                ((SolidColorBrush)Application.Current.Resources["Ink"]).Freeze();
+                reader.ApplyLayout(reader.Layout() with { Theme = Theme.PaperId });
+                answer.Render("清空后再次输出");
+                Check(((SolidColorBrush)answer.Reader.Document.Foreground).Color == paper.Ink && answer.Opacity == 1);
+            }
+            finally { reader.Finish(); Theme.Apply(dark); }
+        }));
         tests.Add(("Markdown renders native headings, nested lists, emphasis, quotes, code and tables while retaining source", () =>
         {
             const string markdown = "# 回答示例\n\n**重点**、*强调*、~~删除~~ 和 `inline_code`。\n\n" +

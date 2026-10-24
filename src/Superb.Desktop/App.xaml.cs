@@ -19,7 +19,7 @@ public partial class App : Application
         if (!created) { Shutdown(); return; }
         DispatcherUnhandledException += (_, args) =>
         {
-            if (MainWindow is MainWindow main) main.EmergencyPause("内部操作失败；已暂停");
+            if (MainWindow is MainWindow main) main.PauseWithReason("内部操作失败；已暂停", WorkspaceReason.InternalFailure);
             args.Handled = true; // Never show exception bodies or write a crash log.
         };
         var window = new MainWindow(); MainWindow = window; window.Show();

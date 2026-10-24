@@ -59,8 +59,8 @@ public partial class ReaderWindow
         var baseColor = ((SolidColorBrush)resources["Base"]).Color;
         var surface = ((SolidColorBrush)resources["Surface"]).Color;
         var accent = ((SolidColorBrush)resources["Accent"]).Color;
-        // Scope translucent backgrounds to this reader. Surface also backs the Coding
-        // progress panel, attachments, code blocks and normal button hover states.
+        // Scope translucent backgrounds to this reader's attachments, code blocks
+        // and normal button hover states.
         // Keep Accent/Ink/OnAccent opaque because they are also used for foregrounds.
         Resources["Surface"] = new SolidColorBrush(Color.FromArgb(alpha, surface.R, surface.G, surface.B));
         Resources["WorkspaceAccentBackground"] = new SolidColorBrush(Color.FromArgb(alpha, accent.R, accent.G, accent.B));

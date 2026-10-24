@@ -7,14 +7,12 @@ namespace Superb.Desktop;
 public partial class MainWindow
 {
     private readonly WorkspaceDraft ordinaryWorkspace = new();
-    private readonly WorkspaceDraft codingWorkspace = new();
-    private WorkspaceDraft workspace => IsCoding ? codingWorkspace : ordinaryWorkspace;
+    private WorkspaceDraft workspace => ordinaryWorkspace;
     internal IReadOnlyList<WorkspaceAttachment> WorkspaceItems => workspace.Items;
-    private bool IsCoding => workspaceSceneId == "coding";
     private string? workspaceSceneId = "general";
     private CancellationTokenSource? captureSelectionCancellation;
     private ScenePreset? WorkspaceScene => config.Scenes.FirstOrDefault(s => s.Id == workspaceSceneId);
-    private bool Working => preparing || codingRunner.IsRunning || coordinator.State is RequestState.PolicyCheck or RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming;
+    private bool Working => preparing || coordinator.State is RequestState.PolicyCheck or RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming;
     private int? DirectRetryLimit => coordinator.Latest?.Code == "response_token_limit" && coordinator.Current is { } prior &&
         (prior.Request.Backend.ThinkingMode != ThinkingMode.Disabled || prior.Request.Backend.MaxTokens < 16384) &&
         DeepSeekSetup.IsOfficialEndpoint(prior.Request.Backend.Endpoint) ? Math.Max(16384, prior.Request.Backend.MaxTokens) : null;
@@ -30,30 +28,22 @@ public partial class MainWindow
             receiver = $"下次：{target.Name} / {target.Model}";
         }
         catch { receiver = "请先连接或选择模型"; }
-        if (!IsCoding && coordinator.Current is { } current)
+        if (coordinator.Current is { } current)
         {
             var actual = $"本次：{current.Request.Backend.Name} / {current.Request.Backend.Model}";
             receiver = Working ? actual : receiver + " · " + actual;
         }
-        if (IsCoding && codingTarget is { } codingBackend)
-        {
-            var actual = $"本次：{codingBackend.Name} / {codingBackend.Model}";
-            receiver = codingRunner.IsRunning ? actual : receiver + " · " + actual;
-        }
         var key = config.AllHotkeys().FirstOrDefault(k => k.Action == "through");
         var recoveryKey = key is not null && hotkeys?.HasAction("through") == true ? key.Gesture : "穿透快捷键不可用";
-        var shownScene = !IsCoding && Working && coordinator.Current is { } active ? active.Request.SceneId ?? "" : scene?.Id ?? "";
+        var shownScene = Working && coordinator.Current is { } active ? active.Request.SceneId ?? "" : scene?.Id ?? "";
         reader.Configure(choices, shownScene, receiver, recoveryKey);
         var update = coordinator.Latest;
         var partial = update?.State is RequestState.Cancelled or RequestState.Failed;
-        reader.SetActions(coordinator.Mode == RunState.Ready, Working, workspace.HasInput("") || IsCoding && CanReanalyzeCoding,
-            IsCoding ? CodingDirective is not null && !Working : !string.IsNullOrEmpty(update?.Text) && !Working,
-            !IsCoding && partial, IsCoding ? codingRunner.CanRetry : coordinator.Current is not null && update?.State is RequestState.Completed or RequestState.Failed or RequestState.Cancelled);
-        reader.SetCodingMode(IsCoding, codingRunner.IsRunning && !preparing,
-            codingWorkspace.Items.Count,
-            codingSession.Memory.Attempts);
+        reader.SetActions(coordinator.Mode == RunState.Ready, Working, workspace.HasInput(""),
+            !string.IsNullOrEmpty(update?.Text) && !Working,
+            partial, coordinator.Current is not null && update?.State is RequestState.Completed or RequestState.Failed or RequestState.Cancelled);
         reader.SetSelecting(captureSelectionCancellation is not null);
-        reader.SetDirectRetry(IsCoding ? null : DirectRetryLimit);
+        reader.SetDirectRetry(DirectRetryLimit);
         reader.SetShortcutHints(config.AllHotkeys().ToDictionary(binding => binding.Action, binding =>
             ShortcutLabel.Describe(binding, hotkeys?.HasAction(binding.Action) == true,
                 hotkeys?.RegistrationErrors.GetValueOrDefault(binding.Action))));
@@ -78,69 +68,80 @@ public partial class MainWindow
     private void SelectWorkspaceScene(string? id)
     {
         if (id == workspaceSceneId) return;
+        var previousScene = DiagnosticScene(workspaceSceneId);
         if (Working) StopGeneration();
         workspaceSceneId = id;
+        TraceWorkspace(WorkspaceEvent.SceneChanged, previousScene: previousScene);
         reader.SetInputs(workspace.Items);
-        if (IsCoding) RenderCoding();
-        else if (coordinator.Latest is { } previous) reader.Render(previous.Text, StateLabel(previous));
+        if (coordinator.Latest is { } previous) reader.Render(previous.Text, StateLabel(previous));
         else ClearOutput();
         RefreshWorkspace();
     }
     private Task StageClipboard()
     {
-        if (!Ready()) return Task.CompletedTask;
-        if (Working && (!IsCoding || preparing)) { Status("正在处理；请先停止生成"); return Task.CompletedTask; }
+        var acquisitionId = Guid.NewGuid();
+        TraceWorkspace(WorkspaceEvent.AcquisitionStarted, WorkspaceReason.Clipboard, operationId: acquisitionId);
+        if (!Ready()) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.NotReady, operationId: acquisitionId); return Task.CompletedTask; }
+        if (Working) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.Busy, operationId: acquisitionId); Status("正在处理；请先停止生成"); return Task.CompletedTask; }
         var version = ++operation;
         preparing = true; RefreshWorkspace(); Status("读取剪贴板");
         try
         {
-            var (snapshot, own) = clipboard!.Read();
-            if (own) { Status("已忽略本应用的剪贴板输出"); return Task.CompletedTask; }
-            if (version != operation || !Ready()) return Task.CompletedTask;
-            QueueSnapshot(snapshot, snapshot.Content.HasImage ? "剪贴板图片" : "剪贴板文本");
+            var (snapshot, own) = readWorkspaceClipboard();
+            if (own) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.OwnClipboardOutput, operationId: acquisitionId); Status("已忽略本应用的剪贴板输出"); return Task.CompletedTask; }
+            TraceWorkspace(WorkspaceEvent.AcquisitionRead, WorkspaceReason.Clipboard, acquisitionId, snapshot);
+            if (version != operation || !Ready()) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.StaleOperation, acquisitionId, snapshot); return Task.CompletedTask; }
+            QueueSnapshot(snapshot, snapshot.Content.HasImage ? "剪贴板图片" : "剪贴板文本", acquisitionId: acquisitionId);
             if (!reader.IsVisible) reader.Show();
             Status($"已加入队列 · {workspace.Items.Count} 项 · 可继续截图或读取剪贴板");
         }
-        catch (Exception ex) { if (version == operation) Report(ex); }
+        catch (Exception ex) { TraceWorkspace(WorkspaceEvent.AcquisitionFailed, WorkspaceReason.Clipboard, acquisitionId, errorCode: ConnectionDiagnostics.CodeFor(ex)); if (version == operation) Report(ex); }
         finally
         {
             if (version == operation) { preparing = false; RefreshWorkspace(); }
         }
         return Task.CompletedTask;
     }
-    internal void QueueSnapshot(InputSnapshot snapshot, string label, bool startNewTask = false)
+    internal void QueueSnapshot(InputSnapshot snapshot, string label, bool startNewTask = false, Guid? acquisitionId = null)
     {
-        if (IsCoding)
-        {
-            workspace.Add(snapshot, label);
-            reader.SetInputs(workspace.Items);
-            RefreshWorkspace();
-            return;
-        }
         // A new acquisition after an answer starts the next task, like Quiz; cancellation before
         // acquisition leaves the previous answer and its input intact.
-        if (startNewTask || coordinator.Latest is not null) { workspace.Set(snapshot, label); }
+        if (startNewTask || coordinator.Latest is not null)
+        {
+            // Validate first so a rejected replacement is never reported as a cleared queue.
+            var candidate = new WorkspaceDraft(); candidate.Add(snapshot, label);
+            TraceWorkspace(WorkspaceEvent.QueueReplacing, startNewTask ? WorkspaceReason.ReplaceForScreenshot : WorkspaceReason.ReplaceAfterAnswer,
+                acquisitionId, snapshot);
+            workspace.Set(snapshot, label);
+        }
         else workspace.Add(snapshot, label);
+        TraceWorkspace(WorkspaceEvent.MaterialQueued, operationId: acquisitionId, snapshot: snapshot);
         coordinator.Invalidate(); completed = null; latestUpdate = null; ClearOutput();
         reader.SetInputs(workspace.Items);
         RefreshWorkspace();
     }
     private async Task StageScreenshot(bool region, bool sendImmediately = false)
     {
-        if (!Ready()) return;
-        if (Working) { Status("正在处理；请先停止当前任务"); return; }
-        if (!sendImmediately && coordinator.Latest is null && workspace.ImageCount >= Policy.MaximumImages) { Status("最多 5 张图片，请先移除或发送队列"); return; }
-        if (captureTask is { IsCompleted: false }) { Status("上次采集尚未结束，请稍后重试"); return; }
+        var acquisitionId = Guid.NewGuid();
+        var source = region ? WorkspaceReason.RegionScreenshot : sendImmediately ? WorkspaceReason.ScreenAndSend : WorkspaceReason.ScreenScreenshot;
+        TraceWorkspace(WorkspaceEvent.AcquisitionStarted, source, acquisitionId);
+        if (!Ready()) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.NotReady, acquisitionId); return; }
+        if (Working) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.Busy, acquisitionId); Status("正在处理；请先停止当前任务"); return; }
+        if (!sendImmediately && coordinator.Latest is null && workspace.ImageCount >= Policy.MaximumImages) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.QueueLimit, acquisitionId); Status("最多 5 张图片，请先移除或发送队列"); return; }
+        if (captureTask is { IsCompleted: false }) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.CapturePending, acquisitionId); Status("上次采集尚未结束，请稍后重试"); return; }
         // Freeze the recipient and scene before asynchronous capture; settings may change
         // while the windows are hidden. This action never silently changes the receiver.
         var settings = config; var scene = WorkspaceScene;
-        var codingOptions = IsCoding ? settings.CodingAnalysis : null;
         PreparedRequest? capturedRequest = null;
         if (sendImmediately)
         {
-            var targetBackend = SceneRequestFactory.SelectBackend(settings, scene);
-            Policy.ValidateBackend(targetBackend);
-            if (!targetBackend.SupportsImages) throw new SafeFailure("backend_has_no_vision");
+            try
+            {
+                var targetBackend = SceneRequestFactory.SelectBackend(settings, scene);
+                Policy.ValidateBackend(targetBackend);
+                if (!targetBackend.SupportsImages) throw new SafeFailure("backend_has_no_vision");
+            }
+            catch (Exception ex) { TraceWorkspace(WorkspaceEvent.AcquisitionFailed, source, acquisitionId, errorCode: ConnectionDiagnostics.CodeFor(ex)); throw; }
         }
         var version = ++operation; var wasVisible = reader.IsVisible; var controlVisible = IsVisible;
         var captured = false;
@@ -155,14 +156,14 @@ public partial class MainWindow
                 captureSelectionCancellation = selection;
                 if (!reader.IsVisible) reader.Show();
                 if (IsVisible) Hide();
-                if (!reader.SetClickThrough(true)) return;
+                if (!reader.SetClickThrough(true)) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.ClickThroughUnavailable, acquisitionId); return; }
                 Status("两点截图：点击第一个角 · 右键或 Esc 取消");
                 var corners = await TwoPointSelector.SelectAsync(_ => Dispatcher.BeginInvoke(() =>
                 {
                     if (version == operation) Status("两点截图：点击对角 · 右键或 Esc 取消");
                 }), selection.Token);
-                if (corners is null) { Status("截图已取消 · 现有队列保留"); return; }
-                if (version != operation || !Ready()) return;
+                if (corners is null) { TraceWorkspace(WorkspaceEvent.AcquisitionCancelled, WorkspaceReason.UserCancelled, acquisitionId); Status("截图已取消 · 现有队列保留"); return; }
+                if (version != operation || !Ready()) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.StaleOperation, acquisitionId); return; }
                 target = CaptureService.FromCorners(corners.Value.First, corners.Value.Second, monitors);
             }
             else
@@ -178,8 +179,9 @@ public partial class MainWindow
             var worker = captureScreenshot(target); captureTask = worker;
             var payload = await worker.WaitAsync(TimeSpan.FromSeconds(5));
             if (ReferenceEquals(captureTask, worker)) captureTask = null;
-            if (version != operation || !Ready()) return;
+            if (version != operation || !Ready()) { TraceWorkspace(WorkspaceEvent.AcquisitionSkipped, WorkspaceReason.StaleOperation, acquisitionId); return; }
             var snapshot = new InputSnapshot(Guid.NewGuid(), InputKind.Screen, payload, sequence, DateTimeOffset.UtcNow);
+            TraceWorkspace(WorkspaceEvent.AcquisitionRead, source, acquisitionId, snapshot);
             var label = region ? "两点截图" : "当前屏幕";
             if (sendImmediately)
             {
@@ -189,12 +191,12 @@ public partial class MainWindow
                 candidate.Add(snapshot, label);
                 capturedRequest = SceneRequestFactory.Prepare(settings, scene, candidate.Freeze("", sequence));
             }
-            QueueSnapshot(snapshot, label, startNewTask: sendImmediately);
+            QueueSnapshot(snapshot, label, startNewTask: sendImmediately, acquisitionId: acquisitionId);
             captured = true;
             Status(sendImmediately ? "截图完成 · 正在发送" : $"已加入队列 · {workspace.Items.Count} 项 / {workspace.ImageCount} 张图 · 可继续截图或读取剪贴板");
         }
-        catch (OperationCanceledException) { if (version == operation) Status("截图已取消或超时 · 现有队列保留"); }
-        catch (Exception ex) { if (version == operation) Report(ex); }
+        catch (OperationCanceledException) { TraceWorkspace(WorkspaceEvent.AcquisitionCancelled, WorkspaceReason.CaptureCancelled, acquisitionId); if (version == operation) Status("截图已取消或超时 · 现有队列保留"); }
+        catch (Exception ex) { TraceWorkspace(WorkspaceEvent.AcquisitionFailed, source, acquisitionId, errorCode: ConnectionDiagnostics.CodeFor(ex)); if (version == operation) Report(ex); }
         finally
         {
             if (ReferenceEquals(captureSelectionCancellation, selection)) captureSelectionCancellation = null;
@@ -212,7 +214,7 @@ public partial class MainWindow
             ObserveCaptureWorker();
         }
         if (captured && capturedRequest is not null && version == operation && Ready())
-            if (IsCoding) await SendCodingWorkspace(capturedRequest.Backend, capturedRequest.SystemPrompt, codingOptions); else await SendPrepared(capturedRequest);
+            await SendPrepared(capturedRequest);
     }
     private void ObserveCaptureWorker()
     {
@@ -225,7 +227,6 @@ public partial class MainWindow
     }
     private async Task SendWorkspace()
     {
-        if (IsCoding) { await SendCodingWorkspace(); return; }
         if (!Ready()) return;
         if (Working) { Status("正在处理；请先停止生成"); return; }
         if (config.Backends.IsDefaultOrEmpty) { Status("尚未连接模型，请打开“设置”并点击设置窗口连接"); return; }
@@ -260,7 +261,6 @@ public partial class MainWindow
         captureSelectionCancellation?.Cancel();
         if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
         operation++; preparing = false;
-        if (IsCoding) { codingRunner.Stop(); RenderCoding(); Status("已停止分析 · 已提交的任务记忆和指令保留"); RefreshWorkspace(); return; }
         completed = null; latestUpdate = null;
         coordinator.Stop();
         if (coordinator.Latest is { State: RequestState.Cancelled } stopped && protection.Check() && reader.Check())
@@ -271,24 +271,25 @@ public partial class MainWindow
     }
     private void NewWorkspaceTask()
     {
+        var clearId = Guid.NewGuid(); var previousTaskId = workspaceTaskId;
+        TraceWorkspace(WorkspaceEvent.TaskClearing, WorkspaceReason.NewTask, operationId: clearId);
         captureSelectionCancellation?.Cancel();
         if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
         operation++; preparing = false;
-        if (IsCoding) { codingRunner.Clear(); codingSession.Clear(); codingTarget = null; }
-        else { coordinator.Invalidate(); completed = null; latestUpdate = null; }
+        coordinator.Invalidate(); completed = null; latestUpdate = null;
+        workspaceTaskId = Guid.NewGuid();
         workspace.Clear();
+        TraceWorkspace(WorkspaceEvent.TaskCleared, WorkspaceReason.NewTask, operationId: clearId, previousTaskId: previousTaskId);
         reader.Clear(); ClearOutput(); Status("等待输入 · 新任务"); RefreshWorkspace();
     }
     private void CopyWorkspaceAnswer()
     {
-        if (IsCoding) { CopyCodingDirective(); return; }
         if (!Ready() || Working || coordinator.Latest is not { Text.Length: > 0 } answer) return;
         clipboard!.Write(answer.Text, answer.Attempt.Id, answer.Attempt.Generation, null);
         Status(answer.State == RequestState.Completed ? "回答已复制" : "部分回答已复制 · 内容未完成");
     }
     private async Task RetryDirectAnswer()
     {
-        if (IsCoding) return;
         if (!Ready() || Working || DirectRetryLimit is not { } limit || coordinator.Current is not { } prior) return;
         // Explicit one-attempt recovery: retain frozen input and show the new budget.
         // It neither changes saved defaults nor silently repeats the original paid request.
