@@ -15,6 +15,7 @@ internal static class MarkdownTests
     internal static void Add(List<(string, Action)> tests, string[] args)
     {
         CodeHighlightingTests.Add(tests, args);
+        MathRenderingTests.Add(tests, args);
         tests.Add(("First answer follows restored theme even when the original text brush was frozen", () =>
         {
             Check(Theme.TryResolve(Theme.InkId, "", "", "", out var dark, out _));

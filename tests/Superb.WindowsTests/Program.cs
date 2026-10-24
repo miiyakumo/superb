@@ -33,6 +33,13 @@ internal static class Program
         }
         if (args.Contains("--capture-host")) return CaptureSelectionHost.Run(args);
         if (args.Contains("--diagnose-public-algorithm")) return AlgorithmDiagnostic.Run(args);
+        if (args.Contains("--markdown-only"))
+        {
+            var app = new App(isolatedTestHost: true); app.InitializeComponent();
+            var markdownTests = new List<(string, Action)>();
+            MarkdownTests.Add(markdownTests, args);
+            return RunTests(markdownTests);
+        }
         if (args.Contains("--native-pointer-only") || args.Contains("--appearance-edit-only") || args.Contains("--pause-resume-only"))
         {
             var app = new App(isolatedTestHost: true); app.InitializeComponent();
@@ -264,7 +271,7 @@ internal static class Program
         foreach (var (name, run) in tests)
         {
             try { run(); Console.WriteLine("PASS " + name); }
-            catch (Exception ex) { failures++; Console.WriteLine("FAIL " + name + " · " + ex.GetType().Name + "\n" + ex.StackTrace); }
+            catch (Exception ex) { failures++; Console.WriteLine("FAIL " + name + " · " + ex.GetType().Name + ": " + ex.Message + "\n" + ex.StackTrace); }
         }
         Console.WriteLine($"{tests.Count - failures}/{tests.Count} passed; capture-chain verification requires manual evidence.");
         return failures == 0 ? 0 : 1;

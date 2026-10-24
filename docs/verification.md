@@ -1,5 +1,15 @@
 # 本次验证记录
 
+## 2026-10-25：公式渲染与回答排版
+
+- 新增 Markdig 数学节点解析及 WpfMath 2.1.0 本地矢量绘制；支持行内 `$…$` / `\(...\)` 和独立 `$$…$$` / `\[…\]`。保持代码、转义符号、原始复制内容和无效公式回退；限制单公式长度、命令数量和嵌套深度。
+- 正文行距、标题留白、列表、引用、表格及代码块统一调整；普通软换行按段落折行。公式随字号及主题更新，窄窗缩放且不接收焦点和鼠标输入。
+- `dotnet build Superb.slnx -c Release`：通过，0 警告、0 错误。
+- `dotnet run --project tests/Superb.Tests -c Release --no-build`：**55/55**。
+- `dotnet run --project tests/Superb.WindowsTests -c Release -- --render-dir artifacts/math-layout/full`：**85/85**。包含原有流式阅读位置、窗口穿透、透明度与主题回归。
+- `dotnet run --project tests/Superb.WindowsTests -c Release -- --markdown-only --render-dir artifacts/math-layout`：最终专项 **13/13**。覆盖逐字符流式补全、中文相邻公式、列表/引用/表格内公式、空公式及异常源码、代码和价格不被误解析、字号与前景更新、真实文档中的超宽公式适配。
+- 已目检 `artifacts/math-layout/math-paper-600.png` 和 `math-ink-360.png`；另生成相反主题/宽度组合。构建目录包含数学组件及字体许可。未调用真实模型，未重新执行浏览器事件矩阵或手工截图保护验收。
+
 ## 2026-10-24：修复焦点探针与当前工作区行为不一致
 
 - GitHub Actions run `40108572055` 四组测量都成功构建，报告因读取已删除的 `ScenePreset.UserTemplate` 字段而以 `KeyError` 中断；另有正文穿透旧断言和向上翻页初始位置不稳定的问题。

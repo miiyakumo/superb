@@ -26,8 +26,15 @@ public sealed class AnswerView : UserControl
     private int revision;
     private bool adjusting;
     private double? restyleOffset;
-    private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
-        .DisableHtml().UsePipeTables().UseEmphasisExtras(Markdig.Extensions.EmphasisExtras.EmphasisExtraOptions.Strikethrough).Build();
+    private static readonly MarkdownPipeline Pipeline = CreatePipeline();
+    private static MarkdownPipeline CreatePipeline()
+    {
+        var builder = new MarkdownPipelineBuilder().DisableHtml().UsePipeTables()
+            .UseEmphasisExtras(Markdig.Extensions.EmphasisExtras.EmphasisExtraOptions.Strikethrough);
+        builder.BlockParsers.Insert(0, new AnswerMathBlockParser());
+        builder.InlineParsers.Insert(0, new AnswerMathInlineParser());
+        return builder.Build();
+    }
     internal bool Following { get; private set; } = true;
     internal string Text => text;
     public AnswerView()
@@ -46,7 +53,11 @@ public sealed class AnswerView : UserControl
     internal void Clear()
     {
         revision++; text = ""; rendered.Clear(); SetFollow(true);
-        document = new FlowDocument { PagePadding = new Thickness(0) };
+        document = new FlowDocument
+        {
+            PagePadding = new Thickness(12, 8, 12, 12),
+            TextAlignment = TextAlignment.Left, IsHyphenationEnabled = false
+        };
         // Theme restoration can replace a frozen brush before the first answer exists.
         // Follow the resource rather than retaining the previous theme's brush instance.
         document.SetResourceReference(TextElement.ForegroundProperty, "Ink");
