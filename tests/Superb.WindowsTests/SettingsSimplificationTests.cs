@@ -116,6 +116,58 @@ internal static class SettingsSimplificationTests
             }
             finally { window.ExitApplication(); }
         }));
+        tests.Add(("Coding panel and primary button backgrounds follow opacity and theme without fading text or settings", () =>
+        {
+            var window = new MainWindow(new Configuration(), new UnusedBackend());
+            try
+            {
+                new WindowInteropHelper(window).EnsureHandle();
+                var reader = window.WorkspaceWindow; reader.Show();
+                window.RunCommand("scene:coding").GetAwaiter().GetResult();
+                window.QueueText("Synthetic source material");
+                reader.Render("**Synthetic directive**\n\n`code` and [reference](https://example.test)", "已完成");
+                foreach (var theme in new[] { "ThemeInk", "ThemePaper" })
+                {
+                    Click(window, theme);
+                    foreach (var opacity in new[] { .25, .6, 1.0 })
+                    {
+                        Control<Slider>(window, "PanelOpacity").Value = opacity; Pump();
+                        var alpha = (byte)Math.Round(opacity * 255);
+                        var expectedSurface = ((SolidColorBrush)Application.Current.Resources["Surface"]).Color;
+                        foreach (var name in new[] { "CodingProgressPanel", "Attachment", "AnswerSurface" })
+                        {
+                            var panel = (Border)reader.FindName(name);
+                            Check(((SolidColorBrush)panel.Background).Color == Color.FromArgb(alpha, expectedSurface.R, expectedSurface.G, expectedSurface.B));
+                            Check(panel.Opacity == 1);
+                        }
+                        foreach (var name in new[] { "SendButton", "ScreenSendButton" })
+                        {
+                            var button = (Button)reader.FindName(name); button.ApplyTemplate();
+                            var background = (Border)button.Template.FindName("Bd", button);
+                            var accent = ((SolidColorBrush)Application.Current.Resources["Accent"]).Color;
+                            Check(((SolidColorBrush)background.Background).Color == Color.FromArgb(alpha, accent.R, accent.G, accent.B));
+                            Check(((SolidColorBrush)button.Foreground).Color.A == 255 && button.Opacity == 1);
+                            Check(((SolidColorBrush)button.FindResource("Surface")).Color.A == alpha);
+                        }
+                        Check(((SolidColorBrush)reader.FindResource("Accent")).Color.A == 255);
+                        Check(((SolidColorBrush)((TextBlock)reader.FindName("CodingProgressState")).Foreground).Color ==
+                            ((SolidColorBrush)Application.Current.Resources["Ink"]).Color);
+                        Check(((SolidColorBrush)Application.Current.Resources["Surface"]).Color.A == 255);
+                        Check(((SolidColorBrush)Application.Current.Resources["Accent"]).Color.A == 255 && window.Opacity == 1 && reader.Opacity == 1);
+                        Check(((AnswerView)reader.FindName("Answer")).Reader.Document.Foreground.Opacity == 1 && reader.Check());
+                        var index = Array.IndexOf(args, "--render-dir");
+                        if (index >= 0 && index + 1 < args.Length && opacity != .6)
+                        {
+                            Directory.CreateDirectory(args[index + 1]);
+                            var bitmap = new RenderTargetBitmap((int)reader.ActualWidth, (int)reader.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                            bitmap.Render(reader); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                            using var file = File.Create(Path.Combine(args[index + 1], $"coding-opacity-{theme}-{opacity * 100:0}.png")); encoder.Save(file);
+                        }
+                    }
+                }
+            }
+            finally { Click(window, "ResetAppearanceButton"); window.ExitApplication(); }
+        }));
         tests.Add(("Settings appearance previews preserve draft answer protection and exact saved layout; resizing synchronizes the editor", () =>
         {
             var window = new MainWindow(new Configuration { Panel = new(40, 40, 600, 650, 24, false, .8, Theme.MistId) }, new UnusedBackend());

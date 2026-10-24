@@ -4,9 +4,8 @@ using System.Text.Json.Serialization;
 
 namespace Superb.Core.Coding;
 
-public enum AgentProtocol { JsonActions, NativeTools }
 public enum AttemptOutcome { Unknown, Claimed, Improved, Unchanged, Regressed, Verified, Incomparable }
-public enum CodingRunState { Idle, Analyzing, Retrieving, Diagnosing, Reviewing, AwaitingFeedback, Failed, Cancelled }
+public enum CodingRunState { Idle, Analyzing, Retrieving, AwaitingFeedback, Paused, Failed, Cancelled }
 public sealed record EvidenceRef(Guid ObservationId, int Start, int Length);
 public sealed record Observation(Guid Id, InputSnapshot Snapshot, string Hash);
 public sealed record MemoryFact(string Id, string Kind, string Text, ImmutableArray<EvidenceRef> Evidence);
@@ -22,18 +21,32 @@ public sealed record CodingSnapshot(Guid SessionId, long Epoch, TaskMemory Memor
 public sealed record MemoryChanges(ImmutableArray<MemoryFact> Facts, ImmutableArray<AttemptAssessment> Assessments);
 public sealed record ProgressDecision(bool RequiresDeepAnalysis, string Reason, int ComparableFailures,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<Guid> FailureEvidenceIds = default);
-public sealed record AgentAction(string Name, JsonElement Arguments);
-public sealed record AgentModelRequest(Backend Backend, AgentProtocol Protocol, string SystemPrompt, Payload Content);
+public sealed record CodingSubmission(Directive Directive, MemoryChanges? Memory = null);
+public sealed record MaterialQuery(string Query = "",
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<EvidenceRef> Ranges = default,
+    int Offset = 0, int Limit = 4);
+public sealed record AgentAction(string CallId, string Name, string Arguments, string? Commentary = null,
+    [property: JsonIgnore] string? ReasoningContent = null);
+public enum AgentRole { User, Assistant, Tool }
+public sealed record AgentMessage(AgentRole Role, Payload Content, AgentAction? Call = null, string? ToolCallId = null);
+public sealed record AgentModelRequest(Backend Backend, string SystemPrompt, ImmutableArray<AgentMessage> Messages,
+    [property: JsonIgnore] CodingTransportTrace? Transport = null);
 public interface IAgentModelClient
 {
     Task<AgentAction> NextAsync(AgentModelRequest request, CancellationToken cancellationToken);
 }
-public sealed record CodingRunOptions(AgentProtocol Protocol = AgentProtocol.JsonActions, int MaximumCalls = 12,
-    int MaximumSeconds = 300, int MaximumOutputChars = 180000);
-public sealed record CodingRunUpdate(Guid RunId, CodingRunState State, int Calls, string Message, Directive? Directive = null);
-public sealed record TechnicalAnalysis(string Conclusion, string ProposedChange, string Correctness,
-    string Complexity, [property: JsonConverter(typeof(TextOrLinesConverter))] string Checks, ImmutableArray<EvidenceRef> Evidence);
-public sealed record SolutionReview(bool Accepted, string Findings, ImmutableArray<EvidenceRef> Evidence);
+public sealed record CodingRunOptions(int? MaximumCalls = null,
+    int MaximumSeconds = 300, int MaximumOutputChars = 180000)
+{
+    public void Validate()
+    {
+        if (MaximumCalls is < 1 or > 10000 || MaximumSeconds is < 10 or > 1800 ||
+            MaximumOutputChars is < 1024 or > 1000000) throw new SafeFailure("coding_budget_invalid");
+    }
+}
+public sealed record CodingRunUpdate(Guid RunId, CodingRunState State, int Calls, string Message, Directive? Directive = null,
+    long ElapsedMilliseconds = 0, bool WaitingForModel = false, long CallElapsedMilliseconds = 0, string? ErrorCode = null,
+    CodingTransportSnapshot? Transport = null);
 public static class CodingJson
 {
     public static JsonSerializerOptions Options { get; } = new(JsonSerializerDefaults.Web)
@@ -43,23 +56,24 @@ public static class CodingJson
     };
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Options);
     public static T Read<T>(JsonElement value) => value.Deserialize<T>(Options) ?? throw new SafeFailure("coding_action_invalid");
-}
-
-// Explicit union for a list of verification checks, not a general coercion of model JSON.
-public sealed class TextOrLinesConverter : JsonConverter<string>
-{
-    public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    public static T Read<T>(string value)
     {
-        if (reader.TokenType == JsonTokenType.String) return reader.GetString()!;
-        if (reader.TokenType != JsonTokenType.StartArray) throw new JsonException("Expected text or a list of text checks.");
-        var lines = new List<string>();
-        while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
-        {
-            if (reader.TokenType != JsonTokenType.String || lines.Count >= 64) throw new JsonException("Invalid check list.");
-            lines.Add(reader.GetString()!);
-        }
-        if (reader.TokenType != JsonTokenType.EndArray) throw new JsonException("Incomplete check list.");
-        return string.Join("\n", lines.Select(line => "- " + line));
+        using var document = JsonDocument.Parse(value);
+        CheckUniqueProperties(document.RootElement);
+        return Read<T>(document.RootElement);
     }
-    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) => writer.WriteStringValue(value);
+    internal static void CheckUniqueProperties(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!names.Add(property.Name)) throw new SafeFailure("coding_action_invalid");
+                CheckUniqueProperties(property.Value);
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+            foreach (var item in value.EnumerateArray()) CheckUniqueProperties(item);
+    }
 }

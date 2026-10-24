@@ -7,7 +7,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>Superb</AssemblyName>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../Superb.Core/Superb.Core.csproj" /></ItemGroup>
   <ItemGroup>

@@ -28,11 +28,9 @@ internal static class CodingLiveEvaluation
             }
             var output = Option("--output") ?? throw new SafeFailure("evaluation_output_required");
             if (!Path.IsPathFullyQualified(output) || File.Exists(output)) throw new SafeFailure("evaluation_output_invalid");
-            var protocol = (Option("--protocol") ?? "json").ToLowerInvariant() switch
-            {
-                "json" => AgentProtocol.JsonActions, "native" => AgentProtocol.NativeTools,
-                _ => throw new SafeFailure("evaluation_protocol_invalid")
-            };
+            var allowed = new HashSet<string> { "--coding-live-evaluation", "--output", "--case" };
+            if (args.Any(arg => arg.StartsWith("--", StringComparison.Ordinal) && !allowed.Contains(arg)))
+                throw new SafeFailure("evaluation_argument_invalid");
             var fixture = (Option("--case") ?? "complexity").ToLowerInvariant();
             if (fixture is not ("complexity" or "waiting" or "missing")) throw new SafeFailure("evaluation_case_invalid");
             if (!File.Exists(Configuration.FilePath) || new FileInfo(Configuration.FilePath).Length > 1048576)
@@ -44,18 +42,18 @@ internal static class CodingLiveEvaluation
             var configured = SceneRequestFactory.SelectBackend(configuration, scene);
             var backend = configured with { MaxTokens = Math.Min(configured.MaxTokens, 16384) };
             var session = Fixture(fixture);
-            var options = new CodingRunOptions(protocol, MaximumCalls: 12, MaximumSeconds: 300, MaximumOutputChars: 180000);
+            var options = new CodingRunOptions(MaximumCalls: 12, MaximumSeconds: 300, MaximumOutputChars: 180000);
             var tracedModel = new TracedModel(new AgentModelClient(new CredentialStore()));
             var runner = new CodingAgentRunner(tracedModel);
             var updates = new List<object>();
             var watch = Stopwatch.StartNew();
             runner.Updated += update =>
             {
-                // Messages are runner-owned statuses/codes, not provider response bodies.
+                // This explicit evaluation contains only synthetic task material.
                 updates.Add(new { state = update.State.ToString(), update.Calls, update.Message, elapsedSeconds = watch.Elapsed.TotalSeconds });
                 Console.WriteLine($"CODING LIVE: state={update.State}, calls={update.Calls}, seconds={watch.Elapsed.TotalSeconds:F1}, status={update.Message}");
             };
-            Console.WriteLine($"CODING LIVE: synthetic={fixture}, protocol={protocol}, tokens={backend.MaxTokens}, maxCalls={options.MaximumCalls}");
+            Console.WriteLine($"CODING LIVE: synthetic={fixture}, transport=tool_calls, tokens={backend.MaxTokens}, maxCalls={options.MaximumCalls}");
             await runner.RunAsync(session, backend, options);
             var directive = runner.Latest?.Directive;
             var text = directive is null ? "" : directive.Direction + "\n" + directive.Prompt;
@@ -70,7 +68,7 @@ internal static class CodingLiveEvaluation
             var completed = runner.Latest?.State == CodingRunState.AwaitingFeedback && directive is not null;
             var artifact = new
             {
-                syntheticFixture = fixture, protocol = protocol.ToString(), model = backend.Model,
+                syntheticFixture = fixture, transport = "tool_calls", model = backend.Model,
                 options = new { backend.MaxTokens, backend.TimeoutSeconds, options.MaximumCalls, options.MaximumSeconds, options.MaximumOutputChars },
                 state = runner.Latest?.State.ToString(), calls = runner.Latest?.Calls,
                 elapsedSeconds = watch.Elapsed.TotalSeconds, published = completed, heuristicDirectionMatch = heuristic,
@@ -95,18 +93,20 @@ internal static class CodingLiveEvaluation
         internal List<object> Actions { get; } = [];
         public async Task<AgentAction> NextAsync(AgentModelRequest request, CancellationToken token)
         {
-            using var context = JsonDocument.Parse(request.Content.Text!);
-            var errors = context.RootElement.GetProperty("toolHistory").EnumerateArray()
-                .Where(e => e.TryGetProperty("error", out _)).Select(e => e.GetProperty("error").GetString()).ToArray();
+            var errors = request.Messages.Where(m => m.Role == AgentRole.Tool).Select(m => m.Content.Text ?? "")
+                .Select(text => JsonDocument.Parse(text)).ToArray();
+            var precedingToolErrors = errors.Where(d => d.RootElement.TryGetProperty("error", out _))
+                .Select(d => d.RootElement.GetProperty("error").GetString()).ToArray();
+            foreach (var document in errors) document.Dispose();
             AgentAction action;
             try { action = await inner.NextAsync(request, token); }
             catch (SafeFailure failure)
             {
-                Actions.Add(new { error = failure.Code, detail = AgentModelClient.ProtocolFailureDetail(failure) });
+                Actions.Add(new { error = failure.Code, checkpointMessages = request.Messages.Length });
                 throw;
             }
-            Actions.Add(new { action.Name, action.Arguments, precedingToolErrors = errors });
-            Console.WriteLine($"CODING LIVE ACTION: {action.Name}; precedingErrors={string.Join(',', errors)}");
+            Actions.Add(new { action.Name, action.Arguments, precedingToolErrors });
+            Console.WriteLine($"CODING LIVE ACTION: {action.Name}; precedingErrors={string.Join(',', precedingToolErrors)}");
             return action;
         }
     }

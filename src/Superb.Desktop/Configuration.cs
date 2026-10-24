@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Superb.Core;
+using Superb.Core.Coding;
 using Superb.Desktop.Platform;
 
 namespace Superb.Desktop;
@@ -18,6 +19,8 @@ internal sealed record Configuration
     public bool ExclusiveReaderKeys { get; init; }
     public bool ClearOwnedClipboardOnPause { get; init; } = true;
     public PanelLayout Panel { get; init; } = new();
+    public CodingRunOptions CodingAnalysis { get; init; } = new();
+    public int CodingAnalysisVersion { get; init; } = 2;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExclusiveHotkeysEnabled { get; init; }
     public ImmutableArray<ScenePreset> Scenes { get; init; } = SceneDefaults.All;
@@ -109,7 +112,10 @@ internal sealed record Configuration
         var connections = Backends.ToList();
         if (scenes.Any(scene => scene.LegacySettings is not null))
             scenes = scenes.Select(scene => MigrateScene(scene, connections)).ToImmutableArray();
-        return this with { SchemaVersion = 6,
+        // Upgrade only the exact previous stock settings; preserve deliberately customized limits.
+        var analysis = CodingAnalysisVersion == 0 && CodingAnalysis == new CodingRunOptions(12, 300, 180000)
+            ? new CodingRunOptions() : CodingAnalysis;
+        return this with { SchemaVersion = 6, CodingAnalysis = analysis, CodingAnalysisVersion = 2,
             Backends = connections.Count == Backends.Length ? Backends : connections.ToImmutableArray(), Hotkeys = keys, Scenes = scenes,
             ExclusiveHotkeysEnabled = false, ExclusiveReaderKeys = false };
     }
@@ -156,7 +162,9 @@ internal sealed record Configuration
         if (new FileInfo(path).Length > 1_048_576) throw new SafeFailure("config_too_large");
         var content = File.ReadAllText(path);
         var config = JsonSerializer.Deserialize<Configuration>(content, Json) ?? throw new SafeFailure("config_invalid");
-        var upgrade = config.SchemaVersion < 6 || (!config.Scenes.IsDefault && config.Scenes.Any(s => s?.LegacySettings is { Count: > 0 })) || (!config.Hotkeys.IsDefault && config.Hotkeys.Any(k => k?.Action == "ask"));
+        using var document = JsonDocument.Parse(content);
+        if (!document.RootElement.TryGetProperty(nameof(CodingAnalysisVersion), out _)) config = config with { CodingAnalysisVersion = 0 };
+        var upgrade = config.CodingAnalysisVersion < 2 || config.SchemaVersion < 6 || (!config.Scenes.IsDefault && config.Scenes.Any(s => s?.LegacySettings is { Count: > 0 })) || (!config.Hotkeys.IsDefault && config.Hotkeys.Any(k => k?.Action == "ask"));
         config = config.Migrate();
         config.Validate();
         if (upgrade)
@@ -169,6 +177,9 @@ internal sealed record Configuration
     }
     public void Validate()
     {
+        if (CodingAnalysis is null) throw new SafeFailure("coding_budget_invalid");
+        CodingAnalysis.Validate();
+        if (CodingAnalysisVersion is < 0 or > 2) throw new SafeFailure("config_invalid");
         if (SchemaVersion != 6 || Scenes.IsDefault || Scenes.Length > 24 || Backends.IsDefault || Hotkeys.IsDefault ||
             // Leave room for up to 24 migrated scene connections alongside the previous 32.
             Panel is null || Backends.Length > 64 || Hotkeys.Length > 32) throw new SafeFailure("config_invalid");

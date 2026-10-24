@@ -45,6 +45,7 @@ internal static class Program
         }
         var tests = new List<(string, Action)>();
         ScenarioTests.Add(tests);
+        CodingDiagnosticLogTests.Add(tests);
         tests.Add(("Exclusive reader keys own complete cycles without repeats or modifier replay", () =>
         {
             var key = new ExclusiveKeyCycle();

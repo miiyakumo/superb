@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Text.Json;
 using Superb.Core;
+using Superb.Core.Coding;
 using Superb.Desktop;
 using Superb.Desktop.Platform;
 
@@ -17,6 +18,69 @@ internal static class ScenarioTests
     }
     internal static void Add(List<(string, Action)> tests)
     {
+        tests.Add(("Analysis configuration defaults load from old JSON and saved custom budgets round trip with validation", () =>
+        {
+            var old = JsonSerializer.Deserialize<Configuration>("{}", Configuration.Json)!;
+            Check(old.CodingAnalysis == new CodingRunOptions());
+            var configured = old with { CodingAnalysis = new(7, 77, 23456) };
+            var path = Path.Combine(Path.GetTempPath(), "superb-analysis-" + Guid.NewGuid().ToString("N"), "settings.json");
+            try
+            {
+                configured.Save(path);
+                Check(Configuration.Load(path).CodingAnalysis == configured.CodingAnalysis);
+            }
+            finally { if (File.Exists(path)) File.Delete(path); Directory.Delete(Path.GetDirectoryName(path)!); }
+            foreach (var invalid in new[] { new CodingRunOptions(MaximumCalls: 0), new CodingRunOptions(MaximumSeconds: 0),
+                new CodingRunOptions(MaximumOutputChars: 1) })
+                Reject(() => (old with { CodingAnalysis = invalid }).Validate(), "coding_budget_invalid");
+            Reject(() => (old with { CodingAnalysis = null! }).Validate(), "coding_budget_invalid");
+        }));
+        tests.Add(("Previous stock analysis defaults migrate to unlimited native calls while custom budgets and backups survive", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "superb-analysis-migration-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                foreach (var (name, options) in new[]
+                {
+                    ("stock", new CodingRunOptions(12, 300, 180000)),
+                    ("custom", new CodingRunOptions(7, 77, 23456))
+                })
+                {
+                    var path = Path.Combine(directory, name + ".json");
+                    var config = new Configuration { CodingAnalysis = options };
+                    var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(config, Configuration.Json))!.AsObject();
+                    json.Remove("CodingAnalysisVersion"); json["CodingAnalysis"]!["Protocol"] = "JsonActions"; var original = json.ToJsonString(); File.WriteAllText(path, original);
+                    var loaded = Configuration.Load(path);
+                    Check(loaded.CodingAnalysis == (name == "stock" ? new CodingRunOptions() : options));
+                    Check(File.ReadAllText(Directory.GetFiles(directory, name + ".json.upgrade-*.bak").Single()) == original);
+                    Check(Configuration.Load(path).CodingAnalysis == loaded.CodingAnalysis);
+                }
+                var explicitChoice = new Configuration { CodingAnalysis = new(12, 300, 180000) };
+                var current = Path.Combine(directory, "explicit.json"); explicitChoice.Save(current);
+                Check(Configuration.Load(current).CodingAnalysis == explicitChoice.CodingAnalysis);
+            }
+            finally { foreach (var path in Directory.GetFiles(directory)) File.Delete(path); Directory.Delete(directory); }
+        }));
+        tests.Add(("Removed analysis protocol fields are dropped from old settings without changing custom budgets", () =>
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "superb-native-only-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var path = Path.Combine(directory, "settings.json");
+                var config = new Configuration { CodingAnalysisVersion = 1, CodingAnalysis = new(7, 77, 23456) };
+                var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(config, Configuration.Json))!.AsObject();
+                json["CodingAnalysis"]!["Protocol"] = "JsonActions";
+                var original = json.ToJsonString(); File.WriteAllText(path, original);
+                var loaded = Configuration.Load(path);
+                Check(loaded.CodingAnalysis == config.CodingAnalysis && loaded.CodingAnalysisVersion == 2);
+                using var saved = JsonDocument.Parse(File.ReadAllText(path));
+                Check(!saved.RootElement.GetProperty("CodingAnalysis").TryGetProperty("Protocol", out _));
+                Check(File.ReadAllText(Directory.GetFiles(directory, "*.bak").Single()) == original);
+            }
+            finally { foreach (var path in Directory.GetFiles(directory)) File.Delete(path); Directory.Delete(directory); }
+        }));
         tests.Add(("Old send aliases merge deterministically and preserve customized or disabled bindings", () =>
         {
             var baseline = new Configuration { SchemaVersion = 2 };

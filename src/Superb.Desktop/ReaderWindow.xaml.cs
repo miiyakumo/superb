@@ -127,6 +127,7 @@ public partial class ReaderWindow : Window
     }
     public void Clear()
     {
+        ClearCodingProgress();
         CodingHistory.Text = ""; CodingPending.Text = "";
         ClearInput(); ClearAnswer(); StateText.Text = "等待输入";
         ComposerExpander.IsExpanded = true;
@@ -170,7 +171,7 @@ public partial class ReaderWindow : Window
     }
     internal void SetSelecting(bool selecting)
     {
-        selectingCorners = selecting; StopButton.Content = selecting ? "取消截图" : "停止生成";
+        selectingCorners = selecting; StopButton.Content = selecting ? "取消截图" : codingMode ? "停止分析" : "停止生成";
         RefreshShortcutHints();
     }
     internal void SetDirectRetry(int? limit)

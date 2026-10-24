@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Superb.Core.Coding;
@@ -10,384 +11,301 @@ public sealed class CodingAgentRunner(IAgentModelClient client)
     private CancellationTokenSource? cancellation;
     private long generation;
     private FrozenRun? retry;
+    private CompletedConversation? completedConversation;
     public bool IsRunning { get; private set; }
     public CodingRunUpdate? Latest { get; private set; }
-    public bool CanRetry => !IsRunning && retry is not null && Latest?.State is CodingRunState.Failed or CodingRunState.Cancelled;
+    public bool CanRetry => !IsRunning && retry is not null && Latest?.State is CodingRunState.Failed or CodingRunState.Cancelled or CodingRunState.Paused;
     public event Action<CodingRunUpdate>? Updated;
+    public event Action<CodingDiagnosticEvent>? Diagnostic;
+    private RunTelemetry? telemetry;
+    private sealed class RunTelemetry(Guid id)
+    {
+        public Guid Id { get; } = id;
+        public Stopwatch Clock { get; } = Stopwatch.StartNew();
+        public long Sequence, CallStartedAt;
+        public bool Waiting;
+        public CodingTransportSnapshot? Transport;
+        public CodingStepMetrics? Step;
+    }
+    private void Publish(RunTelemetry run, CodingRunState state, int calls, string message, CodingDiagnosticKind kind,
+        Directive? directive = null, string? errorCode = null, CodingTool? tool = null, long? callElapsed = null)
+    {
+        var elapsed = run.Clock.ElapsedMilliseconds;
+        var code = CodingDiagnostics.SafeCode(errorCode);
+        Latest = new(run.Id, state, calls, message, directive, elapsed, run.Waiting,
+            run.Waiting ? elapsed - run.CallStartedAt : callElapsed ?? 0, code, run.Transport);
+        var diagnostic = new CodingDiagnosticEvent(run.Id, ++run.Sequence, DateTimeOffset.UtcNow, kind, state,
+            calls, elapsed, callElapsed, tool, code, run.Transport, run.Step);
+        // Diagnostics must never fail or cancel the user's analysis.
+        try { Diagnostic?.Invoke(diagnostic); } catch { }
+        try { Updated?.Invoke(Latest); } catch { }
+    }
 
-    private sealed record FrozenRun(CodingSession Session, CodingSnapshot Snapshot, Backend Backend,
-        CodingRunOptions Options, string Instructions);
-    private sealed record SearchArguments(string Query, int Limit = 8);
-    private sealed record CompareArguments(Guid Left, Guid Right);
-    private sealed record AnalyzeArguments(string Question, ImmutableArray<EvidenceRef> Evidence);
-    private sealed record MemoryArguments(string Query = "", int Offset = 0, int Limit = 4,
-        ImmutableArray<string> FactIds = default, ImmutableArray<Guid> AttemptIds = default);
-
+    private sealed record CompletedConversation(Guid SessionId, long Epoch, long Revision, Backend Backend,
+        ImmutableArray<AgentMessage> Messages);
+    private sealed class FrozenRun(CodingSession session, CodingSnapshot snapshot, Backend backend, CodingRunOptions options, string instructions)
+    {
+        public CodingSession Session { get; } = session;
+        public CodingSnapshot Snapshot { get; } = snapshot;
+        public Backend Backend { get; } = backend;
+        public CodingRunOptions Options { get; } = options;
+        public string Instructions { get; } = instructions;
+        public List<AgentMessage> Messages { get; } = [];
+        public Dictionary<string, MaterialPacket> Cache { get; } = new(StringComparer.Ordinal);
+        public Dictionary<Guid, List<(int Start, int End)>> Coverage { get; } = [];
+        public HashSet<string> CallIds { get; } = new(StringComparer.Ordinal);
+        public int NoProgress, Repairs;
+        public AgentAction? PendingAction;
+        public bool Initialized;
+        public bool Cover(EvidenceRef reference)
+        {
+            if (!Coverage.TryGetValue(reference.ObservationId, out var ranges)) Coverage[reference.ObservationId] = ranges = [];
+            var end = reference.Start + reference.Length;
+            if (ranges.Any(r => r.Start <= reference.Start && r.End >= end)) return false;
+            ranges.Add((reference.Start, end));
+            ranges.Sort((a,b) => a.Start.CompareTo(b.Start));
+            for (var i = ranges.Count - 1; i > 0; i--)
+                if (ranges[i - 1].End >= ranges[i].Start)
+                { ranges[i - 1] = (ranges[i - 1].Start, Math.Max(ranges[i - 1].End, ranges[i].End)); ranges.RemoveAt(i); }
+            return true;
+        }
+    }
     public Task RunAsync(CodingSession session, Backend backend, CodingRunOptions? options = null, string additionalInstructions = "")
     {
         if (IsRunning) throw new SafeFailure("coding_busy");
-        var frozen = new FrozenRun(session, session.Freeze(), backend, options ?? new(), additionalInstructions);
-        return ExecuteAsync(frozen);
+        return ExecuteAsync(new(session, session.Freeze(), backend, options ?? new(), additionalInstructions), false);
     }
-
     public Task RetryAsync(CodingSession session)
     {
         if (!CanRetry || retry is not { } frozen || !ReferenceEquals(frozen.Session, session)) throw new SafeFailure("coding_retry_unavailable");
         var current = session.Freeze();
-        if (current.SessionId != frozen.Snapshot.SessionId || current.Epoch != frozen.Snapshot.Epoch ||
-            current.Memory.Revision != frozen.Snapshot.Memory.Revision) throw new SafeFailure("coding_retry_stale");
-        return ExecuteAsync(frozen);
+        if (current.SessionId != frozen.Snapshot.SessionId || current.Epoch != frozen.Snapshot.Epoch || current.Memory.Revision != frozen.Snapshot.Memory.Revision)
+            throw new SafeFailure("coding_retry_stale");
+        return ExecuteAsync(frozen, true);
     }
-
     public void Stop()
     {
-        generation++;
-        cancellation?.Cancel();
-        cancellation = null;
+        generation++; cancellation?.Cancel(); cancellation = null;
         if (!IsRunning) return;
         IsRunning = false;
-        if (Latest is { } prior)
+        if (Latest is { } prior && telemetry is { } run)
         {
-            Latest = prior with { State = CodingRunState.Cancelled, Message = "已停止分析；已提交记忆保留" };
-            Updated?.Invoke(Latest);
+            run.Waiting = false; run.Clock.Stop();
+            Publish(run, CodingRunState.Cancelled, prior.Calls, "已停止分析；完整工具步骤已保留，可从检查点继续", CodingDiagnosticKind.Cancelled, errorCode: "request_cancelled");
         }
+        telemetry = null;
     }
+    public void Clear() { Stop(); retry = null; completedConversation = null; Latest = null; }
 
-    public void Clear()
+    private void Initialize(FrozenRun run)
     {
-        Stop(); retry = null; Latest = null;
+        if (run.Initialized) return;
+        if (completedConversation is { } prior && prior.SessionId == run.Snapshot.SessionId && prior.Epoch == run.Snapshot.Epoch &&
+            prior.Revision == run.Snapshot.Memory.Revision && prior.Backend == run.Backend)
+        {
+            run.Messages.AddRange(prior.Messages);
+            foreach (var message in prior.Messages) if (message.Call is { } call) run.CallIds.Add(call.CallId);
+        }
+        var excerpts = run.Snapshot.Observations.TakeLast(4).Select(o =>
+        {
+            var text = o.Snapshot.Content.Text ?? "";
+            var length = Math.Min(text.Length, 8000);
+            var reference = new EvidenceRef(o.Id, 0, length);
+            if (length > 0 || o.Snapshot.Content.HasImage) run.Cover(reference);
+            return new { reference, text = text[..length], incomplete = length != text.Length };
+        }).ToArray();
+        var decision = ProgressAssessment.Evaluate(run.Snapshot.Memory);
+        var image = run.Backend.SupportsImages ? run.Snapshot.Observations.LastOrDefault(o => o.Snapshot.Content.HasImage) : null;
+        var context = CodingJson.Serialize(new
+        {
+            sessionId = run.Snapshot.SessionId, memory = run.Snapshot.Memory,
+            observations = run.Snapshot.Observations.Select(o => new { o.Id, textLength = o.Snapshot.Content.Text?.Length ?? 0,
+                hasImage = o.Snapshot.Content.HasImage, capturedAt = o.Snapshot.CapturedAt }), excerpts,
+            progress = new { reconsiderStrategy = decision.RequiresDeepAnalysis, decision.Reason, decision.ComparableFailures },
+            callLimit = run.Options.MaximumCalls, totalSeconds = run.Options.MaximumSeconds,
+            userInstructions = run.Instructions,
+            attachedImageObservationId = image?.Id,
+            instruction = "Use the supplied state and material directly. Retrieve only missing original passages. submit_result is valid immediately; missing source is a reason to request focused material, not to invent a repair."
+        });
+        run.Messages.Add(new(AgentRole.User, image is null ? Payload.FromText(context) : image.Snapshot.Content with { Text = context }));
+        run.Initialized = true;
     }
-
-    private async Task ExecuteAsync(FrozenRun run)
+    private static ImmutableArray<AgentMessage> ProjectMessages(FrozenRun run)
     {
-        Policy.ValidateBackend(run.Backend);
-        var options = run.Options;
-        if (!Enum.IsDefined(options.Protocol) || options.MaximumCalls is < 2 or > 40 || options.MaximumSeconds is < 10 or > 1800 ||
-            options.MaximumOutputChars is < 1024 or > 1000000 || run.Instructions.Length > 16000)
-            throw new SafeFailure("coding_budget_invalid");
+        // Keep every native call/output pair. Only image attachments from earlier packets are
+        // replaced by an explicit notice; originals remain retrievable in the frozen snapshot.
+        var lastImage = run.Messages.FindLastIndex(m => m.Content.HasImage);
+        var result = run.Messages.Select((m,i) => i != lastImage && m.Content.HasImage
+            ? m with { Content = Payload.FromText(m.Content.Text + "\nEarlier image attachment omitted; retrieve_material can attach its original again.") } : m).ToImmutableArray();
+        var chars = result.Sum(m => (long)(m.Content.Text?.Length ?? 0) + (m.Call?.Arguments.Length ?? 0) + (m.Call?.ReasoningContent?.Length ?? 0));
+        if (chars > Math.Min(1000000, run.Backend.MaxInputBytes / 3)) throw new SafeFailure("coding_context_too_large");
+        return result;
+    }
+    private async Task ExecuteAsync(FrozenRun run, bool resumed)
+    {
+        Policy.ValidateBackend(run.Backend); run.Options.Validate();
+        if (run.Instructions.Length > 16000) throw new SafeFailure("coding_budget_invalid");
         if (run.Snapshot.Observations.IsDefaultOrEmpty) throw new SafeFailure("input_empty");
         var currentGeneration = ++generation;
-        var runId = Guid.NewGuid();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(options.MaximumSeconds));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(run.Options.MaximumSeconds));
         cancellation = cts; retry = run; IsRunning = true;
+        var runTelemetry = new RunTelemetry(Guid.NewGuid()); telemetry = runTelemetry;
         var calls = 0; var totalOutput = 0;
-        var contextCharacterLimit = Math.Min(100000, Math.Max(2000, run.Backend.MaxInputBytes / 5 - 6000));
-        var facts = new Dictionary<string, MemoryFact>(StringComparer.Ordinal);
-        var assessments = new Dictionary<Guid, AttemptAssessment>();
-        var history = new List<object>();
-        var repeated = new Dictionary<string, int>(StringComparer.Ordinal);
-        TechnicalAnalysis? analysis = null;
-        var priorAnalysisInvalidated = false;
-        var activeImage = run.Snapshot.Observations.LastOrDefault(o => o.Snapshot.Content.HasImage);
-        string? reviewedPrompt = null;
-        var reviewedAccepted = false;
-        var repairs = 0;
         bool Current() => generation == currentGeneration && ReferenceEquals(cancellation, cts);
-        void CheckCurrent()
+        void CheckCurrent() { cts.Token.ThrowIfCancellationRequested(); if (!Current()) throw new OperationCanceledException(cts.Token); }
+        void Emit(CodingRunState state, string message, CodingDiagnosticKind kind = CodingDiagnosticKind.Phase,
+            string? code = null, CodingTool? tool = null, long? callElapsed = null, Directive? directive = null)
+        { if (Current()) Publish(runTelemetry, state, calls, message, kind, directive, code, tool, callElapsed); }
+        void Answer(AgentAction action, object value)
         {
-            cts.Token.ThrowIfCancellationRequested();
-            if (!Current()) throw new OperationCanceledException(cts.Token);
+            run.Messages.Add(new(AgentRole.Tool, Payload.FromText(CodingJson.Serialize(value)), ToolCallId: action.CallId));
+            run.PendingAction = null;
         }
-        void Emit(CodingRunState state, string message, Directive? directive = null)
-        {
-            if (!Current()) return;
-            Latest = new(runId, state, calls, message, directive); Updated?.Invoke(Latest);
-        }
-        MemoryChanges Changes() => new(facts.Values.ToImmutableArray(), assessments.Values.ToImmutableArray());
-        TaskMemory PreviewMemory() => run.Snapshot.Memory with
-        {
-            Facts = run.Snapshot.Memory.Facts.Where(f => !facts.ContainsKey(f.Id)).Concat(facts.Values).ToImmutableArray(),
-            Attempts = run.Snapshot.Memory.Attempts.Select(a => assessments.TryGetValue(a.Id, out var assessment)
-                ? a with { Assessment = assessment } : a).ToImmutableArray()
-        };
-        ProgressDecision Progress() => ProgressAssessment.Evaluate(PreviewMemory());
-        bool NeedsAnalysis()
-        {
-            var progress = Progress();
-            if (!progress.RequiresDeepAnalysis || analysis is not null) return false;
-            return priorAnalysisInvalidated || progress.FailureEvidenceIds.IsDefaultOrEmpty || !run.Snapshot.Memory.Facts.Any(f =>
-                f.Kind == "conclusion" && f.Id.StartsWith("analysis:", StringComparison.Ordinal) &&
-                progress.FailureEvidenceIds.All(id => f.Evidence.Any(e => e.ObservationId == id)));
-        }
-        object CompactMemory()
-        {
-            var memory = PreviewMemory();
-            static string Preview(string value, int max) => value.Length > max ? value[..max] + " [excerpt; retrieve full record]" : value;
-            return new
-            {
-                memory.Revision, factCount = memory.Facts.Length, attemptCount = memory.Attempts.Length,
-                facts = memory.Facts.TakeLast(16).Select(f => new { f.Id, f.Kind, text = Preview(f.Text, 500), evidenceCount = f.Evidence.Length }),
-                attempts = memory.Attempts.TakeLast(12).Select(a => new
-                {
-                    a.Id, direction = Preview(a.Directive.Direction, 300), a.Directive.IssueKey, a.Directive.Strategy,
-                    a.Copied, assessment = a.Assessment is { } assessment ? new
-                    { assessment.Outcome, assessment.Comparable, assessment.ExecutionObserved, assessment.IssueKey, assessment.Strategy } : null
-                }),
-                retrieval = "read_task_state accepts query, offset, limit (1..8), factIds or attemptIds to retrieve complete records, including older ones."
-            };
-        }
-
-        string Context(object? focus = null)
-        {
-            // Complete excerpts and tool results are included or explicitly omitted, never silently cut mid-code.
-            var maxChars = contextCharacterLimit;
-            var manifest = run.Snapshot.Observations.Take(8).Concat(run.Snapshot.Observations.TakeLast(32)).DistinctBy(o => o.Id).Select(o => new
-            {
-                o.Id, o.Hash, capturedAt = o.Snapshot.CapturedAt,
-                textLength = o.Snapshot.Content.Text?.Length ?? 0, hasImage = o.Snapshot.Content.HasImage,
-                version = "unknown; capture order is not file revision"
-            });
-            var excerpts = new List<object>();
-            var used = 0;
-            foreach (var o in run.Snapshot.Observations.Reverse().Take(4))
-            {
-                var text = o.Snapshot.Content.Text ?? "";
-                var length = Math.Min(text.Length, Math.Min(10000, Math.Max(0, maxChars / 3 - used)));
-                if (length == 0) continue;
-                excerpts.Add(new { observationId = o.Id, start = 0, length, text = text[..length], incomplete = length != text.Length });
-                used += length;
-            }
-            var recentHistory = history.ToList();
-            string Render() => CodingJson.Serialize(new
-            {
-                sessionId = run.Snapshot.SessionId, revision = run.Snapshot.Memory.Revision,
-                memory = CompactMemory(), observations = manifest, observationCount = run.Snapshot.Observations.Length,
-                evidenceRetrieval = "The manifest includes initial and recent observations. search_evidence searches ALL stored originals.", excerpts,
-                progress = Progress(), freshAnalysisRequired = NeedsAnalysis(), analysis, focus, toolHistory = recentHistory,
-                omittedToolResults = history.Count - recentHistory.Count,
-                remainingCalls = options.MaximumCalls - calls,
-                userInstructions = run.Instructions
-            });
-            var result = Render();
-            while (result.Length > maxChars && recentHistory.Count > 1) { recentHistory.RemoveAt(0); result = Render(); }
-            while (result.Length > maxChars && excerpts.Count > 0) { excerpts.RemoveAt(excerpts.Count - 1); result = Render(); }
-            if (result.Length > maxChars) throw new SafeFailure("coding_context_too_large");
-            return result;
-        }
-        async Task<AgentAction> Call(string system, object? focus = null, IEnumerable<EvidenceRef>? visualEvidence = null)
-        {
-            CheckCurrent();
-            if (calls >= options.MaximumCalls) throw new SafeFailure("coding_call_budget_exhausted");
-            var content = Payload.FromText(Context(focus));
-            var visualIds = visualEvidence?.Select(e => e.ObservationId).ToHashSet();
-            var imageObservations = visualIds is not null
-                ? run.Snapshot.Observations.Where(o => visualIds.Contains(o.Id) && o.Snapshot.Content.HasImage).ToArray()
-                : activeImage is not null ? new[] { activeImage } : [];
-            if (imageObservations.Length > 0)
-            {
-                var images = imageObservations.SelectMany(o => o.Snapshot.Content.Images).ToArray();
-                content = content with { Text = content.Text + "\nAttached image packets in order: " +
-                    CodingJson.Serialize(imageObservations.Select(o => new { observationId = o.Id, count = o.Snapshot.Content.Images.Count() })),
-                    Png = images[0].Png, Width = images[0].Width, Height = images[0].Height, AdditionalImages = images.Skip(1).ToImmutableArray() };
-            }
-            calls++;
-            Emit(Latest?.State ?? CodingRunState.Analyzing, $"后端分析 · 第 {calls}/{options.MaximumCalls} 次调用");
-            using var callCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-            callCts.CancelAfter(TimeSpan.FromSeconds(run.Backend.TimeoutSeconds));
-            var action = await client.NextAsync(new(run.Backend, options.Protocol, system, content), callCts.Token);
-            CheckCurrent();
-            totalOutput += CodingJson.Serialize(action).Length;
-            if (totalOutput > options.MaximumOutputChars) throw new SafeFailure("coding_output_budget_exhausted");
-            return action;
-        }
-        void ValidateEvidence(ImmutableArray<EvidenceRef> evidence)
-        {
-            if (evidence.IsDefaultOrEmpty) throw new SafeFailure("coding_evidence_required");
-            foreach (var reference in evidence) _ = EvidenceRetriever.Read(run.Snapshot, reference);
-        }
-        async Task<SolutionReview> Review(Directive directive)
-        {
-            Emit(CodingRunState.Reviewing, "检查修改方案与证据");
-            var response = await Call(CodingPrompts.Reviewer, new
-            {
-                directive,
-                sources = directive.Evidence.Select(e => new { reference = e, text = EvidenceRetriever.Read(run.Snapshot, e) })
-            }, directive.Evidence);
-            if (response.Name != "review_result") throw new SafeFailure("coding_review_invalid");
-            var result = CodingJson.Read<SolutionReview>(response.Arguments);
-            ValidateEvidence(result.Evidence);
-            if (string.IsNullOrWhiteSpace(result.Findings)) throw new SafeFailure("coding_review_invalid");
-            reviewedPrompt = CodingJson.Serialize(directive); reviewedAccepted = result.Accepted;
-            history.Add(new { tool = "review_solution", result });
-            return result;
-        }
-
         try
         {
-            Emit(CodingRunState.Analyzing, "读取任务记忆并评估新反馈");
+            Initialize(run);
+            if (resumed)
+            {
+                run.NoProgress = 0; run.Repairs = 0;
+            }
+            Emit(CodingRunState.Analyzing, resumed ? "从上次完整工具步骤继续；冻结材料和会话已恢复" : "结合任务状态和现有材料直接分析", CodingDiagnosticKind.Started);
+            // The checkpoint is already balanced. Resume the pending model step, not old tools.
+            if (resumed) Emit(CodingRunState.Analyzing, "已恢复完整工具对话检查点", CodingDiagnosticKind.Resumed);
             while (true)
             {
                 CheckCurrent();
+                if (run.Options.MaximumCalls is { } limit && calls >= limit) throw new SafeFailure("coding_call_budget_exhausted");
+                var messages = ProjectMessages(run);
+                runTelemetry.Step = new(messages.Length, messages.Sum(m => (long)(m.Content.Text?.Length ?? 0) + (m.Call?.Arguments.Length ?? 0) + (m.Call?.ReasoningContent?.Length ?? 0)),
+                    NoProgressSteps: run.NoProgress, CheckpointResumed: resumed);
+                runTelemetry.Transport = null; runTelemetry.Waiting = true; runTelemetry.CallStartedAt = runTelemetry.Clock.ElapsedMilliseconds;
+                calls++;
+                Emit(CodingRunState.Analyzing, $"等待模型响应 · 第 {calls} 次调用", CodingDiagnosticKind.CallStarted);
+                using var callCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+                callCts.CancelAfter(TimeSpan.FromSeconds(run.Backend.TimeoutSeconds));
+                var trace = new CodingTransportTrace();
                 AgentAction action;
-                try { action = await Call(CodingPrompts.Controller); }
-                catch (SafeFailure ex) when (ex.Code is "coding_action_invalid" or "coding_response_invalid" && repairs++ < 2)
-                {
-                    history.Add(new { error = "coding_action_invalid", detail = AgentModelClient.ProtocolFailureDetail(ex),
-                        instruction = "Return exactly {\"name\":\"<documented action name>\",\"arguments\":{...}}. Use name, not action or tool. Arguments must be an object. No fences or extra fields. Choose the next useful action from the system contract." });
-                    continue;
-                }
-                var signature = CodingJson.Serialize(action);
-                repeated.TryGetValue(signature, out var count); repeated[signature] = count + 1;
-                if (count >= 2) throw new SafeFailure("coding_internal_loop");
                 try
                 {
-                    object result;
+                    var pending = client.NextAsync(new(run.Backend, CodingPrompts.Controller, messages, trace), callCts.Token);
+                    CodingTransportStage? previousStage = null; long lastProgress = 0;
+                    while (!pending.IsCompleted && !callCts.IsCancellationRequested)
+                    {
+                        await Task.WhenAny(pending, Task.Delay(1000, callCts.Token));
+                        if (pending.IsCompleted || callCts.IsCancellationRequested) break;
+                        CheckCurrent(); if (!trace.Started) continue;
+                        var progress = trace.Snapshot;
+                        if (progress.Stage != previousStage || progress.ElapsedMilliseconds - lastProgress >= 5000)
+                        {
+                            runTelemetry.Transport = progress;
+                            Emit(CodingRunState.Analyzing, CodingTransportTrace.Describe(progress), CodingDiagnosticKind.Transport);
+                            previousStage = progress.Stage; lastProgress = progress.ElapsedMilliseconds;
+                        }
+                    }
+                    action = await pending.WaitAsync(callCts.Token);
+                    CheckCurrent();
+                    runTelemetry.Transport = trace.Started ? trace.Snapshot : null; runTelemetry.Waiting = false;
+                    Emit(CodingRunState.Analyzing, "已收到工具调用：" + CodingDiagnostics.ToolLabel(CodingDiagnostics.Tool(action.Name)),
+                        CodingDiagnosticKind.CallCompleted, tool: CodingDiagnostics.Tool(action.Name), callElapsed: runTelemetry.Clock.ElapsedMilliseconds - runTelemetry.CallStartedAt);
+                }
+                catch (Exception ex)
+                {
+                    runTelemetry.Waiting = false; runTelemetry.Transport = trace.Started ? trace.Snapshot : null;
+                    Emit(CodingRunState.Analyzing, "本次模型请求未完成；检查点保留", CodingDiagnosticKind.CallFailed,
+                        cts.IsCancellationRequested ? "coding_time_budget_exhausted" : ex is OperationCanceledException ? "request_timed_out" : ConnectionDiagnostics.CodeFor(ex),
+                        callElapsed: runTelemetry.Clock.ElapsedMilliseconds - runTelemetry.CallStartedAt);
+                    if (ex is SafeFailure format && (format.Code is "coding_action_invalid" or "coding_tool_call_required"))
+                    {
+                        if (++run.Repairs >= 4) throw new SafeFailure("coding_action_repair_exhausted");
+                        // No complete native call was accepted, so no call ID or tool result is invented.
+                        run.Messages.Add(new(AgentRole.User, Payload.FromText("Continue this task with one native retrieve_material or submit_result call. Final instructions must be submitted with submit_result. Do not return a text action envelope.")));
+                        Emit(CodingRunState.Analyzing, "已要求模型修正原生工具调用格式，原会话继续", CodingDiagnosticKind.Repair, format.Code);
+                        continue;
+                    }
+                    throw;
+                }
+                if (string.IsNullOrWhiteSpace(action.CallId) || action.CallId.Length > 256 || action.CallId.Any(char.IsControl) || !run.CallIds.Add(action.CallId))
+                    throw new SafeFailure("coding_history_invalid");
+                run.Messages.Add(new(AgentRole.Assistant, Payload.FromText(action.Commentary ?? ""), action));
+                run.PendingAction = action;
+                if (!string.IsNullOrWhiteSpace(action.Commentary))
+                    Emit(CodingRunState.Analyzing, "模型进度：" + action.Commentary[..Math.Min(600, action.Commentary.Length)]);
+                totalOutput += action.Arguments.Length + (action.Commentary?.Length ?? 0);
+                if (totalOutput > run.Options.MaximumOutputChars)
+                { Answer(action, new { error = "coding_output_budget_exhausted" }); throw new SafeFailure("coding_output_budget_exhausted"); }
+                var terminal = false;
+                try
+                {
                     switch (action.Name)
                     {
-                        case "read_task_state":
-                            var selection = CodingJson.Read<MemoryArguments>(action.Arguments);
-                            if (selection.Query is null || selection.Query.Length > 2000 || selection.Offset < 0 || selection.Limit is < 1 or > 8 ||
-                                (!selection.FactIds.IsDefault && selection.FactIds.Length > 8) || (!selection.AttemptIds.IsDefault && selection.AttemptIds.Length > 8))
-                                throw new SafeFailure("coding_action_invalid");
-                            var memory = PreviewMemory();
-                            var matchingFacts = memory.Facts.Where(f => (selection.FactIds.IsDefaultOrEmpty || selection.FactIds.Contains(f.Id)) &&
-                                (selection.Query.Length == 0 || (f.Id + " " + f.Kind + " " + f.Text).Contains(selection.Query, StringComparison.OrdinalIgnoreCase))).ToArray();
-                            var matchingAttempts = memory.Attempts.Where(a => (selection.AttemptIds.IsDefaultOrEmpty || selection.AttemptIds.Contains(a.Id)) &&
-                                (selection.Query.Length == 0 || CodingJson.Serialize(a).Contains(selection.Query, StringComparison.OrdinalIgnoreCase))).ToArray();
-                            result = new
+                        case "retrieve_material":
+                            var query = CodingJson.Read<MaterialQuery>(action.Arguments);
+                            var normalized = query with { Query = query.Query?.Trim()!, Ranges = query.Ranges.IsDefault ? [] : query.Ranges };
+                            var key = CodingJson.Serialize(normalized);
+                            var cached = run.Cache.TryGetValue(key, out var packet);
+                            packet ??= CodingMaterialStore.Retrieve(run.Snapshot, normalized);
+                            var imageIds = packet.Passages.Where(p => p.HasImage).Select(p => p.Reference.ObservationId).ToHashSet();
+                            var images = run.Snapshot.Observations.Where(o => imageIds.Contains(o.Id)).ToArray();
+                            var payloads = images.SelectMany(o => o.Snapshot.Content.Images).ToArray();
+                            if (payloads.Length > 0 && !run.Backend.SupportsImages) throw new SafeFailure("backend_has_no_vision");
+                            if (payloads.Length > Policy.MaximumImages) throw new SafeFailure("coding_material_query_invalid");
+                            run.Cache[key] = packet;
+                            var fresh = packet.Passages.Count(p => run.Cover(p.Reference));
+                            run.NoProgress = fresh > 0 ? 0 : run.NoProgress + 1;
+                            Answer(action, new { packet.Passages, packet.Matches, packet.More, cached, newPassages = fresh,
+                                guidance = run.NoProgress >= 3 ? "No new evidence was obtained. Use the returned material to submit_result, or request specific missing source from the platform through submit_result. Repeated reads do not establish progress." : "Use these originals directly; no extra state or review tools are needed." });
+                            if (images.Length > 0)
                             {
-                                memory.Revision, factMatches = matchingFacts.Length, attemptMatches = matchingAttempts.Length,
-                                facts = matchingFacts.Skip(selection.Offset).Take(selection.Limit),
-                                attempts = matchingAttempts.Skip(selection.Offset).Take(selection.Limit), progress = Progress()
-                            }; break;
-                        case "search_evidence":
-                            Emit(CodingRunState.Retrieving, "检索题目、代码和历史反馈");
-                            var search = CodingJson.Read<SearchArguments>(action.Arguments);
-                            result = EvidenceRetriever.Search(run.Snapshot, search.Query, search.Limit); break;
-                        case "read_evidence":
-                            Emit(CodingRunState.Retrieving, "读取相关原始材料");
-                            var reference = CodingJson.Read<EvidenceRef>(action.Arguments);
-                            if (reference.Length > 32000) throw new SafeFailure("coding_evidence_read_too_large");
-                            var evidenceText = EvidenceRetriever.Read(run.Snapshot, reference);
-                            var selected = run.Snapshot.Observations.First(o => o.Id == reference.ObservationId);
-                            if (selected.Snapshot.Content.HasImage) activeImage = selected;
-                            result = new { reference, text = evidenceText, imageAttachedOnNextCall = selected.Snapshot.Content.HasImage }; break;
-                        case "compare_observations":
-                            var comparison = CodingJson.Read<CompareArguments>(action.Arguments);
-                            result = EvidenceRetriever.Compare(run.Snapshot, comparison.Left, comparison.Right); break;
-                        case "stage_memory_changes":
-                            var changes = CodingJson.Read<MemoryChanges>(action.Arguments);
-                            // An omitted collection is an empty patch, never deletion of existing memory.
-                            changes = changes with { Facts = changes.Facts.IsDefault ? [] : changes.Facts,
-                                Assessments = changes.Assessments.IsDefault ? [] : changes.Assessments };
-                            CodingSession.ValidateChanges(run.Snapshot, changes);
-                            if (changes.Facts.Any(f => f.Id.StartsWith("analysis:", StringComparison.Ordinal)))
-                            {
-                                result = new { staged = false, error = "coding_memory_reserved_id",
-                                    instruction = "The analysis: ID namespace is reserved for analyze_issue results. Use another fact ID for a correction, then call analyze_issue when needed. Do not create or overwrite these records." };
-                                break;
+                                run.Messages.Add(new(AgentRole.User, new Payload("Retrieved image originals: " + CodingJson.Serialize(images.Select(o => o.Id)),
+                                    payloads[0].Png, payloads[0].Width, payloads[0].Height, payloads.Skip(1).ToImmutableArray())));
                             }
-                            var before = PreviewMemory();
-                            var changedFacts = changes.Facts.Any(f => !before.Facts.Any(old => old.Id == f.Id && CodingJson.Serialize(old) == CodingJson.Serialize(f)));
-                            var changed = changedFacts ||
-                                changes.Assessments.Any(a => !before.Attempts.Any(old => old.Id == a.AttemptId && CodingJson.Serialize(old.Assessment) == CodingJson.Serialize(a)));
-                            var nextFacts = new Dictionary<string, MemoryFact>(facts, StringComparer.Ordinal);
-                            var nextAssessments = new Dictionary<Guid, AttemptAssessment>(assessments);
-                            if (changed) nextFacts.Remove("analysis:" + runId.ToString("N"));
-                            foreach (var fact in changes.Facts) nextFacts[fact.Id] = fact;
-                            foreach (var assessment in changes.Assessments) nextAssessments[assessment.AttemptId] = assessment;
-                            CodingSession.ValidateChanges(run.Snapshot, new(nextFacts.Values.ToImmutableArray(), nextAssessments.Values.ToImmutableArray()));
-                            if (changed)
-                            {
-                                analysis = null; reviewedPrompt = null;
-                                priorAnalysisInvalidated |= changedFacts;
-                            }
-                            facts.Clear(); assessments.Clear();
-                            foreach (var fact in nextFacts) facts[fact.Key] = fact.Value;
-                            foreach (var assessment in nextAssessments) assessments[assessment.Key] = assessment.Value;
-                            result = new { staged = true, progress = Progress(), freshAnalysisRequired = NeedsAnalysis() }; break;
-                        case "assess_progress":
-                            RequireEmpty(action.Arguments); result = Progress(); break;
-                        case "analyze_issue":
-                            if (run.Snapshot.Memory.Attempts.LastOrDefault() is { } previousAttempt && !assessments.ContainsKey(previousAttempt.Id))
-                            {
-                                result = new { analyzed = false, reason = "First stage your assessment of the latest attempt (Unknown if unclear), plus any contract corrections, then analyze. The analysis result is saved automatically.", attemptId = previousAttempt.Id }; break;
-                            }
-                            var question = CodingJson.Read<AnalyzeArguments>(action.Arguments);
-                            if (string.IsNullOrWhiteSpace(question.Question)) throw new SafeFailure("coding_action_invalid");
-                            ValidateEvidence(question.Evidence);
-                            Emit(CodingRunState.Diagnosing, "后端正在深入分析瓶颈与替代方案");
-                            var answer = await Call(CodingPrompts.Analyst, new
-                            {
-                                question.Question,
-                                sources = question.Evidence.Select(e => new { reference = e, text = EvidenceRetriever.Read(run.Snapshot, e) })
-                            }, question.Evidence);
-                            if (answer.Name != "analysis_result") throw new SafeFailure("coding_analysis_invalid");
-                            var candidateAnalysis = CodingJson.Read<TechnicalAnalysis>(answer.Arguments);
-                            ValidateEvidence(candidateAnalysis.Evidence);
-                            if (new[] { candidateAnalysis.Conclusion, candidateAnalysis.ProposedChange, candidateAnalysis.Correctness, candidateAnalysis.Complexity, candidateAnalysis.Checks }.Any(string.IsNullOrWhiteSpace) ||
-                                CodingJson.Serialize(candidateAnalysis).Length > contextCharacterLimit / 2)
-                                throw new SafeFailure("coding_analysis_invalid");
-                            var factId = "analysis:" + runId.ToString("N");
-                            var retainedAnalysis = $"{candidateAnalysis.Conclusion}\n正确性：{candidateAnalysis.Correctness}\n复杂度：{candidateAnalysis.Complexity}\n验证：{candidateAnalysis.Checks}";
-                            if (retainedAnalysis.Length > 12000) throw new SafeFailure("coding_analysis_invalid");
-                            analysis = candidateAnalysis;
-                            facts[factId] = new(factId, "conclusion", retainedAnalysis, analysis.Evidence.Concat(question.Evidence).Distinct().ToImmutableArray());
-                            reviewedPrompt = null;
-                            result = analysis; break;
-                        case "review_solution":
-                            var candidate = CodingDirectivePolicy.Prepare(CodingJson.Read<Directive>(action.Arguments));
-                            CodingSession.ValidateChanges(run.Snapshot, Changes(), candidate);
-                            result = await Review(candidate); break;
-                        case "publish_directive":
-                            var directive = CodingDirectivePolicy.Prepare(CodingJson.Read<Directive>(action.Arguments));
-                            CodingSession.ValidateChanges(run.Snapshot, Changes(), directive);
-                            if (run.Snapshot.Memory.Attempts.LastOrDefault() is { } latestAttempt && !assessments.ContainsKey(latestAttempt.Id))
-                            {
-                                result = new { published = false, reason = "Assess the prior attempt (latest directive) against available feedback using stage_memory_changes first. Use Unknown/Claimed/Incomparable if execution or comparison is unproven.", attemptId = latestAttempt.Id }; break;
-                            }
-                            if (PreviewMemory().Facts.IsEmpty)
-                            {
-                                result = new { published = false, reason = "Persist the grounded task constraints or missing-information issue using stage_memory_changes before publishing." }; break;
-                            }
-                            if (NeedsAnalysis())
-                            {
-                                result = new { published = false, reason = "Repeated comparable failure requires analyze_issue before another directive." }; break;
-                            }
-                            if (reviewedPrompt != CodingJson.Serialize(directive)) await Review(directive);
-                            if (!reviewedAccepted)
-                            {
-                                result = new { published = false, reason = "Review rejected the directive; revise it using the review findings." }; break;
-                            }
+                            runTelemetry.Step = runTelemetry.Step with { RetrievedPassages = packet.Passages.Length, Cached = cached, NoProgressSteps = run.NoProgress };
+                            Emit(CodingRunState.Retrieving, cached ? "已复用原始材料，继续形成执行指令" : $"已取回 {packet.Passages.Length} 段原始材料", CodingDiagnosticKind.ToolCompleted, tool: CodingTool.RetrieveMaterial);
+                            if (run.NoProgress >= 6) throw new SafeFailure("coding_no_progress");
+                            break;
+                        case "submit_result":
+                            var submission = CodingJson.Read<CodingSubmission>(action.Arguments);
+                            if (submission.Directive is null) throw new SafeFailure("coding_directive_invalid");
+                            var changes = submission.Memory ?? new MemoryChanges([], []);
+                            changes = changes with { Facts = changes.Facts.IsDefault ? [] : changes.Facts, Assessments = changes.Assessments.IsDefault ? [] : changes.Assessments };
+                            var directive = CodingDirectivePolicy.Prepare(submission.Directive);
+                            CodingSession.ValidateChanges(run.Snapshot, changes, directive);
                             CheckCurrent();
-                            run.Session.Commit(run.Snapshot, Changes(), directive);
-                            Emit(CodingRunState.AwaitingFeedback, directive.TaskComplete ? "验收证据已记录" : "指令已就绪 · 等待平台反馈", directive);
-                            retry = null;
+                            var attempt = run.Session.Commit(run.Snapshot, changes, directive);
+                            Answer(action, new { submitted = true, attemptId = attempt.Id });
+                            completedConversation = new(run.Snapshot.SessionId, run.Snapshot.Epoch, run.Session.Memory.Revision, run.Backend, run.Messages.ToImmutableArray());
+                            retry = null; terminal = true;
+                            Emit(CodingRunState.AwaitingFeedback, directive.TaskComplete ? "验收证据已记录" : "执行指令已提交 · 等待平台反馈", CodingDiagnosticKind.Completed,
+                                tool: CodingTool.SubmitResult, directive: directive);
                             return;
                         default: throw new SafeFailure("coding_action_unknown");
                     }
-                    if (CodingJson.Serialize(result).Length > contextCharacterLimit / 2)
-                        result = new { error = "coding_tool_result_too_large", instruction = "The result exceeds the context budget. Request a narrower evidence range, query or smaller page; the original remains available." };
-                    history.Add(new { tool = action.Name, result });
-                    Emit(CodingRunState.Analyzing, "根据证据选择下一步");
                 }
-                catch (Exception ex) when (ex is JsonException or ArgumentException || ex is SafeFailure failure && IsRepairable(failure.Code))
+                catch (Exception ex) when (!terminal && (ex is JsonException or ArgumentException || ex is SafeFailure safe && IsRepairable(safe.Code)))
                 {
-                    if (++repairs > 2) throw new SafeFailure("coding_action_repair_exhausted");
-                    history.Add(new { tool = action.Name, error = ex is SafeFailure safe ? safe.Code : "coding_action_invalid",
-                        field = ex is JsonException json ? json.Path : null,
-                        instruction = "Correct the action using actual IDs, schema field types and valid evidence ranges. Narrative fields are strings; checks may also be an array of strings. Empty memory patch collections may be omitted. If too large, request a narrower source span or shorter candidate. Nothing was committed." });
+                    var code = ex is SafeFailure failure ? failure.Code : "coding_action_invalid";
+                    Answer(action, new { error = code, instruction = "Correct the arguments or evidence using the two provided tool schemas. Nothing was submitted. Missing source can be requested with submit_result." });
+                    Emit(CodingRunState.Analyzing, "工具结果未通过校验，已将原因返回模型修正", CodingDiagnosticKind.Repair, code, CodingDiagnostics.Tool(action.Name));
+                    if (++run.Repairs >= 4) throw new SafeFailure("coding_action_repair_exhausted");
                 }
             }
         }
         catch (OperationCanceledException)
-        {
-            Emit(CodingRunState.Failed, cts.IsCancellationRequested ? "coding_time_budget_exhausted" : "request_timed_out");
-        }
-        catch (SafeFailure ex) { Emit(CodingRunState.Failed, ex.Code); }
-        catch (Exception ex) { Emit(CodingRunState.Failed, ConnectionDiagnostics.CodeFor(ex)); }
+        { var code = cts.IsCancellationRequested ? "coding_time_budget_exhausted" : "request_timed_out"; Emit(CodingRunState.Failed, code, CodingDiagnosticKind.Failed, code); }
+        catch (SafeFailure ex)
+        { Emit(ex.Code == "coding_no_progress" ? CodingRunState.Paused : CodingRunState.Failed, CodingDiagnostics.SafeCode(ex.Code)!,
+            ex.Code == "coding_no_progress" ? CodingDiagnosticKind.Paused : CodingDiagnosticKind.Failed, ex.Code); }
+        catch (Exception ex)
+        { var code = ConnectionDiagnostics.CodeFor(ex); Emit(CodingRunState.Failed, code, CodingDiagnosticKind.Failed, code); }
         finally
         {
-            facts.Clear(); assessments.Clear(); history.Clear(); repeated.Clear(); analysis = null;
-            if (Current()) { IsRunning = false; cancellation = null; }
+            if (run.PendingAction is { } interrupted)
+                Answer(interrupted, new { error = "request_cancelled", instruction = "Tool execution was interrupted before a result was accepted. Continue from the retained task state." });
+            runTelemetry.Waiting = false; runTelemetry.Clock.Stop();
+            if (Current()) { IsRunning = false; cancellation = null; telemetry = null; }
         }
     }
-    private static bool IsRepairable(string code) => code.StartsWith("coding_evidence", StringComparison.Ordinal) ||
-        code is "coding_action_invalid" or "coding_action_unknown" or "coding_directive_invalid" or "coding_memory_invalid" or
-        "coding_assessment_invalid" or "coding_analysis_invalid" or "coding_review_invalid" or "coding_search_invalid" or
-        "coding_execution_unproven" or "coding_completion_unproven" or "coding_feedback_unproven" or "coding_context_too_large";
-    private static void RequireEmpty(JsonElement arguments)
-    {
-        if (arguments.ValueKind != JsonValueKind.Object || arguments.EnumerateObject().Any()) throw new SafeFailure("coding_action_invalid");
-    }
+    private static bool IsRepairable(string code) => code is "coding_action_invalid" or "coding_action_unknown" or "coding_directive_invalid" or
+        "coding_memory_invalid" or "coding_memory_limit" or "coding_assessment_invalid" or "coding_material_query_invalid" or "coding_evidence_invalid" or
+        "coding_evidence_read_too_large" or "backend_has_no_vision" or "coding_execution_unproven" or "coding_completion_unproven" or "coding_feedback_unproven";
 }

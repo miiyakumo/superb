@@ -5,279 +5,248 @@ using Superb.Core.Coding;
 
 internal static class CodingRunnerTests
 {
-    private static readonly Backend Backend = new("coding-test", "synthetic", "https://example.test/v1/chat/completions", "test", "");
+    private static readonly Backend Backend = new("coding", "synthetic", "https://example.test/v1/chat/completions", "test", "");
     internal static void Add(List<(string Name, Func<Task> Run)> tests)
     {
-        void Test(string name, Func<Task> body) => tests.Add(("Coding runner: " + name, body));
-        Test("model verification checklists retain every item and reject nontext items", () =>
+        void Test(string name, Func<Task> run) => tests.Add(("Two-tool runner: " + name, run));
+        Test("complete material can submit in one model call without memory or review bureaucracy", async () =>
         {
-            var input = JsonSerializer.SerializeToElement(new { conclusion = "Cause", proposedChange = "Fix", correctness = "Invariant",
-                complexity = "O(n log n)", checks = new[] { "duplicates => 0", "input unchanged" }, evidence = Array.Empty<EvidenceRef>() }, CodingJson.Options);
-            var parsed = CodingJson.Read<TechnicalAnalysis>(input);
-            Assert(parsed.Checks.Contains("duplicates => 0") && parsed.Checks.Contains("input unchanged"));
-            using var invalid = JsonDocument.Parse("{\"conclusion\":\"cause\",\"checks\":[{\"run\":\"shell\"}]}");
-            try { CodingJson.Read<TechnicalAnalysis>(invalid.RootElement); throw new Exception("Nontext checklist accepted"); }
-            catch (JsonException) { }
-            return Task.CompletedTask;
+            var (session, source) = Session();
+            var model = new Scripted((_,_) => Submit(source));
+            var runner = new CodingAgentRunner(model); var events = new List<CodingDiagnosticEvent>(); runner.Diagnostic += events.Add;
+            await runner.RunAsync(session, Backend, new(MaximumCalls:1));
+            Assert(runner.Latest is { State: CodingRunState.AwaitingFeedback, Calls: 1 } && session.Memory.Attempts.Length == 1);
+            Assert(session.CurrentDirective!.Prompt.EndsWith(CodingDirectivePolicy.ExecutionBoundary));
+            Assert(events[0].Event == CodingDiagnosticKind.Started && events[^1].Event == CodingDiagnosticKind.Completed);
+            Assert(events.Select(e => e.Sequence).SequenceEqual(Enumerable.Range(1,events.Count).Select(i => (long)i)));
+            Assert(!JsonSerializer.Serialize(events).Contains(source.Snapshot.Content.Text!));
         });
-        Test("publishes grounded memory and reviewed directive atomically", async () =>
+        Test("native assistant call and matching tool result are supplied on the next request", async () =>
         {
-            var (session, observation) = Session();
-            var directive = Instruction(observation);
-            var model = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("stage_memory_changes", new { facts = Facts(observation).Facts }), // Empty assessment patch may be omitted.
-                2 => Action("publish_directive", directive),
-                3 => Review(observation),
-                _ => throw new Exception("Unexpected extra request")
-            });
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback && runner.Latest.Calls == 3);
-            Assert(session.Memory.Facts.Length == 1 && session.Memory.Attempts.Length == 1);
-            Assert(session.CurrentDirective?.Prompt == directive.Prompt + "\n\n" + CodingDirectivePolicy.ExecutionBoundary && !runner.IsRunning && !runner.CanRetry);
-            Assert(model.Requests.Last().Content.Text!.Contains(CodingJson.Serialize(session.CurrentDirective!.Prompt)), "Reviewer must receive the exact prompt including execution boundaries");
-        });
-
-        Test("missing task memory cannot publish even when model tries", async () =>
-        {
-            var (session, observation) = Session();
-            var model = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("publish_directive", Instruction(observation)),
-                2 => Action("stage_memory_changes", Facts(observation)),
-                3 => Action("publish_directive", Instruction(observation)),
-                4 => Review(observation),
-                _ => throw new Exception("Unexpected extra request")
-            });
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback && model.Requests.Count == 4);
-            Assert(model.Requests[1].Content.Text!.Contains("Persist the grounded task"));
-        });
-
-        Test("rejected review causes revision before any memory publication", async () =>
-        {
-            var (session, observation) = Session();
-            var original = Instruction(observation);
-            var changed = original with { Prompt = "Read the actual Solve function, return its full current text and test output; do not edit yet.", Strategy = "gather-current-source" };
-            var model = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("stage_memory_changes", Facts(observation)),
-                2 => Action("publish_directive", original),
-                3 => Action("review_result", new SolutionReview(false, "Current function is missing; obtain it before patching.", [Ref(observation)])),
-                4 => session.Memory.Revision == 0 ? Action("publish_directive", changed) : throw new Exception("Premature commit"),
-                5 => Review(observation),
-                _ => throw new Exception("Unexpected extra request")
-            });
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(session.Memory.Attempts.Length == 1 && session.CurrentDirective!.Prompt == changed.Prompt + "\n\n" + CodingDirectivePolicy.ExecutionBoundary);
-        });
-
-        Test("stop discards staged edits and late results; retry freezes original evidence", async () =>
-        {
-            var (session, observation) = Session();
-            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var release = new TaskCompletionSource<AgentAction>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var model = new AsyncModel(async (call, request, token) =>
-            {
-                if (call == 1) return Action("stage_memory_changes", Facts(observation));
-                if (call == 2) { entered.SetResult(); return await release.Task; }
-                if (call == 3) return Action("stage_memory_changes", Facts(observation));
-                if (call == 4) return Action("publish_directive", Instruction(observation));
-                return Review(observation);
-            });
-            var runner = new CodingAgentRunner(model);
-            var running = runner.RunAsync(session, Backend);
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            runner.Stop();
-            var late = session.AddObservation(Input("NEW MATERIAL MUST NOT ENTER RETRY"));
-            release.SetResult(Action("publish_directive", Instruction(observation)));
-            await running;
-            Assert(session.Memory.Revision == 0 && runner.Latest?.State == CodingRunState.Cancelled && runner.CanRetry);
-            await runner.RetryAsync(session);
-            Assert(session.Memory.Attempts.Length == 1 && session.Observations.Count == 2);
-            Assert(!model.Requests[2].Content.Text!.Contains(late.Id.ToString()));
+            var (session, source) = Session();
+            var model = new Scripted((n,_) => n == 1 ? Retrieve(source, 8100, 40) : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session, Backend);
+            var next = model.Requests[1].Messages;
+            Assert(next.Length == 3 && next[1].Role == AgentRole.Assistant && next[2].Role == AgentRole.Tool);
+            Assert(next[1].Call!.CallId == next[2].ToolCallId && next[1].Call!.Name == "retrieve_material");
+            Assert(next[2].Content.Text!.Contains(source.Snapshot.Content.Text!.Substring(8100,40)));
+            AgentModelClient.BuildMessages(model.Requests[1]);
             Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback);
-            runner.Clear(); session.Clear();
-            Assert(!runner.CanRetry && runner.Latest is null && session.Observations.Count == 0);
         });
-
-        Test("new material during a run stays outside frozen context and cannot be cited", async () =>
-        {
-            var (session, observation) = Session();
-            Observation? pending = null;
-            var model = new ScriptedModel((call, request) =>
-            {
-                if (call == 1)
-                {
-                    pending = session.AddObservation(Input("NEW CODE PENDING"));
-                    return Action("stage_memory_changes", Facts(observation));
-                }
-                Assert(!request.Content.Text!.Contains(pending!.Id.ToString()));
-                return call == 2 ? Action("publish_directive", Instruction(observation)) : Review(observation);
-            });
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback && session.Memory.Attempts.Length == 1);
-        });
-
-        Test("tool loops and call budgets stop without committing staged memory", async () =>
-        {
-            foreach (var budget in new[] { 2, 12 })
-            {
-                var (session, observation) = Session();
-                var model = new ScriptedModel((call, request) => Action("read_task_state", new { }));
-                var runner = new CodingAgentRunner(model);
-                await runner.RunAsync(session, Backend, new(MaximumCalls: budget));
-                Assert(runner.Latest?.State == CodingRunState.Failed && session.Memory.Revision == 0);
-                Assert(runner.Latest!.Message == (budget == 2 ? "coding_call_budget_exhausted" : "coding_internal_loop"));
-            }
-        });
-
-        Test("invalid evidence is repaired without exposing raw protocol as a directive", async () =>
-        {
-            var (session, observation) = Session();
-            var model = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("stage_memory_changes", new MemoryChanges([new("bad", "contract", "fabrication", [new(Guid.NewGuid(), 0, 10)])], [])),
-                2 => Action("stage_memory_changes", Facts(observation)),
-                3 => Action("publish_directive", Instruction(observation)),
-                _ => Review(observation)
-            });
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(session.Memory.Facts.All(f => f.Id != "bad") && session.Memory.Attempts.Length == 1);
-            Assert(model.Requests[1].Content.Text!.Contains("coding_evidence_invalid"));
-        });
-
-        Test("semantic outcomes cannot be promoted from platform claims by missing execution evidence", async () =>
-        {
-            var (session, observation) = Session();
-            var attempt = session.Commit(session.Freeze(), Facts(observation), Instruction(observation));
-            var invalid = new AttemptAssessment(attempt.Id, "timeout", "constant", AttemptOutcome.Verified, true, false, [Ref(observation)]);
-            var model = new ScriptedModel((call, request) => Action("stage_memory_changes", new MemoryChanges([], [invalid])));
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(runner.Latest?.State == CodingRunState.Failed && session.Memory.Attempts[0].Assessment is null);
-        });
-
-        Test("repeated timeout forces independent backend diagnosis before a concrete algorithm directive", async () =>
-        {
-            var session = new CodingSession();
-            var source = session.AddObservation(Input("Count inversions, n <= 200000; time limit 2s. Preserve Solve(int[] a). Current code: long Solve(int[] a) { long count=0; for(int i=0;i<a.Length;i++) for(int j=i+1;j<a.Length;j++) if(a[i]>a[j]) count++; return count; }"));
-            var first = session.Commit(session.Freeze(), Facts(source), Instruction(source) with { Strategy = "constant-factor" });
-            var feedback1 = session.AddObservation(Input("Run 1: replaced list allocation; n=200000 reverse sorted input timed out after 2s."));
-            var second = session.Commit(session.Freeze(), new([], [Assessment(first.Id, feedback1)]), Instruction(source) with { Strategy = "constant-factor" });
-            var feedback2 = session.AddObservation(Input("Run 2: cached length; same reverse sorted n=200000 test still timed out after 2s."));
-            var replacement = Instruction(source) with
-            {
-                Direction = "Replace quadratic pair counting with merge-sort inversion counting",
-                Strategy = "merge-sort-n-log-n",
-                Prompt = "In Solve, replace the nested pair scan with merge-sort inversion counting. Count cross inversions when taking an element from the right half, use a 64-bit result, preserve the input signature. Test [3,2,1] => 3 and reverse sorted n=200000 => 19999900000. Return the changed function and actual test output. If Solve differs from the observed source, return current source before editing.",
-                ExpectedEffect = "Reduce O(n²) to O(n log n) without changing outputs"
-            };
-            var model = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("stage_memory_changes", new MemoryChanges([], [Assessment(second.Id, feedback2)])),
-                2 => Action("publish_directive", replacement), // A plausible prompt alone cannot bypass diagnosis.
-                3 => Action("analyze_issue", new { question = "Repeated constant-factor attempts fail; derive a lower-complexity solution from constraints", evidence = new[] { Ref(source), Ref(feedback1), Ref(feedback2) } }),
-                4 => Action("analysis_result", new TechnicalAnalysis("A pairwise scan is quadratic; n=200000 exceeds the budget.",
-                    "Merge-sort inversion count; add leftRemaining for each smaller right item, use Int64.",
-                    "The merge partitions within-half and cross inversions without double counting.", "O(n log n) time, O(n) auxiliary storage", "[3,2,1] => 3; descending 200000 => 19999900000", [Ref(source), Ref(feedback1), Ref(feedback2)])),
-                5 => Action("publish_directive", replacement),
-                6 => Review(source),
-                _ => throw new Exception("Unexpected extra request")
-            });
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback && model.Requests.Count == 6);
-            Assert(model.Requests[2].Content.Text!.Contains("requires analyze_issue"));
-            Assert(model.Requests[3].SystemPrompt.Contains("技术诊断专家"));
-            Assert(session.Memory.Attempts.Length == 3 && session.CurrentDirective!.Strategy == "merge-sort-n-log-n");
-            Assert(session.Memory.Facts.Any(f => f.Kind == "conclusion"));
-            var latest = session.Memory.Attempts.Last();
-            session.AddObservation(Input("No new test run yet; platform asks which output to copy."));
-            var followupModel = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("stage_memory_changes", new MemoryChanges([], [new(latest.Id, "timeout", "merge-sort-n-log-n", AttemptOutcome.Unknown, false, false, [])])),
-                2 => Action("publish_directive", Instruction(source)),
-                _ => Review(source)
-            });
-            var followup = new CodingAgentRunner(followupModel);
-            await followup.RunAsync(session, Backend);
-            Assert(followup.Latest?.State == CodingRunState.AwaitingFeedback && followupModel.Requests.Count == 3,
-                "Already diagnosed evidence must not cause repeated expert calls while asking for execution feedback.");
-        });
-
-        Test("successive runs cannot bypass evaluating the previous execution", async () =>
+        Test("unlimited runs exceed twelve calls when retrieval provides new passages", async () =>
         {
             var (session, source) = Session();
-            var attempt = session.Commit(session.Freeze(), Facts(source), Instruction(source));
-            var feedback = session.AddObservation(Input("agent says done but provides neither code nor test output"));
-            var model = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("publish_directive", Instruction(source)),
-                2 => Action("stage_memory_changes", new MemoryChanges([], [new(attempt.Id, "timeout", "gather-evidence", AttemptOutcome.Claimed, false, false, [Ref(feedback)])])),
-                3 => Action("publish_directive", Instruction(source)),
-                _ => Review(source)
-            });
-            var runner = new CodingAgentRunner(model);
-            await runner.RunAsync(session, Backend);
-            Assert(model.Requests[1].Content.Text!.Contains("Assess the prior attempt"));
-            Assert(session.Memory.Attempts[0].Assessment?.Outcome == AttemptOutcome.Claimed, runner.Latest?.Message);
-            Assert(!session.CurrentDirective!.TaskComplete);
+            var model = new Scripted((n,_) => n <= 16 ? Retrieve(source, 8100 + n * 100, 40) : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session, Backend);
+            Assert(runner.Latest is { State: CodingRunState.AwaitingFeedback, Calls: 17 });
+            foreach (var request in model.Requests) AgentModelClient.BuildMessages(request);
         });
-
-        Test("long memory remains retrievable without stuffing every old directive into context", async () =>
+        Test("third repeated read is cached and still permits submission after intervening progress", async () =>
         {
             var (session, source) = Session();
-            var facts = Enumerable.Range(0, 300).Select(i => new MemoryFact($"record-{i:D3}", "contract",
-                $"constraint {i}: " + new string('x', 2000), [Ref(source)])).ToImmutableArray();
-            var prior = session.Commit(session.Freeze(), new(facts, []), Instruction(source));
-            var model = new ScriptedModel((call, request) => call switch
-            {
-                1 => Action("read_task_state", new { query = "record-000", limit = 1 }),
-                2 => request.Content.Text!.Contains("constraint 0:")
-                    ? Action("stage_memory_changes", new MemoryChanges([], [new(prior.Id, "timeout", "gather-evidence", AttemptOutcome.Unknown, false, false, [])]))
-                    : throw new Exception("Old fact was not retrieved"),
-                3 => Action("publish_directive", Instruction(source)),
-                _ => Review(source)
-            });
-            var runner = new CodingAgentRunner(model);
+            var model = new Scripted((n,_) => n switch { 1 or 3 or 5 => Retrieve(source,8100,20), 2 or 4 => Retrieve(source,8300+n*100,20), _ => Submit(source) });
+            var runner = new CodingAgentRunner(model); var events = new List<CodingDiagnosticEvent>(); runner.Diagnostic += events.Add;
             await runner.RunAsync(session, Backend);
-            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback && session.Memory.Facts.Length == 300, runner.Latest?.Message);
-            Assert(model.Requests[0].Content.Text!.Length < 100000);
+            Assert(runner.Latest is { State: CodingRunState.AwaitingFeedback, Calls: 6 });
+            Assert(events.Count(e => e.Step?.Cached == true && e.Event == CodingDiagnosticKind.ToolCompleted) == 2);
+        });
+        Test("continuous unchanged retrieval warns then pauses with a balanced resumable checkpoint", async () =>
+        {
+            var (session, source) = Session();
+            var model = new Scripted((n,_) => n <= 7 ? Retrieve(source,8100,20) : Submit(source));
+            var runner = new CodingAgentRunner(model); var events = new List<CodingDiagnosticEvent>(); runner.Diagnostic += events.Add;
+            await runner.RunAsync(session, Backend);
+            Assert(runner.Latest is { State: CodingRunState.Paused, ErrorCode: "coding_no_progress", Calls: 7 } && runner.CanRetry);
+            Assert(events[^1].Event == CodingDiagnosticKind.Paused && events[^1].Step?.NoProgressSteps == 6);
+            Assert(session.Memory.Attempts.IsEmpty && model.Requests[^1].Messages.Any(m => m.Content.Text?.Contains("No new evidence") == true));
+            await runner.RetryAsync(session);
+            Assert(runner.Latest is { State: CodingRunState.AwaitingFeedback, Calls: 1 } && !runner.CanRetry);
+            AgentModelClient.BuildMessages(model.Requests[^1]);
+        });
+        Test("varying queries with empty results cannot evade the no-progress detector", async () =>
+        {
+            var (session, _) = Session();
+            var model = new Scripted((n,_) => Action("retrieve_material", new MaterialQuery("absent-query-" + n)));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session, Backend);
+            Assert(runner.Latest is { State: CodingRunState.Paused, Calls: 6 });
+        });
+        Test("retry resumes the failed model step without rerunning completed retrieval or including new material", async () =>
+        {
+            var (session, source) = Session();
+            var model = new Scripted((n,_) => n switch { 1 => Retrieve(source,8100,20), 2 => throw new SafeFailure("http_503"), _ => Submit(source) });
+            var runner = new CodingAgentRunner(model); var events = new List<CodingDiagnosticEvent>(); runner.Diagnostic += events.Add;
+            await runner.RunAsync(session, Backend);
+            Assert(runner.CanRetry && session.Memory.Attempts.IsEmpty);
+            session.AddObservation(new(Guid.NewGuid(), InputKind.ClipboardText, Payload.FromText("new-pending-private-feedback"), 0, DateTimeOffset.UtcNow));
+            await runner.RetryAsync(session);
+            Assert(model.Requests[1].Messages.SequenceEqual(model.Requests[2].Messages));
+            Assert(!model.Requests[2].Messages.Any(m => m.Content.Text?.Contains("new-pending-private-feedback") == true));
+            Assert(runner.Latest is { State: CodingRunState.AwaitingFeedback, Calls: 1 });
+            Assert(events.Any(e => e.Event == CodingDiagnosticKind.Resumed) && events[^1].Step?.CheckpointResumed == true);
+        });
+        Test("successful turns continue the same native conversation with updated state", async () =>
+        {
+            var (session, source) = Session(); var model = new Scripted((_,_) => Submit(source)); var runner = new CodingAgentRunner(model);
+            await runner.RunAsync(session, Backend);
+            var first = session.Memory.Attempts[0];
+            session.AddObservation(new(Guid.NewGuid(),InputKind.ClipboardText,Payload.FromText("new returned source"),0,DateTimeOffset.UtcNow));
+            await runner.RunAsync(session, Backend);
+            var next = model.Requests[1].Messages;
+            Assert(next.Count(m => m.Role == AgentRole.User) == 2 && next.Count(m => m.Role == AgentRole.Assistant) == 1);
+            Assert(next.Any(m => m.Role == AgentRole.Tool && m.Content.Text!.Contains(first.Id.ToString())));
+            Assert(next[^1].Content.Text!.Contains("new returned source"));
+            AgentModelClient.BuildMessages(model.Requests[1]);
+        });
+        Test("invalid evidence is returned as a correlated tool error and repaired atomically", async () =>
+        {
+            var (session, source) = Session();
+            var invalid = Instruction(source) with { Evidence = [new(Guid.NewGuid(),0,1)] };
+            var model = new Scripted((n,_) => n == 1 ? Action("submit_result", new CodingSubmission(invalid)) : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session, Backend);
+            Assert(runner.Latest is { State: CodingRunState.AwaitingFeedback, Calls: 2 });
+            var next = model.Requests[1].Messages;
+            Assert(next[^1].Role == AgentRole.Tool && next[^1].ToolCallId == next[^2].Call!.CallId && next[^1].Content.Text!.Contains("coding_evidence_invalid"));
+            Assert(session.Memory.Attempts.Length == 1);
+        });
+        Test("unknown tools have no executor and receive a native error result", async () =>
+        {
+            var (session, source) = Session();
+            var model = new Scripted((n,_) => n == 1 ? Action("execute_shell", new { cmd = "private-command" }) : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session, Backend);
+            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback && model.Requests[1].Messages[^1].Content.Text!.Contains("coding_action_unknown"));
+        });
+        Test("malformed argument strings retain their real call ID and receive a repair result", async () =>
+        {
+            var (session, source) = Session();
+            var model = new Scripted((n,_) => n == 1 ? new(Guid.NewGuid().ToString("N"),"retrieve_material","{invalid") : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session, Backend);
+            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback);
+            AgentModelClient.BuildMessages(model.Requests[1]);
+        });
+        Test("missing native calls receive bounded correction without inventing a call or dropping history", async () =>
+        {
+            var (session, source) = Session();
+            var model = new Scripted((n,_) => n == 1 ? throw new SafeFailure("coding_tool_call_required") : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session,Backend);
+            Assert(runner.Latest is { State: CodingRunState.AwaitingFeedback, Calls: 2 });
+            Assert(model.Requests[1].Messages.Length == 2 && model.Requests[1].Messages.All(m => m.Role == AgentRole.User));
+            AgentModelClient.BuildMessages(model.Requests[1]);
+            var invalid = new Scripted((_,_) => throw new SafeFailure("coding_tool_call_required"));
+            var failed = new CodingAgentRunner(invalid); await failed.RunAsync(session,Backend);
+            Assert(failed.Latest is { ErrorCode: "coding_action_repair_exhausted", Calls: 4 } && failed.CanRetry);
+        });
+        Test("duplicate provider call IDs cannot corrupt the checkpoint", async () =>
+        {
+            var (session, source) = Session(); var a = Retrieve(source,8100,20);
+            var model = new Scripted((_,_) => a); var runner = new CodingAgentRunner(model); await runner.RunAsync(session, Backend);
+            Assert(runner.Latest?.ErrorCode == "coding_history_invalid" && session.Memory.Attempts.IsEmpty);
+            AgentModelClient.BuildMessages(model.Requests[^1]);
+        });
+        Test("stop rejects a late model result while a new run can finish", async () =>
+        {
+            var (session, source) = Session(); var entered = new TaskCompletionSource(); var release = new TaskCompletionSource<AgentAction>();
+            var model = new AsyncModel(async (n,_,_) => { if(n==1) {entered.SetResult();return await release.Task;} return Submit(source); });
+            var runner = new CodingAgentRunner(model); var pending = runner.RunAsync(session,Backend); await entered.Task; runner.Stop();
+            await pending.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert(runner.Latest?.State == CodingRunState.Cancelled && session.Memory.Attempts.IsEmpty);
+            await runner.RunAsync(session,Backend); release.SetResult(Submit(source)); await Task.Yield();
+            Assert(session.Memory.Attempts.Length == 1 && runner.Latest?.State == CodingRunState.AwaitingFeedback);
+        });
+        Test("clear removes checkpoints and forbids late publication", async () =>
+        {
+            var (session, source) = Session(); var release = new TaskCompletionSource<AgentAction>();
+            var model = new AsyncModel(async (_,_,_) => await release.Task); var runner = new CodingAgentRunner(model);
+            var task = runner.RunAsync(session,Backend); runner.Clear(); session.Clear(); await task;
+            release.SetResult(Submit(source)); await Task.Yield();
+            Assert(runner.Latest is null && !runner.CanRetry && session.Memory.Attempts.IsEmpty && session.Observations.Count==0);
+        });
+        Test("call and output budgets retain finished steps without publishing", async () =>
+        {
+            var (session, source) = Session();
+            var model = new Scripted((n,_) => n <= 2 ? Retrieve(source,8100+n*100,20) : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session,Backend,new(MaximumCalls:2));
+            Assert(runner.Latest?.ErrorCode == "coding_call_budget_exhausted" && runner.CanRetry && session.Memory.Attempts.IsEmpty);
+            await runner.RetryAsync(session); Assert(runner.Latest is { State:CodingRunState.AwaitingFeedback,Calls:1 });
+            var (other,otherSource) = Session();
+            var tooLarge = new CodingAgentRunner(new Scripted((n,_) => n == 1 ? Action("submit_result",new CodingSubmission(Instruction(otherSource) with { Prompt = new string('x',2000) })) : Submit(otherSource)));
+            await tooLarge.RunAsync(other,Backend,new(MaximumOutputChars:1024));
+            Assert(tooLarge.Latest?.ErrorCode == "coding_output_budget_exhausted" && other.Memory.Attempts.IsEmpty);
+            await tooLarge.RetryAsync(other); Assert(tooLarge.Latest?.State == CodingRunState.AwaitingFeedback);
+        });
+        Test("context pressure fails explicitly without deleting native call pairs", async () =>
+        {
+            var (session, source) = Session(); var model = new Scripted((_,_) => Retrieve(source,8100,6000));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session,Backend with { MaxInputBytes=40000 });
+            Assert(runner.Latest?.ErrorCode == "coding_context_too_large" && model.Requests.Count==1 && runner.CanRetry);
+            await runner.RetryAsync(session); Assert(model.Requests.Count==1 && session.Memory.Attempts.IsEmpty);
+        });
+        Test("changed memory invalidates an old retry checkpoint", async () =>
+        {
+            var (session, source) = Session(); var runner = new CodingAgentRunner(new Scripted((_,_) => throw new SafeFailure("http_503")));
+            await runner.RunAsync(session,Backend); session.Commit(session.Freeze(),new([],[]),Instruction(source));
+            try { await runner.RetryAsync(session); throw new Exception("Stale checkpoint accepted"); }
+            catch(SafeFailure ex) { Assert(ex.Code=="coding_retry_stale"); }
+        });
+        Test("diagnostic observer failures do not abort a successful run", async () =>
+        {
+            var (session, source) = Session(); var runner = new CodingAgentRunner(new Scripted((_,_)=>Submit(source)));
+            runner.Diagnostic += _ => throw new IOException("private-diagnostic-location");
+            await runner.RunAsync(session,Backend); Assert(runner.Latest?.State==CodingRunState.AwaitingFeedback);
+        });
+        Test("batch retrieval returns exact original offsets and image packets keep paired history valid", async () =>
+        {
+            var (session, source) = Session();
+            var image = session.AddObservation(new(Guid.NewGuid(), InputKind.ClipboardImage, new Payload("image evidence", [1,2,3], 1, 1), 0, DateTimeOffset.UtcNow));
+            var model = new Scripted((n,_) => n == 1 ? Action("retrieve_material", new MaterialQuery(Ranges:[new(source.Id,8100,30),new(image.Id,0,0)])) : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session,Backend with { SupportsImages=true });
+            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback);
+            var messages = model.Requests[1].Messages;
+            Assert(messages.Count(m => m.Content.HasImage) == 1 && messages[^1].Role == AgentRole.User && messages[^1].Content.HasImage);
+            Assert(messages.Any(m => m.Role == AgentRole.Tool && m.Content.Text!.Contains("8100")));
+            AgentModelClient.BuildMessages(model.Requests[1]);
+        });
+        Test("retrieval search pagination is bounded and default batches fit their result budget", async () =>
+        {
+            var (session, source) = Session();
+            for(var i=0;i<5;i++) session.AddObservation(new(Guid.NewGuid(),InputKind.ClipboardText,Payload.FromText("needle-"+i+new string('x',13000)),0,DateTimeOffset.UtcNow));
+            var model = new Scripted((n,_) => n switch { 1=>Action("retrieve_material",new MaterialQuery()), 2=>Action("retrieve_material",new MaterialQuery("needle",Offset:1,Limit:2)), _=>Submit(source) });
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session,Backend);
+            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback);
+            using var result=JsonDocument.Parse(model.Requests[2].Messages.Last(m=>m.Role==AgentRole.Tool).Content.Text!);
+            Assert(result.RootElement.GetProperty("passages").GetArrayLength()==2 && result.RootElement.GetProperty("more").GetBoolean());
+        });
+        Test("a text-only model receives a repairable image-capability result without image transmission", async () =>
+        {
+            var (session, source) = Session();
+            var image = session.AddObservation(new(Guid.NewGuid(),InputKind.ClipboardImage,new Payload("old image",[1,2,3],1,1),0,DateTimeOffset.UtcNow));
+            var model = new Scripted((n,_) => n == 1 ? Action("retrieve_material",new MaterialQuery(Ranges:[new(image.Id,0,0)])) : Submit(source));
+            var runner = new CodingAgentRunner(model); await runner.RunAsync(session,Backend);
+            Assert(runner.Latest?.State == CodingRunState.AwaitingFeedback && model.Requests.All(r=>r.Messages.All(m=>!m.Content.HasImage)));
+            Assert(model.Requests[1].Messages[^1].Content.Text!.Contains("backend_has_no_vision"));
+            AgentModelClient.BuildMessages(model.Requests[1]);
         });
     }
-
-    private static AttemptAssessment Assessment(Guid attempt, Observation feedback) => new(attempt, "timeout", "constant-factor",
-        AttemptOutcome.Unchanged, true, true, [Ref(feedback)], [feedback.Id]);
-
-    internal static AgentAction Action<T>(string name, T arguments) => new(name, JsonSerializer.SerializeToElement(arguments, CodingJson.Options));
-    private static AgentAction Review(Observation observation) => Action("review_result", new SolutionReview(true, "Scoped evidence gathering; no unverified completion or fabricated path.", [Ref(observation)]));
-    private static (CodingSession, Observation) Session()
+    internal static (CodingSession Session, Observation Source) Session()
     {
-        var session = new CodingSession(); return (session, session.AddObservation(Input("Task: preserve Solve interface. Current source unknown. Test feedback: timeout.")));
+        var session = new CodingSession();
+        var source = session.AddObservation(new(Guid.NewGuid(),InputKind.ClipboardText,Payload.FromText(new string('a',18000)),0,DateTimeOffset.UtcNow));
+        return(session,source);
     }
-    private static InputSnapshot Input(string value) => new(Guid.NewGuid(), InputKind.ClipboardText, Payload.FromText(value), 1, DateTimeOffset.UtcNow);
-    private static EvidenceRef Ref(Observation o) => new(o.Id, 0, o.Snapshot.Content.Text!.Length);
-    private static MemoryChanges Facts(Observation o) => new([new("contract", "contract", "Preserve Solve interface; source is not yet available.", [Ref(o)])], []);
-    private static Directive Instruction(Observation o) => new("Get the current Solve function", "Locate Solve in the platform IDE",
-        "Return the complete current Solve function, its input scale constraints and the full timeout test feedback. Do not edit yet.",
-        "Current function and full test output", "timeout", "gather-evidence", "Enough evidence to distinguish algorithm cost from waiting", [Ref(o)]);
-    private static void Assert(bool condition, string? detail = null) { if (!condition) throw new Exception("Coding runner assertion failed" + (detail is null ? "" : ": " + detail)); }
-    private sealed class ScriptedModel(Func<int, AgentModelRequest, AgentAction> respond) : IAgentModelClient
+    internal static EvidenceRef Ref(Observation source) => new(source.Id,0,Math.Min(100,source.Snapshot.Content.Text!.Length));
+    internal static Directive Instruction(Observation source) => new("取得当前函数","直接转发即可","Return current Solve and its test feedback; do not edit yet.","完整函数与测试反馈","missing-source","gather","Obtain current source",[Ref(source)]);
+    internal static AgentAction Submit(Observation source) => Action("submit_result",new CodingSubmission(Instruction(source)));
+    internal static AgentAction Retrieve(Observation source,int start,int length) => Action("retrieve_material",new MaterialQuery(Ranges:[new(source.Id,start,length)]));
+    internal static AgentAction Action<T>(string name,T value) => new(Guid.NewGuid().ToString("N"),name,CodingJson.Serialize(value));
+    internal static void Assert(bool condition) { if(!condition) throw new Exception("Two-tool runner assertion failed"); }
+    internal sealed class Scripted(Func<int,AgentModelRequest,AgentAction> next) : IAgentModelClient
     {
-        public List<AgentModelRequest> Requests { get; } = [];
-        public Task<AgentAction> NextAsync(AgentModelRequest request, CancellationToken token)
-        { Requests.Add(request); return Task.FromResult(respond(Requests.Count, request)); }
+        public List<AgentModelRequest> Requests {get;}=[];
+        public Task<AgentAction> NextAsync(AgentModelRequest request,CancellationToken token)
+        { Requests.Add(request); return Task.FromResult(next(Requests.Count,request)); }
     }
-    private sealed class AsyncModel(Func<int, AgentModelRequest, CancellationToken, Task<AgentAction>> respond) : IAgentModelClient
+    internal sealed class AsyncModel(Func<int,AgentModelRequest,CancellationToken,Task<AgentAction>> next) : IAgentModelClient
     {
-        public List<AgentModelRequest> Requests { get; } = [];
-        public Task<AgentAction> NextAsync(AgentModelRequest request, CancellationToken token)
-        { Requests.Add(request); return respond(Requests.Count, request, token); }
+        private int count;
+        public Task<AgentAction> NextAsync(AgentModelRequest request,CancellationToken token)=>next(++count,request,token);
     }
 }

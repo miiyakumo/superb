@@ -11,7 +11,7 @@ public static class EvidenceRetriever
 {
     public static IReadOnlyList<EvidenceMatch> Search(CodingSnapshot snapshot, string query, int limit = 8)
     {
-        if (string.IsNullOrWhiteSpace(query) || query.Length > 2000 || limit is < 1 or > 32)
+        if (string.IsNullOrWhiteSpace(query) || query.Length > 2000 || limit < 1)
             throw new SafeFailure("coding_search_invalid");
         var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Distinct(StringComparer.OrdinalIgnoreCase).Take(32).ToArray();

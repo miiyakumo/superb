@@ -134,7 +134,7 @@ public partial class MainWindow
         // Freeze the recipient and scene before asynchronous capture; settings may change
         // while the windows are hidden. This action never silently changes the receiver.
         var settings = config; var scene = WorkspaceScene;
-        var codingOptions = IsCoding ? reader.CodingOptions : null;
+        var codingOptions = IsCoding ? settings.CodingAnalysis : null;
         PreparedRequest? capturedRequest = null;
         if (sendImmediately)
         {

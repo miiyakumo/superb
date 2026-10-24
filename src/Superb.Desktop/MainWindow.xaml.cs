@@ -52,7 +52,11 @@ public partial class MainWindow : Window
         backend = new(credentials);
         coordinator = new(testBackend ?? backend);
         codingRunner = new(testAgent ?? new AgentModelClient(credentials));
+        codingDiagnosticLog = isolatedWorkspaceTest ? null : new(CodingDiagnosticLog.DefaultDirectory);
+        codingRunner.Diagnostic += entry => codingDiagnosticLog?.Write(entry);
         codingRunner.Updated += OnCodingUpdate;
+        codingProgressTimer.Tick += (_, _) => RefreshCodingClock();
+        DiagnosticsLocation.Text = CodingDiagnosticLog.DefaultDirectory;
         protection = new(this, false);
         protection.AllowMouseActivation = () => !IsVisible || PresentationSource.FromVisual(this)?.CompositionTarget is null ||
             (Native.GetCursorPos(out var point) &&
@@ -369,7 +373,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Report(ex);
+            if (IsCoding && (action is "send" or "retry" or "clipboardAnalyze" or "captureScreenSend")) ReportCodingStartFailure(ex);
+            else Report(ex);
         }
     }
     private void Report(Exception ex)
@@ -470,7 +475,7 @@ public partial class MainWindow : Window
         if (exiting) return;
         exiting = true;
         var layout = reader.Layout();
-        EmergencyPause("已退出"); guardTimer.Stop(); layoutSaveTimer.Stop();
+        EmergencyPause("已退出"); guardTimer.Stop(); layoutSaveTimer.Stop(); codingProgressTimer.Stop();
         if (isolatedWorkspaceTest) { reader.Finish(); backend.Dispose(); return; }
         hotkeys?.Dispose();
         if (sessionListenerReady) Native.WTSUnRegisterSessionNotification(handle);

@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Superb.Core;
+using Superb.Core.Coding;
 
 namespace Superb.Desktop;
 
@@ -32,6 +33,10 @@ public partial class MainWindow
             .Concat(config.Backends.Select(b => new BackendChoice(b.Id, b.Name))).ToArray();
         SceneBackendPicker.SelectedValue = scene?.BackendId ?? "";
         SceneTriggerSummary.Text = scene is null ? "请先新建场景" : "发起键：" + TriggerLabel(scene.Trigger);
+        CodingAnalysisSettings.Visibility = scene?.Id == "coding" ? Visibility.Visible : Visibility.Collapsed;
+        CodingAnalysisSettings.IsExpanded = false;
+        CodingCalls.Text = config.CodingAnalysis.MaximumCalls?.ToString() ?? "";
+        CodingSeconds.Text = config.CodingAnalysis.MaximumSeconds.ToString();
     }
     private void ScenePicker_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (!loading) PopulateSelectedScene(); }
     private void OpenHotkeys_Click(object sender, RoutedEventArgs e) { MainTabs.SelectedItem = ShortcutsTab; }
@@ -71,9 +76,22 @@ public partial class MainWindow
         var scene = ScenePicker.SelectedItem as ScenePreset ?? throw new SafeFailure("scene_missing");
         var updated = scene with { Name = SceneName.Text.Trim(), SystemPrompt = SceneSystemPrompt.Text,
             BackendId = SceneBackendPicker.SelectedValue is string id && id.Length > 0 ? id : null };
-        return config with { Scenes = config.Scenes.Replace(scene, updated) };
+        var analysis = config.CodingAnalysis;
+        if (scene.Id == "coding")
+        {
+            int? calls = null;
+            if (!string.IsNullOrWhiteSpace(CodingCalls.Text))
+            {
+                if (!int.TryParse(CodingCalls.Text, out var enteredCalls)) throw new SafeFailure("coding_budget_invalid");
+                calls = enteredCalls;
+            }
+            if (!int.TryParse(CodingSeconds.Text, out var seconds))
+                throw new SafeFailure("coding_budget_invalid");
+            analysis = analysis with { MaximumCalls = calls, MaximumSeconds = seconds };
+            analysis.Validate();
+        }
+        return config with { Scenes = config.Scenes.Replace(scene, updated), CodingAnalysis = analysis };
     }
-
     private void NewScene_Click(object sender, RoutedEventArgs e)
     {
         var scene = SceneDefaults.Custom();
@@ -99,6 +117,12 @@ public partial class MainWindow
         // Fill the editor only; saving is explicit, and the user's binding remains unchanged.
         SceneName.Text = original.Name; SceneSystemPrompt.Text = original.SystemPrompt;
         SceneBackendPicker.SelectedValue = "";
+        if (scene.Id == "coding")
+        {
+            var defaults = new CodingRunOptions();
+            CodingCalls.Text = defaults.MaximumCalls?.ToString() ?? "";
+            CodingSeconds.Text = defaults.MaximumSeconds.ToString();
+        }
         Status("已填入预设内容，保存场景后生效；发起键保持不变");
     }
     private void ResetHotkeys_Click(object sender, RoutedEventArgs e)

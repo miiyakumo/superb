@@ -621,7 +621,7 @@ foreach (var scenario in new[] { "success", "redirect", "oversize", "unauthorize
 
 var failures = 0;
 CodingMemoryTests.Add(tests);
-AgentProtocolTests.Add(tests);
+AgentToolCallTests.Add(tests);
 CodingRunnerTests.Add(tests);
 CodingInvariantTests.Add(tests);
 foreach (var (name, run) in tests)
