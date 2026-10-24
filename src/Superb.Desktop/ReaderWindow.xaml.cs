@@ -93,10 +93,10 @@ public partial class ReaderWindow : Window
     }
     private void SetEditingControls()
     {
-        DraftText.IsReadOnly = !ready || !Interactive || busy;
+        DraftText.IsReadOnly = !ready || !Interactive || busy && !codingAcceptsInput;
         // Explicit clicks enter editing; simply showing or updating the window never activates it.
-        DraftText.Focusable = ready && !busy;
-        WorkspaceScene.IsEnabled = ready && !busy;
+        DraftText.Focusable = ready && (!busy || codingAcceptsInput);
+        WorkspaceScene.IsEnabled = ready && (!busy || codingMode);
         Answer.SetInteractive(Interactive);
         InteractionButton.Content = Interactive ? "完成编辑" : "编辑";
         InteractionButton.ToolTip = Interactive ? "结束编辑，不自动跳回其他窗口；如需返回原应用，请手动点击。" : "仅启用编辑，不抢焦点；随后点击输入框或选择回答文字会使原窗口失焦。";
@@ -134,6 +134,7 @@ public partial class ReaderWindow : Window
     }
     public void Clear()
     {
+        CodingHistory.Text = ""; CodingPending.Text = "";
         populating = true; DraftText.Clear(); populating = false;
         ClearInput(); ClearAnswer(); StateText.Text = "等待输入";
         ComposerExpander.IsExpanded = true;
@@ -231,7 +232,7 @@ public partial class ReaderWindow : Window
         // is passive; only a click on the text area should enable editing.
         for (var node = e.OriginalSource as DependencyObject; node is not null && !ReferenceEquals(node, sender); node = ParentOf(node))
             if (node is ScrollBar or Thumb or ButtonBase) return;
-        if (ready && !busy && !Interactive) Command?.Invoke("beginEdit");
+        if (ready && (!busy || codingAcceptsInput) && !Interactive) Command?.Invoke("beginEdit");
         // Let the same mouse event place the caret normally.
     }
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)

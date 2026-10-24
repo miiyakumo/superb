@@ -38,8 +38,7 @@ public partial class MainWindow
     private Task RunScene(ScenePreset scene)
     {
         if (!Ready()) return Task.CompletedTask;
-        if (Working) { Status("正在处理；请先停止生成"); return Task.CompletedTask; }
-        workspaceSceneId = scene.Id;
+        SelectWorkspaceScene(scene.Id);
         if (!reader.IsVisible) reader.Show();
         Status("场景已选择 · 使用当前输入与截图队列，准备好后发送");
         return Task.CompletedTask;

@@ -290,3 +290,34 @@ Windows 测试 **36/36** 通过，新增覆盖默认／自定义键更新、冲�
 - 撤销分类材料槽位、自动轮次、独立草稿、督导提示词及迁移、专属控件与测试；AI Coding 恢复原有场景提示词和通用工作区流程。新的三方协作方案尚未实现。
 - 保留当前屏幕一键发送、独立 F4、局部鼠标穿透、按钮箭头指针，以及对应回归和文档。
 - `dotnet build Superb.slnx -c Release --no-restore`：0 警告、0 错误；核心测试 **54/54**，Windows 集成测试 **62/62**。未调用真实模型或运行真实剪贴板测试，未新增浏览器、混合 DPI 或录屏采集矩阵结论。
+
+## 2026-10-24：AI Coding 三方协作交付
+
+实现独立的持续任务流程：原始观察和证据引用、结构化任务记忆、指令与反馈关联、可比较失败识别、后端专家诊断及独立审核。用户复制输入和平台提示词，不维护轮次或分类；平台负责操作 IDE，后端负责技术判断。普通问答保留原流程。
+
+最终自动化验证：
+
+- `dotnet build Superb.slnx -c Release --no-restore`：0 警告、0 错误。
+- `dotnet tests/Superb.Tests/bin/Release/net10.0/Superb.Tests.dll`：**101/101**。覆盖原文去重、证据范围、原子提交、独立反馈、重复失败、假成功、专家来源保留、当前验证、上下文检索、协议限额、失败重试和取消后迟到结果。
+- `dotnet tests/Superb.WindowsTests/bin/Release/net10.0-windows/Superb.WindowsTests.dll --render-dir artifacts/coding-delivery/ui-final`：**69/69**。新增场景隔离、持续任务、处理中入队、复制内容、冻结重试、截图保留记忆和实际接收方、停止/暂停清理、窄窗显示；保留普通场景回归。已目检 400 像素宽 Coding 布局。
+- `dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/aicoding-win-x64`：成功。入口 `artifacts/aicoding-win-x64/Superb.exe`，需保留同目录依赖；完整 ZIP 为 `artifacts/coding-delivery/Superb-AICoding-win-x64.zip`。
+
+真实模型验证使用已配置的 DeepSeek `deepseek-flash`，只发送合成题目、代码和反馈；未读取用户剪贴板或牛客 IDE。测试工具不修改用户连接设置，每次最多 12 次调用、300 秒，单次生成上限临时限制为 16384 tokens。JSON 动作和原生工具两种协议均有成功记录。测试记录中的关键词匹配仅用于筛查，指令另经人工检查。
+
+最终构建的三个合成场景均成功发布经审核的指令：
+
+| 场景 | 协议 / 调用数 / 耗时 | 实际输出 |
+| --- | --- | --- |
+| 两次同规模超时，平台一直做常数优化 | JSON / 7 次 / 111.1 秒 | 主动调用后端专家，给出 O(n log n) 自底向上归并完整函数和验证步骤 |
+| 规模仅 1 的异步等待超时 | 原生工具 / 3 次 / 25.2 秒 | 定位从未调用 resolve 的 Promise，给出具体修复，未误判为复杂度问题 |
+| 当前源码未提供 | JSON / 5 次 / 38.8 秒 | 仅要求原始源码和测试反馈，返回材料后停止、不改代码；发送前操作为直接转发 |
+
+对应 `live-complexity-json-delivery.json`、`live-waiting-native-delivery.json`、`live-missing-json-delivery.json`。两个 JSON 场景均出现两次格式修复后成功，原始无效内容不留存；格式兼容性仍取决于模型。审核能够检查方向和依据，但不保证附带解释全部准确：例如异步场景生成文案将 `return value` 笼统描述为改变签名，这一解释不准确，虽然给出的 `resolve(value)` 修复本身成立。
+
+调试过程中实际遇到过 JSON 动作格式错误、思考模式不支持强制工具选择、遗漏空修订数组、验证清单返回文本数组，以及审核响应 token 耗尽；相应兼容处理和严格校验已修复。供应商仍可能返回错误格式或超出预算，不能承诺每次成功；错误运行不提交未完成记忆、不生成可复制的未审核指令。早期模型还把取证和条件式修改合并、让用户手工改代码，已收紧控制及审核提示，并统一附上源码不符时停止修改的边界。
+
+`live-complexity-json-final.json` 中的原样生成函数另经本机 Python 3.12 运行：**6333 个小规模/边界样本**与暴力计数一致；20 万元素的逆序、正序、全重复和随机重复值四类各运行 3 次，结果正确且输入未被修改，函数计时约 0.216–0.310 秒。原函数、复现脚本及报告位于 `artifacts/coding-delivery/generated_count_inversions.py`、`verify_generated_inversion.py`、`generated-code-verification.json`。这是本机合成验证，不代表牛客平台 1 秒验收通过。
+
+最终 `live-complexity-json-delivery.json` 生成的自底向上归并函数也原样通过相同 **6333** 个对拍和四类 20 万元素验证，输入不变，计时约 **0.186–0.294 秒**。对应文件均带 `-delivery` 后缀，保留此前证据；执行前确认函数只使用列表、循环和纯内置操作，无文件、网络或进程调用。
+
+证据目录为 `artifacts/coding-delivery/`，包含最终构建、测试、发布日志、UI 渲染、合成模型响应及生成代码验证。未执行实际牛客题目、真实平台 agent 或用户剪贴板端到端验收；本轮也未新增原生鼠标输入、双浏览器、混合 DPI 或录屏采集矩阵结论。

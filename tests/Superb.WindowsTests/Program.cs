@@ -21,6 +21,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Contains("--coding-live-evaluation")) return CodingLiveEvaluation.Run(args);
         if (args.Contains("--pass-through-target")) return PassThroughTests.RunTarget();
         if (args.Contains("--window-audit")) return WindowAudit.Run(args);
         if (args.Contains("--popup-audit")) return PopupAudit.Run(args);
@@ -229,6 +230,7 @@ internal static class Program
             Assert(((Button)window.FindName("ResumeButton")).Visibility == Visibility.Visible);
         }));
         WorkspaceTests.Add(tests, args);
+        CodingWorkspaceTests.Add(tests, args);
         if (args.Contains("--interactive")) tests.Add(("Protection attributes and no-activate styles on an interactive desktop", () =>
         {
             var window = new Window { ShowActivated = false, ShowInTaskbar = false, Topmost = true, Width = 200, Height = 120 };

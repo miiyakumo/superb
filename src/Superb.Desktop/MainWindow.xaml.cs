@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Superb.Core;
+using Superb.Core.Coding;
 using Superb.Desktop.Platform;
 
 namespace Superb.Desktop;
@@ -39,7 +40,7 @@ public partial class MainWindow : Window
     public MainWindow() : this(null, null) { }
     // Isolated synthetic integration host: no user configuration, global hotkeys, clipboard reads or persistence.
     internal MainWindow(Configuration? testConfiguration, IBackendClient? testBackend,
-        Func<CaptureTarget, Task<Payload>>? testCapture = null)
+        Func<CaptureTarget, Task<Payload>>? testCapture = null, IAgentModelClient? testAgent = null)
     {
         isolatedWorkspaceTest = testConfiguration is not null && testBackend is not null;
         captureScreenshot = isolatedWorkspaceTest && testCapture is not null
@@ -48,6 +49,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         backend = new(credentials);
         coordinator = new(testBackend ?? backend);
+        codingRunner = new(testAgent ?? new AgentModelClient(credentials));
+        codingRunner.Updated += OnCodingUpdate;
         protection = new(this, false);
         protection.AllowMouseActivation = () => !IsVisible || PresentationSource.FromVisual(this)?.CompositionTarget is null ||
             (Native.GetCursorPos(out var point) &&
@@ -73,7 +76,7 @@ public partial class MainWindow : Window
             if (latestUpdate is { } update)
             {
                 latestUpdate = null;
-                if (coordinator.IsCurrent(update.Attempt))
+                if (!IsCoding && coordinator.IsCurrent(update.Attempt))
                 {
                     reader.Render(update.Text, StateLabel(update));
                 }
@@ -212,7 +215,7 @@ public partial class MainWindow : Window
     private void OnUpdate(RequestUpdate update)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => OnUpdate(update)); return; }
-        if (!coordinator.IsCurrent(update.Attempt)) return;
+        if (IsCoding || !coordinator.IsCurrent(update.Attempt)) return;
         if (!protection.Check() || !reader.Check()) { ProtectionFailed(); return; }
         StatusLabel.Text = StateLabel(update);
         SetError(update.Code);
@@ -245,7 +248,9 @@ public partial class MainWindow : Window
         captureSelectionCancellation?.Cancel();
         CancelProbe();
         operation++; preparing = false; coordinator.SetMode(mode); completed = null; latestUpdate = null;
-        workspace.Clear(); reader.Clear(); ClearOutput(); ApiKey.Clear(); QuickApiKey.Clear();
+        codingRunner.Clear(); codingSession.Clear(); codingTarget = null;
+        ordinaryWorkspace.Clear(); codingWorkspace.Clear(); ordinaryDraft = codingDraft = "";
+        reader.Clear(); ClearOutput(); ApiKey.Clear(); QuickApiKey.Clear();
         if (reader.Check()) reader.SetMode(false);
         if (config.ClearOwnedClipboardOnPause) { try { clipboard?.ClearOwned(); } catch { /* Clear best effort only our own data. */ } }
         UpdateMode(); Status(reason);
@@ -274,21 +279,24 @@ public partial class MainWindow : Window
             }
             if (action.StartsWith("removeInput:", StringComparison.Ordinal) && Guid.TryParse(action[12..], out var itemId))
             {
-                if (!Working) { workspace.Remove(itemId); reader.SetInputs(workspace.Items); Status("已从队列移除"); }
+                if (!Working || IsCoding && !preparing) { workspace.Remove(itemId); reader.SetInputs(workspace.Items); Status("已从队列移除"); }
                 return;
             }
             switch (action)
             {
                 case "stageClipboard": await StageClipboard(); break;
+                case "clipboardAnalyze":
+                    if (!Working) { var count = workspace.Items.Count; await StageClipboard(); if (IsCoding && workspace.Items.Count > count) await SendCodingWorkspace(); }
+                    break;
                 case "stageCapture": await StageScreenshot(true); break;
                 case "captureScreen": await StageScreenshot(false); break;
                 case "captureScreenSend": await StageScreenshot(false, sendImmediately: true); break;
                 case "deleteCapture":
-                    if (!Working && workspace.Items.LastOrDefault() is { } last) { workspace.Remove(last.Snapshot.Id); reader.SetInputs(workspace.Items); Status("已移除队列最后一项"); }
+                    if ((!Working || IsCoding && !preparing) && workspace.Items.LastOrDefault() is { } last) { workspace.Remove(last.Snapshot.Id); reader.SetInputs(workspace.Items); Status("已移除队列最后一项"); }
                     break;
                 case "selectScene": SelectWorkspaceScene(reader.SelectedSceneId); break;
                 case "removeInput":
-                    if (!Working) { workspace.Clear(); reader.ClearInput(); Status("已移除输入"); RefreshWorkspace(); }
+                    if (!Working || IsCoding && !preparing) { workspace.Clear(); reader.ClearInput(); Status("已移除输入"); RefreshWorkspace(); }
                     break;
                 case "workspaceCopy": CopyWorkspaceAnswer(); break;
                 case "newTask": NewWorkspaceTask(); break;
@@ -308,6 +316,7 @@ public partial class MainWindow : Window
                 case "send": await SendWorkspace(); break;
                 case "retryDirect": await RetryDirectAnswer(); break;
                 case "retry":
+                    if (IsCoding) { await RetryCoding(); break; }
                     if (Ready() && !Working && coordinator.Current is { } prior && coordinator.State is RequestState.Failed or RequestState.Completed or RequestState.Cancelled)
                     {
                         await SendPrepared(prior.Request); // Explicit retry; new attempt ID, frozen target and body.
@@ -323,6 +332,7 @@ public partial class MainWindow : Window
                     else { reader.Show(); reader.Check(); }
                     break;
                 case "copy":
+                    if (IsCoding) { CopyCodingDirective(); break; }
                     if (Ready() && completed is { } done && coordinator.IsCurrent(done.Attempt))
                     { clipboard!.Write(done.Text, done.Attempt.Id, done.Attempt.Generation, null); Status("完整回答已复制"); }
                     else Status("当前没有可复制的完整回答");

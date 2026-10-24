@@ -11,7 +11,7 @@ public interface ICredentialStore { string Read(string reference); }
 public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBackendClient, IModelCatalog, IDisposable
 {
     private bool disposed;
-    private static SocketsHttpHandler CreateHandler(Backend backend) => new()
+    internal static SocketsHttpHandler CreateHandler(Backend backend) => new()
     {
         AllowAutoRedirect = false,
         UseCookies = false,

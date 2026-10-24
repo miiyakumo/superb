@@ -6,11 +6,15 @@ namespace Superb.Desktop;
 
 public partial class MainWindow
 {
-    private readonly WorkspaceDraft workspace = new();
+    private readonly WorkspaceDraft ordinaryWorkspace = new();
+    private readonly WorkspaceDraft codingWorkspace = new();
+    private WorkspaceDraft workspace => IsCoding ? codingWorkspace : ordinaryWorkspace;
+    private bool IsCoding => workspaceSceneId == "coding";
+    private string ordinaryDraft = "", codingDraft = "";
     private string? workspaceSceneId = "general";
     private CancellationTokenSource? captureSelectionCancellation;
     private ScenePreset? WorkspaceScene => config.Scenes.FirstOrDefault(s => s.Id == workspaceSceneId);
-    private bool Working => preparing || coordinator.State is RequestState.PolicyCheck or RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming;
+    private bool Working => preparing || codingRunner.IsRunning || coordinator.State is RequestState.PolicyCheck or RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming;
     private int? DirectRetryLimit => coordinator.Latest?.Code == "response_token_limit" && coordinator.Current is { } prior &&
         (prior.Request.Backend.ThinkingMode != ThinkingMode.Disabled || prior.Request.Backend.MaxTokens < 16384) &&
         DeepSeekSetup.IsOfficialEndpoint(prior.Request.Backend.Endpoint) ? Math.Max(16384, prior.Request.Backend.MaxTokens) : null;
@@ -26,21 +30,30 @@ public partial class MainWindow
             receiver = $"下次：{target.Name} / {target.Model}";
         }
         catch { receiver = "请先连接或选择模型"; }
-        if (coordinator.Current is { } current)
+        if (!IsCoding && coordinator.Current is { } current)
         {
             var actual = $"本次：{current.Request.Backend.Name} / {current.Request.Backend.Model}";
             receiver = Working ? actual : receiver + " · " + actual;
         }
+        if (IsCoding && codingTarget is { } codingBackend)
+        {
+            var actual = $"本次：{codingBackend.Name} / {codingBackend.Model}";
+            receiver = codingRunner.IsRunning ? actual : receiver + " · " + actual;
+        }
         var key = config.AllHotkeys().FirstOrDefault(k => k.Action == "interact");
         var editKey = key is not null && hotkeys?.HasAction("interact") == true ? key.Gesture : "编辑快捷键不可用";
-        var shownScene = Working && coordinator.Current is { } active ? active.Request.SceneId ?? "" : scene?.Id ?? "";
+        var shownScene = !IsCoding && Working && coordinator.Current is { } active ? active.Request.SceneId ?? "" : scene?.Id ?? "";
         reader.Configure(choices, shownScene, receiver, editKey);
         var update = coordinator.Latest;
         var partial = update?.State is RequestState.Cancelled or RequestState.Failed;
-        reader.SetActions(coordinator.Mode == RunState.Ready, Working, workspace.HasInput(reader.Draft),
-            !string.IsNullOrEmpty(update?.Text) && !Working, partial, coordinator.Current is not null && update?.State is RequestState.Completed or RequestState.Failed or RequestState.Cancelled);
+        reader.SetActions(coordinator.Mode == RunState.Ready, Working, workspace.HasInput(reader.Draft) || IsCoding && CanReanalyzeCoding,
+            IsCoding ? CodingDirective is not null && !Working : !string.IsNullOrEmpty(update?.Text) && !Working,
+            !IsCoding && partial, IsCoding ? codingRunner.CanRetry : coordinator.Current is not null && update?.State is RequestState.Completed or RequestState.Failed or RequestState.Cancelled);
+        reader.SetCodingMode(IsCoding, codingRunner.IsRunning && !preparing,
+            codingWorkspace.Items.Count + (IsCoding && !string.IsNullOrWhiteSpace(reader.Draft) ? 1 : 0),
+            codingSession.Memory.Attempts);
         reader.SetSelecting(captureSelectionCancellation is not null);
-        reader.SetDirectRetry(DirectRetryLimit);
+        reader.SetDirectRetry(IsCoding ? null : DirectRetryLimit);
         reader.SetShortcutHints(config.AllHotkeys().ToDictionary(binding => binding.Action, binding =>
             ShortcutLabel.Describe(binding, config.ExclusiveHotkeysEnabled, hotkeys?.HasAction(binding.Action) == true,
                 hotkeys?.RegistrationErrors.GetValueOrDefault(binding.Action))));
@@ -64,15 +77,21 @@ public partial class MainWindow
     }
     private void SelectWorkspaceScene(string? id)
     {
-        if (Working) { Status("请先停止生成，再切换场景"); return; }
+        if (id == workspaceSceneId) return;
+        if (Working) StopGeneration();
+        if (IsCoding) codingDraft = reader.Draft; else ordinaryDraft = reader.Draft;
         workspaceSceneId = id;
-
+        reader.SetDraft(IsCoding ? codingDraft : ordinaryDraft);
+        reader.SetInputs(workspace.Items);
+        if (IsCoding) RenderCoding();
+        else if (coordinator.Latest is { } previous) reader.Render(previous.Text, StateLabel(previous));
+        else ClearOutput();
         RefreshWorkspace();
     }
     private Task StageClipboard()
     {
         if (!Ready()) return Task.CompletedTask;
-        if (Working) { Status("正在处理；请先停止生成"); return Task.CompletedTask; }
+        if (Working && (!IsCoding || preparing)) { Status("正在处理；请先停止生成"); return Task.CompletedTask; }
         var version = ++operation;
         preparing = true; RefreshWorkspace(); Status("读取剪贴板");
         try
@@ -93,6 +112,13 @@ public partial class MainWindow
     }
     internal void QueueSnapshot(InputSnapshot snapshot, string label, bool startNewTask = false)
     {
+        if (IsCoding)
+        {
+            workspace.Add(snapshot, label);
+            reader.SetInputs(workspace.Items);
+            RefreshWorkspace();
+            return;
+        }
         // A new acquisition after an answer starts the next task, like Quiz; cancellation before
         // acquisition leaves the previous answer and its input intact.
         if (startNewTask || coordinator.Latest is not null) { workspace.Set(snapshot, label); reader.SetDraft(""); }
@@ -109,6 +135,7 @@ public partial class MainWindow
         // Freeze the recipient and scene before asynchronous capture; settings may change
         // while the windows are hidden. This action never silently changes the receiver.
         var settings = config; var scene = WorkspaceScene;
+        var codingOptions = IsCoding ? reader.CodingOptions : null;
         PreparedRequest? capturedRequest = null;
         if (sendImmediately)
         {
@@ -186,7 +213,7 @@ public partial class MainWindow
             ObserveCaptureWorker();
         }
         if (captured && capturedRequest is not null && version == operation && Ready())
-            await SendPrepared(capturedRequest);
+            if (IsCoding) await SendCodingWorkspace(capturedRequest.Backend, capturedRequest.SystemPrompt, codingOptions); else await SendPrepared(capturedRequest);
     }
     private void ObserveCaptureWorker()
     {
@@ -199,6 +226,7 @@ public partial class MainWindow
     }
     private async Task SendWorkspace()
     {
+        if (IsCoding) { await SendCodingWorkspace(); return; }
         if (!Ready()) return;
         if (Working) { Status("正在处理；请先停止生成"); return; }
         if (config.Backends.IsDefaultOrEmpty) { Status("尚未连接模型，请打开“设置”并点击设置窗口连接"); return; }
@@ -232,7 +260,9 @@ public partial class MainWindow
         if (!Working) { Status("当前没有正在生成的任务"); return; }
         captureSelectionCancellation?.Cancel();
         if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
-        operation++; preparing = false; completed = null; latestUpdate = null;
+        operation++; preparing = false;
+        if (IsCoding) { codingRunner.Stop(); RenderCoding(); Status("已停止分析 · 已提交的任务记忆和指令保留"); RefreshWorkspace(); return; }
+        completed = null; latestUpdate = null;
         coordinator.Stop();
         if (coordinator.Latest is { State: RequestState.Cancelled } stopped && protection.Check() && reader.Check())
         {
@@ -244,18 +274,22 @@ public partial class MainWindow
     {
         captureSelectionCancellation?.Cancel();
         if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
-        operation++; preparing = false; coordinator.Invalidate();
-        completed = null; latestUpdate = null; workspace.Clear();
+        operation++; preparing = false;
+        if (IsCoding) { codingRunner.Clear(); codingSession.Clear(); codingDraft = ""; codingTarget = null; }
+        else { coordinator.Invalidate(); completed = null; latestUpdate = null; ordinaryDraft = ""; }
+        workspace.Clear();
         reader.Clear(); ClearOutput(); Status("等待输入 · 新任务"); RefreshWorkspace();
     }
     private void CopyWorkspaceAnswer()
     {
+        if (IsCoding) { CopyCodingDirective(); return; }
         if (!Ready() || Working || coordinator.Latest is not { Text.Length: > 0 } answer) return;
         clipboard!.Write(answer.Text, answer.Attempt.Id, answer.Attempt.Generation, null);
         Status(answer.State == RequestState.Completed ? "回答已复制" : "部分回答已复制 · 内容未完成");
     }
     private async Task RetryDirectAnswer()
     {
+        if (IsCoding) return;
         if (!Ready() || Working || DirectRetryLimit is not { } limit || coordinator.Current is not { } prior) return;
         // Explicit one-attempt recovery: retain frozen input and show the new budget.
         // It neither changes saved defaults nor silently repeats the original paid request.
