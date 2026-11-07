@@ -12,7 +12,7 @@ public partial class MainWindow
     private string? workspaceSceneId = "general";
     private CancellationTokenSource? captureSelectionCancellation;
     private ScenePreset? WorkspaceScene => config.Scenes.FirstOrDefault(s => s.Id == workspaceSceneId);
-    private bool Working => preparing || coordinator.State is RequestState.PolicyCheck or RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming;
+    private bool Working => preparing || coordinator.State is RequestState.Summarizing or RequestState.PolicyCheck or RequestState.Connecting or RequestState.Waiting or RequestState.Thinking or RequestState.Streaming;
     private int? DirectRetryLimit => coordinator.Latest?.Code == "response_token_limit" && coordinator.Current is { } prior &&
         (prior.Request.Backend.ThinkingMode != ThinkingMode.Disabled || prior.Request.Backend.MaxTokens < 16384) &&
         DeepSeekSetup.IsOfficialEndpoint(prior.Request.Backend.Endpoint) ? Math.Max(16384, prior.Request.Backend.MaxTokens) : null;
@@ -276,7 +276,7 @@ public partial class MainWindow
         captureSelectionCancellation?.Cancel();
         if ((captureSelectionCancellation is not null || captureTask is { IsCompleted: false }) && reader.Check()) reader.Show();
         operation++; preparing = false;
-        coordinator.Invalidate(); completed = null; latestUpdate = null;
+        coordinator.ClearConversation(); completed = null; latestUpdate = null;
         workspaceTaskId = Guid.NewGuid();
         workspace.Clear();
         TraceWorkspace(WorkspaceEvent.TaskCleared, WorkspaceReason.NewTask, operationId: clearId, previousTaskId: previousTaskId);

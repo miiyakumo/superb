@@ -235,7 +235,7 @@ public partial class MainWindow : Window
     }
     private static string StateLabel(RequestUpdate update) => (update.State switch
     {
-        RequestState.PolicyCheck => "正在校验外发策略", RequestState.Connecting => "连接中", RequestState.Waiting => "等待响应",
+        RequestState.Summarizing => "正在整理历史", RequestState.PolicyCheck => "正在校验外发策略", RequestState.Connecting => "连接中", RequestState.Waiting => "等待响应",
         RequestState.Thinking => "模型正在思考 · 尚未返回回答，可停止",
         RequestState.Streaming => "生成中", RequestState.Completed => "已完成", RequestState.Cancelled => "已停止 · 部分回答，未完成",
         RequestState.Failed => ConnectionDiagnostics.Explain(update.Code), _ => update.State.ToString()

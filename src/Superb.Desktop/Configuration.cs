@@ -99,8 +99,8 @@ internal sealed record Configuration
         foreach (var key in HotkeyDefaults.All)
             if (!keys.Any(k => k.Action == key.Action)) keys = keys.Add(Reserve(key));
         // Upgrade only the untouched stock prompt; retain user prompts and generation limits.
-        if (scenes.Any(scene => scene.Id == "coding" && scene.SystemPrompt == SceneDefaults.LegacyCodingPrompt))
-            scenes = scenes.Select(scene => scene.Id == "coding" && scene.SystemPrompt == SceneDefaults.LegacyCodingPrompt
+        if (scenes.Any(scene => scene.Id == "coding" && SceneDefaults.IsOldCodingPrompt(scene.SystemPrompt)))
+            scenes = scenes.Select(scene => scene.Id == "coding" && SceneDefaults.IsOldCodingPrompt(scene.SystemPrompt)
                 ? scene with { SystemPrompt = SceneDefaults.CodingPrompt } : scene).ToImmutableArray();
         if (scenes.Any(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt))
             scenes = scenes.Select(scene => scene.Id == "algorithm" && scene.SystemPrompt == SceneDefaults.LegacyAlgorithmPrompt
@@ -168,7 +168,7 @@ internal sealed record Configuration
         var upgrade = document.RootElement.TryGetProperty("CodingAnalysis", out _) ||
             document.RootElement.TryGetProperty("CodingAnalysisVersion", out _) || config.SchemaVersion < 6 || (!config.Scenes.IsDefault &&
             config.Scenes.Any(s => s?.LegacySettings is { Count: > 0 } ||
-                s?.Id == "coding" && s.SystemPrompt == SceneDefaults.LegacyCodingPrompt)) ||
+                s?.Id == "coding" && SceneDefaults.IsOldCodingPrompt(s.SystemPrompt))) ||
             (!config.Hotkeys.IsDefault && config.Hotkeys.Any(k => k?.Action == "ask"));
         config = config.Migrate();
         config.Validate();
@@ -193,7 +193,7 @@ internal sealed record Configuration
         foreach (var scene in Scenes)
         {
             if (string.IsNullOrWhiteSpace(scene.Id) || scene.Id.Length > 64 || scene.Id.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-') ||
-                string.IsNullOrWhiteSpace(scene.Name) || scene.Name.Length > 80 || scene.SystemPrompt is null || scene.SystemPrompt.Length > 16000 ||
+                string.IsNullOrWhiteSpace(scene.Name) || scene.Name.Length > 80 || scene.SystemPrompt is null || scene.SystemPrompt.Length > 16000 || scene.SummaryPrompt?.Length > 16000 ||
                 scene.Trigger is null || scene.Trigger.Action != scene.Action)
                 throw new SafeFailure("scene_invalid");
             if (scene.BackendId is not null && !Backends.Any(b => b.Id == scene.BackendId)) throw new SafeFailure("scene_backend_missing");

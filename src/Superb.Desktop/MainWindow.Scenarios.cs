@@ -29,6 +29,8 @@ public partial class MainWindow
         DeleteSceneButton.IsEnabled = scene is not null;
         SceneName.Text = scene?.Name ?? "";
         SceneSystemPrompt.Text = scene?.SystemPrompt ?? "";
+        SummarySettings.Visibility = scene?.Id == "coding" ? Visibility.Visible : Visibility.Collapsed;
+        SceneSummaryPrompt.Text = scene?.SummaryPrompt ?? CodingConversation.DefaultSummaryPrompt;
         SceneBackendPicker.ItemsSource = new[] { new BackendChoice("", "使用当前默认连接") }
             .Concat(config.Backends.Select(b => new BackendChoice(b.Id, b.Name))).ToArray();
         SceneBackendPicker.SelectedValue = scene?.BackendId ?? "";
@@ -71,6 +73,7 @@ public partial class MainWindow
     {
         var scene = ScenePicker.SelectedItem as ScenePreset ?? throw new SafeFailure("scene_missing");
         var updated = scene with { Name = SceneName.Text.Trim(), SystemPrompt = SceneSystemPrompt.Text,
+            SummaryPrompt = scene.Id == "coding" && !string.IsNullOrWhiteSpace(SceneSummaryPrompt.Text) && SceneSummaryPrompt.Text != CodingConversation.DefaultSummaryPrompt ? SceneSummaryPrompt.Text : null,
             BackendId = SceneBackendPicker.SelectedValue is string id && id.Length > 0 ? id : null };
         return config with { Scenes = config.Scenes.Replace(scene, updated) };
     }
@@ -97,6 +100,7 @@ public partial class MainWindow
         var original = SceneDefaults.All.FirstOrDefault(s => s.Id == scene.Id);
         if (original is null) { Status("自定义场景没有内置预设；可编辑后保存"); return; }
         // Fill the editor only; saving is explicit, and the user's binding remains unchanged.
+        SceneSummaryPrompt.Text = CodingConversation.DefaultSummaryPrompt;
         SceneName.Text = original.Name; SceneSystemPrompt.Text = original.SystemPrompt;
         SceneBackendPicker.SelectedValue = "";
         Status("已填入预设内容，保存场景后生效；发起键保持不变");

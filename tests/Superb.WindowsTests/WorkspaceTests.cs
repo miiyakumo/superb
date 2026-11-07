@@ -67,7 +67,7 @@ internal static class WorkspaceTests
         ScreenSendTests.Add(tests);
         PassThroughTests.Add(tests, args);
         if (args.Contains("--native-pointer")) PointerFocusTests.Add(tests);
-        tests.Add(("Legacy programming scene uses ordinary requests and new input replaces the completed task", () =>
+        tests.Add(("Programming scene replaces the draft and continues the conversation from its last complete answer", () =>
         {
             var client = new WorkspaceBackend();
             var config = new Configuration { Backends = [new("test", "Test", "https://example.test/v1/chat/completions", "test", "")], SelectedBackendId = "test" };
@@ -94,6 +94,15 @@ internal static class WorkspaceTests
                 Check(window.WorkspaceCoordinator.Latest?.State == RequestState.Completed);
                 window.QueueText("second question");
                 Check(window.QueuedText() == "second question" && window.WorkspaceCoordinator.Current is null);
+                var followup = window.RunCommand("send");
+                Until(() => client.Requests.Count == 2);
+                var history = client.Requests[1].History;
+                Check(history.Length == 2 && history[0].Role == "user" && history[0].Content == client.Requests[0].Content);
+                Check(history[1].Role == "assistant" && history[1].Content.Text == "ordinary answer");
+                client.Events.Writer.TryWrite(new("followup answer"));
+                client.Events.Writer.TryWrite(new(Completed: true));
+                client.Events.Writer.TryComplete();
+                Until(() => followup.IsCompleted); followup.GetAwaiter().GetResult();
                 var picker = (ComboBox)window.FindName("ScenePicker");
                 picker.SelectedItem = picker.Items.Cast<ScenePreset>().Single(s => s.Id == "coding");
                 var delete = (Button)window.FindName("DeleteSceneButton"); Check(delete.IsEnabled);

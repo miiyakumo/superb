@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 namespace Superb.Core;
 
 public enum InputKind { ClipboardText, ClipboardImage, Screen, ManualText }
-public enum RequestState { Idle, PolicyCheck, Connecting, Waiting, Streaming, Completed, Failed, Cancelled, Thinking }
+public enum RequestState { Idle, PolicyCheck, Summarizing, Connecting, Waiting, Streaming, Completed, Failed, Cancelled, Thinking }
 public enum RunState { Ready, Paused, Locked, ProtectionUnavailable }
 public enum ProxyMode { Direct, System, Custom }
 public enum TokenLimitParameter { MaxTokens, MaxCompletionTokens }
@@ -33,9 +33,14 @@ public sealed record Backend(string Id, string Name, string Endpoint, string Mod
     double Temperature = 0.2, int MaxTokens = Policy.DefaultOutputTokens, string Adapter = "chat-completions",
     ProxyMode ProxyMode = ProxyMode.Direct, string ProxyAddress = "",
     bool SendTemperature = true, TokenLimitParameter TokenLimitParameter = TokenLimitParameter.MaxTokens,
-    ThinkingMode ThinkingMode = ThinkingMode.Default);
+    ThinkingMode ThinkingMode = ThinkingMode.Default, int? ContextWindowTokens = null);
 public sealed record PreparedRequest(InputSnapshot Snapshot, Payload Content, Backend Backend,
-    string SystemPrompt = "", string? SceneId = null);
+    string SystemPrompt = "", string? SceneId = null, string? SummaryPrompt = null)
+{
+    public ImmutableArray<ChatMessage> History { get; init; } = [];
+    internal CodingFrame? Frame { get; init; }
+}
+public sealed record ChatMessage(string Role, Payload Content);
 public sealed record Attempt(Guid Id, long Generation, PreparedRequest Request);
 public sealed record RequestUpdate(Attempt Attempt, RequestState State, string Text = "", string? Code = null);
 public sealed record BackendEvent(string? Delta = null, bool Completed = false, bool Waiting = false, bool Thinking = false);

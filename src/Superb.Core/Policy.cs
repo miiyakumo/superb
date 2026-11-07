@@ -23,7 +23,7 @@ public static class Policy
             throw new SafeFailure("encrypted_transport_required");
         if (string.IsNullOrWhiteSpace(b.Model) || string.IsNullOrWhiteSpace(b.Id) ||
             b.TimeoutSeconds is < 1 or > 600 || b.MaxInputBytes is < 1 or > AbsoluteInputLimit ||
-            b.MaxOutputChars is < 1 or > 1_000_000 || b.MaxTokens < 1 || b.MaxTokens > OutputTokenLimit(b.Endpoint) ||
+            b.MaxOutputChars is < 1 or > 1_000_000 || b.ContextWindowTokens is < 4 || b.MaxTokens < 1 || b.MaxTokens > OutputTokenLimit(b.Endpoint) ||
             !double.IsFinite(b.Temperature) || b.Temperature is < 0 or > 2 || !Enum.IsDefined(b.TokenLimitParameter) || !Enum.IsDefined(b.ThinkingMode))
             throw new SafeFailure("backend_limits_invalid");
         if (b.ThinkingMode != ThinkingMode.Default && !DeepSeekSetup.IsOfficialEndpoint(b.Endpoint))
@@ -49,9 +49,10 @@ public static class Policy
         var p = request.Content;
         if (string.IsNullOrWhiteSpace(p.Text) && !p.HasImage) throw new SafeFailure("input_empty");
         if (request.SystemPrompt is null || request.SystemPrompt.Length > 16000) throw new SafeFailure("system_prompt_invalid");
-        if (p.Size + System.Text.Encoding.UTF8.GetByteCount(request.SystemPrompt) > request.Backend.MaxInputBytes) throw new SafeFailure("input_too_large");
-        if (p.HasImage && !request.Backend.SupportsImages) throw new SafeFailure("backend_has_no_vision");
-        var images = p.Images.ToArray();
+        var inputs = request.History.Select(m => m.Content).Append(p);
+        if (inputs.Sum(input => input.Size) + System.Text.Encoding.UTF8.GetByteCount(request.SystemPrompt) > request.Backend.MaxInputBytes) throw new SafeFailure("input_too_large");
+        if (inputs.Any(input => input.HasImage) && !request.Backend.SupportsImages) throw new SafeFailure("backend_has_no_vision");
+        var images = inputs.SelectMany(input => input.Images).ToArray();
         if (images.Length > MaximumImages) throw new SafeFailure("image_queue_full");
         if (images.Any(i => i.Png.IsDefaultOrEmpty || i.Width <= 0 || i.Height <= 0 || (long)i.Width * i.Height > MaximumPixels) ||
             images.Sum(i => (long)i.Width * i.Height) > MaximumPixels) throw new SafeFailure("image_dimensions_invalid");

@@ -169,6 +169,12 @@ internal static class ScenarioTests
                 Check(File.ReadAllText(Directory.GetFiles(directory, "*.bak").Single()) == original);
                 Check(Configuration.Load(path).Scenes.Single() == loaded.Scenes.Single());
                 Check(Directory.GetFiles(directory, "*.bak").Length == 1);
+                foreach (var stock in new[] { SceneDefaults.PreviousCodingPrompt, SceneDefaults.PreviousConversationPrompt, SceneDefaults.BriefCodingPrompt })
+                {
+                    var previous = scene with { SystemPrompt = stock.ReplaceLineEndings("\n"), SummaryPrompt = "自定义压缩" };
+                    var roundtrip = (config with { Scenes = [previous] }).Migrate();
+                    Check(roundtrip.Scenes.Single() == previous with { SystemPrompt = SceneDefaults.CodingPrompt });
+                }
                 var custom = scene with { SystemPrompt = "My own collaboration instructions" };
                 var customPath = Path.Combine(directory, "custom.json");
                 (config with { Scenes = [custom] }).Save(customPath);
@@ -268,6 +274,14 @@ internal static class ScenarioTests
         Check(code.GetProperty("model").GetString() == "coding-model" && code.GetProperty("temperature").GetDouble() == 0.7 && code.GetProperty("max_tokens").GetInt32() == 123);
         Check(code.GetProperty("messages").GetArrayLength() == 2 && code.GetProperty("messages")[0].GetProperty("role").GetString() == "system");
         Check(code.GetProperty("messages")[0].GetProperty("content").GetString() == "Coding system" && code.GetProperty("messages")[1].GetProperty("content").GetString() == "  only coding  ");
+        var coordinator = new Coordinator(client);
+        coordinator.SetMode(RunState.Ready);
+        await coordinator.RunAsync(frozen);
+        await coordinator.RunAsync(Prepare(coding, "platform diff"));
+        var followup = second.Requests.Last().GetProperty("messages");
+        Check(followup.GetArrayLength() == 4 && followup[1].GetProperty("content").GetString() == "  only coding  " &&
+            followup[2].GetProperty("role").GetString() == "assistant" && followup[2].GetProperty("content").GetString() == "Synthetic OK" &&
+            followup[3].GetProperty("content").GetString() == "platform diff");
         Check(algo.GetProperty("messages").GetArrayLength() == 2 && algo.GetProperty("messages")[0].GetProperty("content").GetString() == "Algorithm system");
         Check(algo.GetProperty("messages")[1].GetProperty("content").GetString() == "  only algorithm  " && !algo.ToString().Contains("Coding system"));
     }

@@ -619,6 +619,7 @@ foreach (var scenario in new[] { "success", "redirect", "oversize", "unauthorize
         await server;
     });
 
+CodingConversationTests.Add(tests);
 var failures = 0;
 foreach (var (name, run) in tests)
 {

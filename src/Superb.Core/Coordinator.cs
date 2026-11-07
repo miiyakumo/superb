@@ -11,6 +11,7 @@ public interface IBackendClient
 // UI subscribers must check IsCurrent again when marshaling queued updates.
 public sealed class Coordinator(IBackendClient client)
 {
+    private readonly CodingConversation conversation = new();
     private long generation;
     private CancellationTokenSource? currentCancellation;
     public RunState Mode { get; private set; } = RunState.Paused;
@@ -20,9 +21,16 @@ public sealed class Coordinator(IBackendClient client)
     public event Action<RequestUpdate>? Updated;
     public bool IsCurrent(Attempt attempt) => Current?.Id == attempt.Id && attempt.Generation == generation && Mode == RunState.Ready;
 
+    public void ClearConversation()
+    {
+        Invalidate();
+        conversation.Clear();
+    }
+
     public void SetMode(RunState mode)
     {
         Invalidate();
+        if (mode != RunState.Ready) conversation.Clear();
         Mode = mode;
     }
     public void Invalidate()
@@ -49,6 +57,7 @@ public sealed class Coordinator(IBackendClient client)
     public async Task RunAsync(PreparedRequest request)
     {
         if (Mode != RunState.Ready) throw new SafeFailure("session_not_ready");
+        if (request.SceneId == "coding") request = conversation.Freeze(request);
         Invalidate();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(request.Backend.TimeoutSeconds));
         currentCancellation = cts;
@@ -62,11 +71,16 @@ public sealed class Coordinator(IBackendClient client)
             Latest = new(attempt, state, output.ToString(), code);
             Updated?.Invoke(Latest);
         }
-        try
+        async Task PrepareCoding(bool force)
         {
-            Emit(RequestState.PolicyCheck);
-            Policy.Check(request);
+            request = await conversation.PrepareAsync(request, client, () => Emit(RequestState.Summarizing), force, cts.Token);
             cts.Token.ThrowIfCancellationRequested();
+            attempt = attempt with { Request = request };
+            Current = attempt;
+        }
+
+        async Task Receive()
+        {
             Emit(RequestState.Connecting);
             var complete = false;
             await foreach (var item in client.SendAsync(request, cts.Token))
@@ -87,6 +101,23 @@ public sealed class Coordinator(IBackendClient client)
             cts.Token.ThrowIfCancellationRequested();
             if (!complete) throw new SafeFailure("stream_incomplete");
             if (string.IsNullOrWhiteSpace(output.ToString())) throw new SafeFailure("response_empty");
+        }
+
+        try
+        {
+            Emit(RequestState.PolicyCheck);
+            if (request.Frame != null) await PrepareCoding(false);
+            Policy.Check(request);
+            cts.Token.ThrowIfCancellationRequested();
+            try { await Receive(); }
+            catch (SafeFailure ex) when (ex.Code == "context_length_exceeded" && request.Frame is { PriorTurns: > 0 } && output.Length == 0)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+                await PrepareCoding(true);
+                await Receive();
+            }
+            if (!IsCurrent(attempt)) return;
+            if (request.Frame != null) conversation.Commit(request, output.ToString());
             Emit(RequestState.Completed);
         }
         catch (OperationCanceledException) { Emit(RequestState.Failed, "request_timed_out"); }

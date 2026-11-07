@@ -33,18 +33,20 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
         using var message = new HttpRequestMessage(HttpMethod.Post, Policy.ValidateBackend(backend));
         if (!string.IsNullOrEmpty(backend.CredentialRef))
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.Read(backend.CredentialRef));
-        object content = request.Content.Text ?? "";
-        if (request.Content.HasImage)
+        static object Encode(Payload payload)
         {
+            if (!payload.HasImage) return payload.Text ?? "";
+
             var parts = new List<object>();
-            if (!string.IsNullOrEmpty(request.Content.Text)) parts.Add(new { type = "text", text = request.Content.Text });
-            foreach (var image in request.Content.Images)
+            if (!string.IsNullOrEmpty(payload.Text)) parts.Add(new { type = "text", text = payload.Text });
+            foreach (var image in payload.Images)
                 parts.Add(new { type = "image_url", image_url = new { url = "data:image/png;base64," + Convert.ToBase64String(image.Png.AsSpan()) } });
-            content = parts;
+            return parts;
         }
         var messages = new List<object>();
         if (!string.IsNullOrWhiteSpace(request.SystemPrompt)) messages.Add(new { role = "system", content = (object)request.SystemPrompt });
-        messages.Add(new { role = "user", content });
+        foreach (var prior in request.History) messages.Add(new { role = prior.Role, content = Encode(prior.Content) });
+        messages.Add(new { role = "user", content = Encode(request.Content) });
         var body = new Dictionary<string, object>
         {
             ["model"] = backend.Model,
@@ -58,7 +60,12 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
         message.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if ((int)response.StatusCode is >= 300 and < 400) throw new SafeFailure("redirect_blocked");
-        if (!response.IsSuccessStatusCode) throw new SafeFailure("http_" + (int)response.StatusCode);
+        if (!response.IsSuccessStatusCode)
+        {
+            if (request.Frame != null && (int)response.StatusCode is 400 or 413 or 422 &&
+                await IsContextError(response.Content, cancellationToken)) throw new SafeFailure("context_length_exceeded");
+            throw new SafeFailure("http_" + (int)response.StatusCode);
+        }
         yield return new(Waiting: true);
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         if (backend.Stream)
@@ -87,6 +94,24 @@ public sealed class ChatCompletionsClient(ICredentialStore credentials) : IBacke
             yield return new(Delta: text);
             yield return new(Completed: true);
         }
+    }
+
+    private static async Task<bool> IsContextError(HttpContent content, CancellationToken token)
+    {
+        const int limit = 8192;
+        if (content.Headers.ContentLength > limit) return false;
+        using var stream = await content.ReadAsStreamAsync(token);
+        var bytes = new byte[limit + 1];
+        int count = await stream.ReadAtLeastAsync(bytes, bytes.Length, throwOnEndOfStream: false, token);
+        if (count > limit) return false;
+        try
+        {
+            using var json = JsonDocument.Parse(bytes.AsMemory(0, count));
+            return json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("error", out var error) &&
+                error.ValueKind == JsonValueKind.Object && error.TryGetProperty("code", out var code) &&
+                code.ValueKind == JsonValueKind.String && code.GetString() is "context_length_exceeded" or "context_window_exceeded";
+        }
+        catch (JsonException) { return false; }
     }
 
     public async Task<IReadOnlyList<ModelOption>> ListModelsAsync(Backend backend, CancellationToken cancellationToken)

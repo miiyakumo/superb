@@ -66,6 +66,7 @@ public partial class MainWindow
         Loopback.IsChecked = b?.AllowLoopbackHttp ?? false;
         TimeoutSeconds.Text = (b?.TimeoutSeconds ?? 300).ToString();
         Temperature.Text = (b?.Temperature ?? 0.2).ToString(CultureInfo.InvariantCulture);
+        ContextWindow.Text = b?.ContextWindowTokens?.ToString() ?? "";
         MaxTokens.Text = (b?.MaxTokens ?? Policy.DefaultOutputTokens).ToString();
         ProxyModePicker.SelectedIndex = (int)(b?.ProxyMode ?? ProxyMode.Direct);
         ProxyAddressBox.Text = b?.ProxyAddress ?? "";
@@ -123,13 +124,19 @@ public partial class MainWindow
             !double.IsFinite(temperature) || temperature is < 0 or > 2)
             throw new SafeFailure("backend_temperature_invalid");
         var proxy = (ProxyMode)ProxyModePicker.SelectedIndex;
+        int? contextWindow = null;
+        if (!string.IsNullOrWhiteSpace(ContextWindow.Text))
+        {
+            if (!int.TryParse(ContextWindow.Text, out var window) || window < 4) throw new SafeFailure("context_window_invalid");
+            contextWindow = window;
+        }
         var b = new Backend(old?.Id ?? Guid.NewGuid().ToString("N"), BackendName.Text.Trim(), endpoint,
             ModelName.Text.Trim(), old?.CredentialRef ?? "", Vision.IsChecked == true, Loopback.IsChecked == true,
             Streaming.IsChecked == true, timeout, old?.MaxInputBytes ?? 8_388_608, old?.MaxOutputChars ?? 1_000_000,
             temperature, tokens, ProxyMode: proxy, ProxyAddress: proxy == ProxyMode.Custom ? ProxyAddressBox.Text.Trim() : "",
             SendTemperature: SendTemperature.IsChecked == true,
             TokenLimitParameter: UseCompletionTokens.IsChecked == true ? TokenLimitParameter.MaxCompletionTokens : TokenLimitParameter.MaxTokens,
-            ThinkingMode: (ThinkingMode)ThinkingModePicker.SelectedIndex);
+            ThinkingMode: (ThinkingMode)ThinkingModePicker.SelectedIndex, ContextWindowTokens: contextWindow);
         Policy.ValidateBackend(b);
         return b;
     }
