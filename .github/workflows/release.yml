@@ -64,20 +64,16 @@ jobs:
         run: dotnet run --project tests/Superb.Tests -c Release --no-build
       - name: Windows integration regressions
         run: dotnet run --project tests/Superb.WindowsTests -c Release --no-build
-      - name: Publish self-contained Windows x64 application
-        run: dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/publish
+      - name: Publish and verify extracted Windows package
+        run: ./tools/publish.ps1
       - name: Package application and release notes
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          if (!(Test-Path artifacts/publish/Superb.exe) -or !(Test-Path artifacts/publish/coreclr.dll)) {
-            throw 'The application or bundled .NET runtime is missing.'
-          }
-          Copy-Item README.md, LICENSE, CHANGELOG.md -Destination artifacts/publish
           New-Item -ItemType Directory -Force artifacts/release | Out-Null
           $archiveName = "Superb-$env:RELEASE_TAG-windows-x64.zip"
           $archivePath = Join-Path artifacts/release $archiveName
-          Compress-Archive -Path artifacts/publish/* -DestinationPath $archivePath -CompressionLevel Optimal
+          Copy-Item -LiteralPath artifacts/current/Superb-windows-x64.zip -Destination $archivePath
           $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archiveName" | Set-Content "$archivePath.sha256" -Encoding utf8NoBOM
           $version = [regex]::Escape($env:RELEASE_TAG.Substring(1))
@@ -93,7 +89,7 @@ jobs:
             ''
             '### Windows x64 下载与运行'
             ''
-            "下载 $archiveName 并完整解压，运行 Superb.exe。保留同目录所有文件；已包含 .NET 运行时，无需单独安装。"
+            "下载 $archiveName 并解压，双击 Superb.exe 即可启动。程序自带 .NET 运行时，说明和许可证收在 docs 文件夹中。"
             '保留应用图标；首次启动后配置模型连接。'
             ''
             '附带 .sha256 文件，可用 PowerShell 的 Get-FileHash -Algorithm SHA256 校验下载。'

@@ -31,11 +31,13 @@ jobs:
         run: |
           dotnet run --project tests/Superb.WindowsTests -c Release --no-build -- --render-dir artifacts/diagnostics/ui | Tee-Object artifacts/diagnostics/windows-tests.txt
           exit $LASTEXITCODE
-      - run: dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/win-x64
+      - name: Publish and verify extracted Windows package
+        shell: pwsh
+        run: ./tools/publish.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: superb-windows-x64-development
-          path: artifacts/win-x64/
+          path: artifacts/current/win-x64/
       - uses: actions/upload-artifact@v4
         if: always()
         with:

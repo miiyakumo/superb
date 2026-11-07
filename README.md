@@ -1,12 +1,12 @@
 # Superb
 
-当前版本：**1.0.0**。
+当前版本：**1.1.0**。
 
 Windows 11 x64 上的桌面客户端。它从剪贴板或屏幕采集内容，发给你配置的 Chat Completions 接口，在置顶浮窗里流式阅读回答，并可选写回剪贴板。
 
 ## 开始使用
 
-直接使用可到 [Releases](https://github.com/miiyakumo/superb/releases/latest) 下载 Windows x64 ZIP，完整解压后运行 `Superb.exe`。压缩包自带 .NET 运行时，并附带 SHA-256 校验文件。
+下载 Windows x64 压缩包，解压后双击根目录的 `Superb.exe`。程序自带 .NET 运行时，说明和许可证在 `docs/` 中。[下载 v1.1.0](https://github.com/miiyakumo/superb/releases/download/v1.1.0/Superb-v1.1.0-windows-x64.zip) · [SHA-256 校验文件](https://github.com/miiyakumo/superb/releases/download/v1.1.0/Superb-v1.1.0-windows-x64.zip.sha256)
 
 在仓库根目录运行：
 
@@ -14,13 +14,13 @@ Windows 11 x64 上的桌面客户端。它从剪贴板或屏幕采集内容，�
 dotnet run --project src/Superb.Desktop
 ```
 
-生成自带运行时的 Windows x64 目录：
+在 Windows 桌面会话中用 PowerShell 7 打包并验证自带运行时的 Windows x64 版本：
 
 ```powershell
-dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o artifacts/win-x64
+pwsh -File tools/publish.ps1
 ```
 
-运行该目录中的 `Superb.exe`，并保留同目录依赖。
+本地启动入口固定为 `artifacts/current/win-x64/Superb.exe`。可分发的 ZIP 和 SHA-256 文件位于 `artifacts/current/`。解压 ZIP 后直接运行 `Superb.exe`，说明和许可证在 `docs/`。脚本用解压后的程序验证窗口资源、公式渲染和截图，成功后才替换当前版本。
 
 ### 连接模型
 
@@ -37,6 +37,14 @@ dotnet publish src/Superb.Desktop -c Release -r win-x64 --self-contained true -o
 旧设置升级到 schema 6 前，会在设置文件旁保存 `.upgrade-*.bak` 原文备份。旧场景的模型与生成参数覆盖迁成独立模型配置并绑定该场景；自定义用户模板中的任务说明移入系统提示词。原有连接、凭据引用、技术限额和场景快捷键保留，固定文字／图片路由不再参与选择。 原先受总开关抑制的独占键迁成逐项停用，原本有效的绑定保持启用；迁移后只按每行的状态与模式注册。
 
 连接失败时的区分和代理写法见 [后端连接排查](docs/backend-connectivity.md)。
+
+## 用「编程问答」接续平台 AI 的工作
+
+1. **首次同步。** 选择「编程问答」，把需求、相关源码和当前卡点一起发给 Superb。例如，要求求和函数保留负数，但测试 `total([-2, 1])` 得到了 `1`。
+2. **带回改动。** 平台 AI 修改后，直接发送它的分析和 diff。Superb 会结合上一轮建议判断改动是否处理了失败原因。需要继续改代码时，把短指令转述给平台 AI，并用 `@文件` 关联对应源码。
+3. **继续验证。** 下一轮可以只贴最新测试输出。Superb 会接着前两轮分析；点击「重答」可重做当前一轮。开始另一项工作时点击「新任务」。
+
+会话保存在内存中，暂停、锁屏或退出会清空历史。在模型连接高级设置中可填写上下文窗口，留空按 32,768 tokens 估算。达到可用输入预算的 80% 时，Superb 会整理较早的完整问答，目标是降至 60%。本轮新材料始终原样发送。系统提示词和历史压缩提示词都可以在场景设置中修改。
 
 ## 悬浮工作区
 
@@ -62,9 +70,7 @@ DeepSeek 官方端点可以选择「沿用模型默认」「直接回答（关�
 
 发布新版本时，先更新应用项目中的 `Version`、Windows 清单、界面版本及本文件，并在 `CHANGELOG.md` 添加版本记录。提交后创建并推送对应标签（例如 `git tag -a v1.0.1 -m "Release v1.0.1"`、`git push origin v1.0.1`）。`Publish release` 工作流会从标签构建，核对版本，执行核心与 Windows 集成测试，生成自带运行时的 x64 ZIP 和 SHA-256 校验文件，再发布 GitHub Release。带后缀的标签（如 `v1.1.0-rc.1`）发布为预发布版本。也可在 Actions 中手动运行该工作流并填写已有标签；已公开且附件完整的 Release 不会被覆盖。
 
-`main` 为通用桌面客户端，当前版本 `1.0.0`。AI Coding／agent 专用协作、任务记忆和工具调用保存在 `codex/ai-coding-agent` 分支。此版本的「编程问答」使用连续对话，可编辑或删除，场景标识为 `coding`。
-
-在「编程问答」中，Superb 根据任务进展给出下一步。需要平台 AI 改代码时，直接转述短指令，并用 `@文件` 关联所需上下文。首次提供需求、源码和当前卡点，以后可只提交平台对话、diff 或测试反馈。当前会话保存在内存中，「新任务」、暂停、锁屏和退出会清空历史。模型连接高级设置可填写上下文窗口（默认估算 32,768 tokens）；达到可用输入预算的 80% 时，使用场景高级设置中的压缩提示词整理旧问答，尽量压到 60%。本轮材料始终原样发送。启动时仅自动升级完全匹配旧默认值的编程提示词，并先备份配置；自定义提示词不覆盖，可在场景设置中恢复预设后保存。
+v1.1.0 包含轻量连续对话。旧版 agent 的结构化任务记忆和工具调用实现在 `codex/ai-coding-agent` 分支。升级时会保留自定义场景提示词；若想切换到新版默认值，可在场景设置中恢复预设后保存。
 
 应用图标、主题与首条回答配色修复、模型连接设置、快捷键和截图发送均保留。工作区诊断写入 `%LOCALAPPDATA%\Superb\diagnostics\workspace.jsonl`，仅包含操作、随机标识、材料数量与安全错误码；每个文件约 2 MiB，最多保留 4 个，不记录正文、截图或密钥。旧 agent 分析配置在迁移前完整备份，再移除不再使用的分析字段。
 

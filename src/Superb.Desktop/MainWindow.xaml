@@ -112,7 +112,7 @@
         <Expander x:Name="DiagnosticsSettings" Header="诊断与数据保护" Margin="0,24,0,8"><StackPanel Margin="8,8,8,0"><TextBlock x:Name="DiagnosticsLocation" Style="{StaticResource Hint}"/><TextBlock Text="工作区诊断只记录操作、材料数量和错误码，不记录正文、截图或密钥。" Style="{StaticResource Hint}"/><TextBlock x:Name="ProtectionLabel" Text="未验证 / 不支持" Style="{StaticResource Hint}"/><TextBlock Text="不会保存截图、正文或回答；无后台遥测或崩溃上传。模型服务会接收已发送的内容。" Style="{StaticResource Hint}"/></StackPanel></Expander>
       </StackPanel></ScrollViewer></TabItem>
     </TabControl>
-    <DockPanel Grid.Row="2" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button x:Name="ExitButton" Content="退出 Superb" ToolTip="关闭 Superb；若其窗口当前有焦点，Windows 会转移焦点。" Click="Exit_Click"/></WrapPanel><TextBlock Text="1.0.0" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></DockPanel>
+    <DockPanel Grid.Row="2" Margin="0,16,0,0"><WrapPanel DockPanel.Dock="Right"><Button x:Name="ExitButton" Content="退出 Superb" ToolTip="关闭 Superb；若其窗口当前有焦点，Windows 会转移焦点。" Click="Exit_Click"/></WrapPanel><TextBlock Text="1.1.0" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></DockPanel>
   </Grid>
   </Grid></Border>
 </Window>

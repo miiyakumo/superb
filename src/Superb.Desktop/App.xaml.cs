@@ -15,6 +15,13 @@ public partial class App : Application
     {
         if (isolatedTestHost) { StartupIntercepted = true; return; }
         base.OnStartup(e);
+        if (e.Args is ["--verify-package"])
+        {
+            // Exercise the distributed binary without opening a user's session or taking its mutex.
+            try { PackageVerification.Run(); Shutdown(0); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Shutdown(1); }
+            return;
+        }
         instance = new Mutex(true, "Local\\Superb.Desktop.v1", out var created);
         if (!created) { Shutdown(); return; }
         DispatcherUnhandledException += (_, args) =>
