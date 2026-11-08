@@ -48,12 +48,33 @@ public sealed class CodingConversation
         summary = frame.Summary;
     }
 
-    private static int Window(PreparedRequest request) => request.Backend.ContextWindowTokens ?? 32768;
-    private static long MessageCost(string role, string? text) => 8L + role.Length + Encoding.UTF8.GetByteCount(text ?? "");
-    // Compatible endpoints do not advertise a tokenizer. Count the actual text, not JSON escapes.
+    private static int Window(PreparedRequest request) => request.Backend.ContextWindowTokens ??
+        (DeepSeekSetup.UsesMillionTokenWindow(request.Backend) ? 1_000_000 : 32768);
+    private static long MessageCost(Backend backend, string role, Payload content)
+    {
+        var text = content.Text ?? "";
+        long envelope = 8L + role.Length;
+        if (!DeepSeekSetup.UsesMillionTokenWindow(backend))
+            return envelope + Encoding.UTF8.GetByteCount(text);
+
+        // DeepSeek documents averages for English and Chinese. Budget code punctuation,
+        // digits and other scripts separately; this is an estimate, not a tokenizer.
+        long tenths = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            tenths += rune.Value switch
+            {
+                >= 'A' and <= 'Z' or >= 'a' and <= 'z' or ' ' => 3,
+                >= 0x4E00 and <= 0x9FFF => 6,
+                _ => 10 * rune.Utf8SequenceLength
+            };
+        }
+        return envelope + (tenths + 9) / 10 + 1024L * content.Images.Count();
+    }
+
     internal static long Count(PreparedRequest request) => 32L +
-        (string.IsNullOrWhiteSpace(request.SystemPrompt) ? 0 : MessageCost("system", request.SystemPrompt)) +
-        request.History.Sum(m => MessageCost(m.Role, m.Content.Text)) + MessageCost("user", request.Content.Text);
+        (string.IsNullOrWhiteSpace(request.SystemPrompt) ? 0 : MessageCost(request.Backend, "system", Payload.FromText(request.SystemPrompt))) +
+        request.History.Sum(m => MessageCost(request.Backend, m.Role, m.Content)) + MessageCost(request.Backend, "user", request.Content);
 
     private static bool Fits(PreparedRequest request, long budget)
     {
@@ -83,11 +104,14 @@ public sealed class CodingConversation
         long budget = (long)Window(request) - request.Backend.MaxTokens;
         var bare = request with { History = [] };
         Policy.Check(bare);
-        if (Count(bare) > budget) throw new SafeFailure("context_length_exceeded");
+        // The generic 32K fallback schedules compaction; only the server knows this endpoint's limit.
+        bool provisionalWindow = request.Backend.ContextWindowTokens == null && !DeepSeekSetup.UsesMillionTokenWindow(request.Backend);
+        if (!provisionalWindow && Count(bare) > budget) throw new SafeFailure("context_length_exceeded");
         var current = frame.Prepared ? request : Compose(request, frame);
         if (!force && frame.Prepared)
         {
-            if (!Fits(current, budget)) throw new SafeFailure("context_length_exceeded");
+            Policy.Check(current);
+            if (!provisionalWindow && Count(current) > budget) throw new SafeFailure("context_length_exceeded");
             return current;
         }
         if (!force && Count(current) < budget * 80 / 100 && Fits(current, budget)) return current;
@@ -104,11 +128,11 @@ public sealed class CodingConversation
             // Choose the smallest complete prefix predicted to reach the low watermark.
             int end = frame.Covered;
             long remaining = Count(current);
-            if (frame.Summary != null) remaining -= MessageCost("user", current.History[0].Content.Text);
+            if (frame.Summary != null) remaining -= MessageCost(request.Backend, "user", current.History[0].Content);
             do
             {
                 var turn = turns[end++];
-                remaining -= MessageCost("user", turn.Input.Text) + MessageCost("assistant", turn.Answer);
+                remaining -= MessageCost(request.Backend, "user", turn.Input) + MessageCost(request.Backend, "assistant", Payload.FromText(turn.Answer));
             } while (end < frame.PriorTurns && remaining + limit > target);
             var old = new List<ChatMessage>();
             for (int i = frame.Covered; i < end; i++)
@@ -123,7 +147,7 @@ public sealed class CodingConversation
             current = Compose(request, frame);
             if (Fits(current, target) && (!force || Shorter(current))) return current;
         }
-        if (Fits(current, budget) && (!force || Shorter(current))) return current;
+        if (Fits(current, provisionalWindow ? long.MaxValue : budget) && (!force || Shorter(current))) return current;
         if (frame.Summary != null)
         {
             onSummary();
@@ -131,7 +155,7 @@ public sealed class CodingConversation
             var shorter = await SummarizeAsync(request, null, [new("user", Payload.FromText(frame.Summary))], limit, client, token);
             token.ThrowIfCancellationRequested();
             current = Compose(request, frame with { Summary = shorter });
-            if (Fits(current, budget) && (!force || Shorter(current))) return current;
+            if (Fits(current, provisionalWindow ? long.MaxValue : budget) && (!force || Shorter(current))) return current;
         }
         throw new SafeFailure("context_length_exceeded");
     }

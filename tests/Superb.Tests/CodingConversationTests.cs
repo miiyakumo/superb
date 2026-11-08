@@ -34,6 +34,46 @@ internal static class CodingConversationTests
 
     internal static void Add(List<(string, Func<Task>)> tests)
     {
+        tests.Add(("Coding: official DeepSeek window, multilingual text, images and manual override", async () =>
+        {
+            var model = new Model();
+            var coordinator = new Coordinator(model);
+            coordinator.SetMode(RunState.Ready);
+            var request = Input(new string('测', 40_000));
+            var official = request.Backend with { Endpoint = DeepSeekSetup.Endpoint, Model = "deepseek-flash",
+                ContextWindowTokens = null, SupportsImages = true };
+            await coordinator.RunAsync(request with { Backend = official });
+            Check(coordinator.State == RequestState.Completed, "Unconfigured official model used the 32K fallback");
+            coordinator.ClearConversation();
+            await coordinator.RunAsync(request with { Backend = official with { ContextWindowTokens = 40_000 } });
+            Check(coordinator.State == RequestState.Completed, "Chinese text was counted as three tokens per character");
+            coordinator.ClearConversation();
+            await coordinator.RunAsync(request with { Backend = official with { ContextWindowTokens = 10_000 } });
+            Check(coordinator.Latest?.Code == "context_length_exceeded", "Manual window was ignored");
+            var image = new Payload(null, [1], 640, 480);
+            await coordinator.RunAsync(request with { Content = image, Snapshot = request.Snapshot with { Content = image },
+                Backend = official with { ContextWindowTokens = 1024 } });
+            Check(coordinator.Latest?.Code == "context_length_exceeded" && model.Requests.Count == 2, "Image budget missing");
+        }));
+        tests.Add(("Coding: 12K Unicode input reaches official and unconfigured compatible endpoints verbatim", async () =>
+        {
+            var input = Input(string.Concat(Enumerable.Repeat("中文代码🙂\n", 2000)));
+            foreach (var endpoint in new[] { DeepSeekSetup.Endpoint, input.Backend.Endpoint })
+            {
+                var client = new Model();
+                var coordinator = new Coordinator(client);
+                coordinator.SetMode(RunState.Ready);
+                var request = input with { Backend = input.Backend with { Endpoint = endpoint, Model = "deepseek-flash", ContextWindowTokens = null } };
+                await coordinator.RunAsync(request);
+                Check(coordinator.State == RequestState.Completed && client.Requests.Single().Content == input.Content, "First input blocked");
+                await coordinator.RunAsync(coordinator.Current!.Request);
+                Check(coordinator.State == RequestState.Completed && client.Requests.Count == 2, "Frozen retry blocked");
+                await coordinator.RunAsync(request with { Snapshot = input.Snapshot with { Id = Guid.NewGuid() } });
+                Check(coordinator.State == RequestState.Completed && client.Requests[^1].Content == input.Content, "Followup blocked");
+                Check(client.Requests.Any(r => r.SystemPrompt == "SUMMARIZE") == (endpoint != DeepSeekSetup.Endpoint),
+                    "Only unknown gateway should use the 32K planning threshold");
+            }
+        }));
         tests.Add(("Coding: continuation, scene isolation, replacement and task clearing", async () =>
         {
             var model = new Model();

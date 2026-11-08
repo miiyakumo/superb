@@ -53,7 +53,7 @@
           <StackPanel x:Name="ThinkingSettings" Visibility="Collapsed"><TextBlock Text="思考模式（DeepSeek 官方接口）"/><ComboBox x:Name="ThinkingModePicker" SelectedIndex="0"><ComboBoxItem Content="沿用模型默认"/><ComboBoxItem Content="直接回答（关闭深度思考）"/><ComboBoxItem Content="深度思考"/></ComboBox><TextBlock Text="此开关仅用于 DeepSeek 官方接口；其他服务沿用模型默认行为。" Style="{StaticResource Hint}"/></StackPanel>
           <TextBlock Text="测试当前表单，可能产生少量费用，不会保存。" ToolTip="测试使用当前表单（含未保存的修改和密钥），发送固定文本 Reply with OK.，可能产生少量费用；测试不会保存配置。" Style="{StaticResource Hint}"/>
           <Expander x:Name="BackendAdvancedSettings" Header="高级选项 · 代理、能力与生成参数" Margin="0,0,0,16"><StackPanel Margin="8,12,8,0">
-            <TextBlock Text="编程问答上下文窗口（tokens，留空按 32768 估算）"/><TextBox x:Name="ContextWindow" ToolTip="按消息文本的 UTF-8 字节数估算上下文。图片的 token 开销由模型服务核验。"/>
+            <TextBlock Text="编程问答上下文窗口（tokens，留空自动估算）"/><TextBox x:Name="ContextWindow" ToolTip="官方 DeepSeek Flash / V4 Pro 默认按 100 万 tokens 估算。其他连接按 32768 规划历史压缩，本轮容量由服务端核验。手动填写优先。"/>
             <TextBlock Text="网络代理"/><ComboBox x:Name="ProxyModePicker" SelectedIndex="0"><ComboBoxItem Content="直连（不使用代理）"/><ComboBoxItem Content="系统代理（环境变量 / Windows 用户代理）"/><ComboBoxItem Content="自定义代理"/></ComboBox>
             <TextBlock Text="自定义代理地址（仅自定义模式使用）"/><TextBox x:Name="ProxyAddressBox"/>
             <TextBlock Text="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891。失败不自动切换线路。" Style="{StaticResource Hint}"/>
